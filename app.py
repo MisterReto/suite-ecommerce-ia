@@ -1,16 +1,25 @@
+# ==========================================
+# IMPORTANTE: estas variables deben quedar ANTES de importar oauthlib,
+# porque la librería las lee al momento de importarse.
+# ==========================================
 import os
+
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+os.environ.setdefault("OAUTHLIB_IGNORE_SCOPE_CHANGE", "1")
+
 import io
 import re
 import json
 import secrets
 import difflib
+import traceback
 
 import pandas as pd
 import gradio as gr
 from PIL import Image
 
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -21,13 +30,13 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload, MediaIoBase
 from google import genai
 from google.genai import types
 
-# Evita un error común de oauthlib cuando Google devuelve los scopes en
-# distinto orden/formato al solicitado.
-os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
-
 # ==========================================
 # 0. CONFIGURACIÓN INICIAL (variables de entorno / secretos)
 # ==========================================
+MODELO_TEXTO = "gemini-2.5-flash"
+MODELO_IMAGEN = "gemini-2.5-flash-image"
+
+
 def _env_requerida(nombre):
     valor = os.environ.get(nombre)
     if not valor:
@@ -37,9 +46,12 @@ def _env_requerida(nombre):
         )
     return valor
 
+
 GOOGLE_CLIENT_ID = _env_requerida("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = _env_requerida("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = _env_requerida("GOOGLE_REDIRECT_URI")  # ej: https://tuapp.hf.space/auth/callback
+# Debe ser EXACTAMENTE la misma URI registrada en Google Cloud Console.
+# Ej: https://suite-ecommerce-ia.onrender.com/auth/callback  (https, sin slash final)
+GOOGLE_REDIRECT_URI = _env_requerida("GOOGLE_REDIRECT_URI")
 
 DRIVE_SCOPES = [
     "openid",
@@ -72,22 +84,142 @@ CATEGORIAS_DEFECTO = ["Alimentos", "Bebidas", "K-Pop", "Cosméticos"]
 SUBCATEGORIAS_DEFECTO = ["Snacks", "Ramen", "Refrescos", "Cuidado Facial"]
 
 # ==========================================
-# 0.1 ALMACÉN DE SESIONES (en memoria del proceso)
+# 0.1 CATÁLOGO DE ERRORES DE LA IA (feedback para re-generar)
 # ==========================================
-# Cada usuario logueado tiene una entrada aquí, identificada por una cookie
-# 'session_id' aleatoria. Guarda sus credenciales de Drive y su propia API Key.
-# IMPORTANTE: si el servidor se reinicia, todas las sesiones se pierden y los
-# usuarios deben volver a conectarse (para producción seria, esto se movería
-# a una base de datos/Redis, pero para uso interno esto es suficiente).
+# Cada error visible en español se traduce a una instrucción correctiva en inglés,
+# que es el idioma en el que el modelo de imagen obedece mejor.
+ERRORES_IA = {
+    "📦 Inventó un empaque que no es el del producto":
+        "CRITICAL FIX: In the previous attempt you INVENTED or ALTERED the packaging. "
+        "You MUST copy the packaging from the reference image pixel-faithfully: same shape, "
+        "same proportions, same artwork, same layout. Do not redesign anything.",
+
+    "🏷️ Agregó un logo o marca que no existe":
+        "CRITICAL FIX: In the previous attempt you ADDED a logo, badge, seal or brand mark that "
+        "does not exist on the real product. Remove ALL invented logos, watermarks and emblems. "
+        "Only the marks physically present in the reference image may appear.",
+
+    "🔤 Inventó texto en el empaque":
+        "CRITICAL FIX: In the previous attempt you INVENTED text, letters or characters on the "
+        "packaging. Reproduce ONLY the exact text visible in the reference image. If a text area "
+        "is unreadable, keep it visually blurred rather than inventing words.",
+
+    "📐 Dimensionó mal el producto (escala/proporciones)":
+        "CRITICAL FIX: In the previous attempt the product SCALE and PROPORTIONS were wrong. "
+        "Respect the real-world size of the product relative to the scene and keep the exact "
+        "aspect ratio of the package (do not stretch, squash, or make it oversized/tiny).",
+
+    "🎨 Cambió los colores del producto":
+        "CRITICAL FIX: In the previous attempt the product COLORS were altered. Match the exact "
+        "hues, saturation and finish of the reference packaging.",
+
+    "🧬 Deformó o duplicó el producto":
+        "CRITICAL FIX: In the previous attempt the product was DEFORMED, warped or DUPLICATED. "
+        "Render exactly ONE clean, undistorted, correctly built product.",
+
+    "⬜ El fondo no quedó blanco puro":
+        "CRITICAL FIX: In the previous attempt the background was not pure white. Use a perfectly "
+        "clean pure white (#FFFFFF) seamless background with no gradients, props or shadows on the backdrop.",
+
+    "⬛ La imagen no quedó cuadrada 1:1":
+        "CRITICAL FIX: In the previous attempt the output was NOT square. Generate the image natively "
+        "in a STRICT 1:1 SQUARE aspect ratio, with the product fully inside the frame.",
+
+    "🖼️ La escena no corresponde al producto":
+        "CRITICAL FIX: In the previous attempt the scene/context did not match the product category. "
+        "Build a scene that is coherent and believable for this specific product.",
+
+    "🔍 Se ve borrosa o de baja calidad":
+        "CRITICAL FIX: In the previous attempt the result was blurry or low quality. Deliver razor-sharp "
+        "focus on the packaging, high micro-detail, clean professional studio-grade lighting.",
+
+    "✂️ Recortó o tapó parte del producto":
+        "CRITICAL FIX: In the previous attempt the product was cropped or occluded. The complete product "
+        "must be fully visible, centered, and unobstructed.",
+}
+
+ETIQUETAS_ERRORES = list(ERRORES_IA.keys())
+
+
+def _construir_correccion(errores_seleccionados, texto_libre, historial):
+    """Arma el bloque de retroalimentación que se le manda al modelo explicándole
+    POR QUÉ estamos rehaciendo la imagen y qué debe corregir.
+
+    Devuelve (bloque_prompt, historial_actualizado, resumen_legible).
+    """
+    historial = list(historial or [])
+    nuevas = []
+
+    for etiqueta in (errores_seleccionados or []):
+        instruccion = ERRORES_IA.get(etiqueta)
+        if instruccion:
+            nuevas.append(instruccion)
+
+    if texto_libre and texto_libre.strip():
+        nuevas.append(
+            "CRITICAL FIX (reported by the human reviewer, obey literally): "
+            f"{texto_libre.strip()}"
+        )
+
+    # El historial acumula las correcciones de los intentos anteriores para que el
+    # modelo no vuelva a cometer el mismo error que ya le señalamos antes.
+    for instruccion in nuevas:
+        if instruccion not in historial:
+            historial.append(instruccion)
+
+    if not historial:
+        return "", historial, "Primer intento (sin correcciones previas)."
+
+    intento = len(historial)
+    bloque = (
+        "
+
+===== REGENERATION FEEDBACK =====
+"
+        f"This is a RE-GENERATION. The previous output(s) were REJECTED by a human reviewer. "
+        f"There are {intento} accumulated correction(s). You MUST fix every single one of them "
+        f"while keeping everything that was already correct:
+"
+    )
+    for i, instruccion in enumerate(historial, start=1):
+        bloque += f"{i}. {instruccion}
+"
+    bloque += "===== END FEEDBACK =====
+"
+
+    marcados = (errores_seleccionados or [])
+    if texto_libre and texto_libre.strip():
+        marcados = marcados + [texto_libre.strip()]
+
+    if marcados:
+        resumen = "🔧 Correcciones enviadas a la IA:
+" + "
+".join(
+            f"  {i}. {t}" for i, t in enumerate(marcados, start=1)
+        )
+    else:
+        resumen = f"🔧 Reintento arrastrando {intento} corrección(es) anterior(es)."
+
+    return bloque, historial, resumen
+
+
+# ==========================================
+# 0.2 ALMACÉN DE SESIONES (en memoria del proceso)
+# ==========================================
 SESSIONS = {}
+
 
 def _nueva_session_id():
     return secrets.token_urlsafe(32)
 
+
 def _guardar_sesion(session_id, **kwargs):
+    if not session_id:
+        return
     if session_id not in SESSIONS:
         SESSIONS[session_id] = {}
     SESSIONS[session_id].update(kwargs)
+
 
 def _obtener_sesion(request: gr.Request):
     if request is None:
@@ -96,6 +228,7 @@ def _obtener_sesion(request: gr.Request):
     if not session_id or session_id not in SESSIONS:
         return None
     return SESSIONS[session_id]
+
 
 def _validar_sesion(request: gr.Request, requiere_api_key=True):
     """Devuelve (sesion, mensaje_error). Si mensaje_error no es None, hay que abortar."""
@@ -106,10 +239,12 @@ def _validar_sesion(request: gr.Request, requiere_api_key=True):
         return None, "❌ Primero guarda tu API Key de Gemini (pestaña ⚙️ Configuración)."
     return sesion, None
 
+
 # ==========================================
 # 1. RUTAS DE AUTENTICACIÓN (FastAPI + OAuth de Google)
 # ==========================================
 fastapi_app = FastAPI()
+
 
 @fastapi_app.get("/login")
 def login():
@@ -120,45 +255,60 @@ def login():
         prompt="consent",
     )
     resp = RedirectResponse(auth_url)
-    resp.set_cookie("oauth_state", state, httponly=True, max_age=600, samesite="lax")
+    resp.set_cookie("oauth_state", state, httponly=True, secure=True, samesite="lax", path="/", max_age=600)
     return resp
+
 
 @fastapi_app.get("/auth/callback")
 def auth_callback(request: FastAPIRequest):
-    state = request.cookies.get("oauth_state")
-    flow = Flow.from_client_config(
-        CLIENT_CONFIG, scopes=DRIVE_SCOPES, redirect_uri=GOOGLE_REDIRECT_URI, state=state
-    )
+    """Intercambia el 'code' por el token.
 
-    # Si el proxy del hosting no reporta "https" correctamente hacia adentro,
-    # forzamos el esquema configurado en GOOGLE_REDIRECT_URI para que el
-    # intercambio de token no falle por un mismatch de esquema.
-    url_completa = str(request.url)
-    if GOOGLE_REDIRECT_URI.startswith("https://") and url_completa.startswith("http://"):
-        url_completa = "https://" + url_completa[len("http://"):]
-
-    flow.fetch_token(authorization_response=url_completa)
-    creds = flow.credentials
-
+    Claves para que NO truene en hostings con proxy (Render, HF Spaces...):
+      - scopes=None  -> no se valida el orden/formato de los scopes que devuelve Google.
+      - fetch_token(code=...) -> no se reconstruye la URL completa, así el esquema
+        http/https del proxy deja de importar y no exige validar el state cookie.
+      - El traceback se muestra en pantalla en vez de un "Internal Server Error" mudo.
+    """
     try:
-        oauth2_service = build("oauth2", "v2", credentials=creds)
-        info_usuario = oauth2_service.userinfo().get().execute()
-        email = info_usuario.get("email", "Usuario de Drive")
+        params = dict(request.query_params)
+
+        if "error" in params or "code" not in params:
+            return PlainTextResponse(
+                f"Google devolvió una respuesta inesperada: {params}", status_code=400
+            )
+
+        flow = Flow.from_client_config(
+            CLIENT_CONFIG, scopes=None, redirect_uri=GOOGLE_REDIRECT_URI
+        )
+        flow.fetch_token(code=params["code"])
+        creds = flow.credentials
+
+        try:
+            info_usuario = build("oauth2", "v2", credentials=creds).userinfo().get().execute()
+            email = info_usuario.get("email", "Usuario de Drive")
+        except Exception:
+            email = "Usuario de Drive"
+
+        session_id = _nueva_session_id()
+        _guardar_sesion(
+            session_id,
+            creds=json.loads(creds.to_json()),
+            email=email,
+            gemini_key=None,
+        )
+
+        resp = RedirectResponse(url="/")
+        resp.set_cookie(
+            "session_id", session_id,
+            httponly=True, secure=True, samesite="lax", path="/",
+            max_age=60 * 60 * 24 * 30,
+        )
+        resp.delete_cookie("oauth_state", path="/")
+        return resp
+
     except Exception:
-        email = "Usuario de Drive"
+        return PlainTextResponse(traceback.format_exc(), status_code=500)
 
-    session_id = _nueva_session_id()
-    _guardar_sesion(
-        session_id,
-        creds=json.loads(creds.to_json()),
-        email=email,
-        gemini_key=None,
-    )
-
-    resp = RedirectResponse(url="/")
-    resp.set_cookie("session_id", session_id, httponly=True, max_age=60 * 60 * 24 * 30, samesite="lax")
-    resp.delete_cookie("oauth_state")
-    return resp
 
 @fastapi_app.get("/logout")
 def logout(request: FastAPIRequest):
@@ -166,8 +316,9 @@ def logout(request: FastAPIRequest):
     if session_id in SESSIONS:
         del SESSIONS[session_id]
     resp = RedirectResponse(url="/")
-    resp.delete_cookie("session_id")
+    resp.delete_cookie("session_id", path="/")
     return resp
+
 
 # ==========================================
 # 2. UTILIDADES DE GOOGLE DRIVE (por usuario)
@@ -178,6 +329,7 @@ def _get_drive_service(sesion):
         creds.refresh(GoogleAuthRequest())
         sesion["creds"] = json.loads(creds.to_json())
     return build("drive", "v3", credentials=creds)
+
 
 def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     query = f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
@@ -192,11 +344,13 @@ def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     carpeta = service.files().create(body=metadata, fields='id').execute()
     return carpeta['id']
 
+
 def _buscar_archivo(service, nombre, parent_id):
     query = f"name = '{nombre}' and '{parent_id}' in parents and trashed = false"
     res = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     archivos = res.get('files', [])
     return archivos[0]['id'] if archivos else None
+
 
 def _preparar_estructura(service):
     """Asegura que exista Proyecto_IA/imagenes_generadas en el Drive del usuario.
@@ -206,6 +360,7 @@ def _preparar_estructura(service):
     csv_id = _buscar_archivo(service, NOMBRE_CSV, carpeta_raiz_id)
     logo_id = _buscar_archivo(service, NOMBRE_LOGO, carpeta_raiz_id)
     return carpeta_raiz_id, carpeta_imagenes_id, csv_id, logo_id
+
 
 def _leer_csv_drive(service, csv_id):
     if csv_id is None:
@@ -222,6 +377,7 @@ def _leer_csv_drive(service, csv_id):
     except Exception:
         return pd.DataFrame(columns=COLUMNAS_CSV)
 
+
 def _guardar_csv_drive(service, carpeta_raiz_id, csv_id, df):
     buffer = io.BytesIO()
     df.to_csv(buffer, index=False)
@@ -234,10 +390,12 @@ def _guardar_csv_drive(service, carpeta_raiz_id, csv_id, df):
     archivo = service.files().create(body=metadata, media_body=media, fields='id').execute()
     return archivo['id']
 
+
 def _cargar_df(sesion):
     service = _get_drive_service(sesion)
     _, _, csv_id, _ = _preparar_estructura(service)
     return service, csv_id, _leer_csv_drive(service, csv_id)
+
 
 def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local):
     media = MediaFileUpload(ruta_local, mimetype='image/jpeg', resumable=False)
@@ -248,6 +406,7 @@ def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local
     metadata = {'name': nombre_archivo, 'parents': [carpeta_imagenes_id]}
     archivo = service.files().create(body=metadata, media_body=media, fields='id').execute()
     return archivo['id']
+
 
 def _descargar_logo_temporal(service, logo_id):
     if logo_id is None:
@@ -263,27 +422,33 @@ def _descargar_logo_temporal(service, logo_id):
         f.write(buffer.getvalue())
     return ruta_logo_temp
 
+
 # ==========================================
 # 3. FUNCIONES DE APOYO (SKU, imágenes locales)
 # ==========================================
 def limpiar_texto_sku(texto):
-    if not texto: return "XXX"
+    if not texto:
+        return "XXX"
     texto = re.sub(r'[^a-zA-Z0-9]', '', str(texto))
     return texto.upper()
+
 
 def generar_sku_logica(nombre, marca, gramaje):
     """Genera SKU: Marca (3) + Nombre (3) + Unidad/Gramaje. Máximo 10 caracteres."""
     str_marca = limpiar_texto_sku(marca)[:3].ljust(3, 'X')
     str_nom = limpiar_texto_sku(nombre)[:3].ljust(3, 'X')
     str_gramaje = limpiar_texto_sku(gramaje)
-    if not str_gramaje: str_gramaje = "00"
+    if not str_gramaje:
+        str_gramaje = "00"
     sku = f"{str_marca}{str_nom}{str_gramaje}"
     return sku[:10]
+
 
 def comprimir_imagen(img_array, max_size=1024):
     img = Image.fromarray(img_array)
     img.thumbnail((max_size, max_size))
     return img
+
 
 def estampar_logo(ruta_imagen, service, logo_id):
     try:
@@ -320,15 +485,29 @@ def estampar_logo(ruta_imagen, service, logo_id):
     except Exception as e:
         print(f"Error con el logo: {e}")
 
+
 # ==========================================
 # 4. INTELIGENCIA ARTIFICIAL (Textos, Precio, Lens, Imágenes)
 # ==========================================
 def _extraer_json(texto_raw):
-    texto_limpio = texto_raw.replace('```json', '').replace('```', '').strip()
+    texto_limpio = (texto_raw or "").replace('```json', '').replace('```', '').strip()
     match = re.search(r'\{.*\}', texto_limpio, re.DOTALL)
     if match:
         texto_limpio = match.group(0)
     return json.loads(texto_limpio)
+
+
+def _extraer_imagen_bytes(response):
+    """Saca los bytes de la imagen de la respuesta del modelo.
+    (response.parts no existe: hay que recorrer candidates -> content -> parts)"""
+    for candidato in (getattr(response, "candidates", None) or []):
+        contenido = getattr(candidato, "content", None)
+        for part in (getattr(contenido, "parts", None) or []):
+            inline = getattr(part, "inline_data", None)
+            if inline and getattr(inline, "data", None):
+                return inline.data
+    return None
+
 
 def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
     """Usa Gemini + Búsqueda de Google (con la API key del usuario) para investigar
@@ -347,7 +526,7 @@ def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=MODELO_TEXTO,
             contents=prompt,
             config=types.GenerateContentConfig(tools=[{"google_search": {}}])
         )
@@ -355,6 +534,7 @@ def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
     except Exception as e:
         print(f"⚠️ No se pudo estimar el precio automáticamente: {e}")
         return {"precio_min": 0, "precio_max": 0, "precio_sugerido": 0, "moneda": "MXN"}
+
 
 def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr.Request):
     """Búsqueda tipo Google Lens: sube la foto del producto y usa Gemini (visión +
@@ -377,7 +557,10 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
 
         contexto = ""
         if nombre_actual:
-            contexto = f"Nombre de referencia (ya analizado previamente): '{nombre_actual}'. Marca de referencia: '{marca_actual}'. "
+            contexto = (
+                f"Nombre de referencia (ya analizado previamente): '{nombre_actual}'. "
+                f"Marca de referencia: '{marca_actual}'. "
+            )
 
         prompt = (
             f"Actúa como Google Lens combinado con Google Shopping. Observa cuidadosamente la imagen "
@@ -385,14 +568,17 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
             f"Después, busca en internet si ese MISMO producto existe en OTRAS presentaciones, tamaños "
             f"o gramajes distintos al de la foto (ej: el mismo snack en 30g, 100g y 500g). "
             f"NO busques marcas ni productos distintos, solo variantes de tamaño/gramaje del mismo producto. "
-            f"Devuelve ÚNICAMENTE un JSON estricto, sin texto adicional ni markdown, con las claves:\n"
-            f"'producto_identificado' (string), 'marca_identificada' (string),\n"
-            f"'tiene_variantes' (booleano), 'variantes' (lista de objetos con 'gramaje', 'fuente', 'precio_aprox'),\n"
+            f"Devuelve ÚNICAMENTE un JSON estricto, sin texto adicional ni markdown, con las claves:
+"
+            f"'producto_identificado' (string), 'marca_identificada' (string),
+"
+            f"'tiene_variantes' (booleano), 'variantes' (lista de objetos con 'gramaje', 'fuente', 'precio_aprox'),
+"
             f"'justificacion' (string breve)."
         )
 
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=MODELO_TEXTO,
             contents=[archivo_ref, prompt],
             config=types.GenerateContentConfig(tools=[{"google_search": {}}])
         )
@@ -406,22 +592,33 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
 
         tipo_recomendado = "Variable" if (tiene_variantes and len(variantes) > 0) else "Simple"
         if tipo_recomendado == "Variable":
-            recomendacion = f"✅ Se encontraron {len(variantes)} presentación(es) adicional(es). Recomendado: marcar como VARIABLE."
+            recomendacion = (
+                f"✅ Se encontraron {len(variantes)} presentación(es) adicional(es). "
+                f"Recomendado: marcar como VARIABLE."
+            )
         else:
             recomendacion = "ℹ️ No se encontraron otras presentaciones del mismo producto. Recomendado: dejar como SIMPLE."
 
-        reporte = f"### 🔍 Producto identificado: {producto} ({marca})\n\n"
+        reporte = f"### 🔍 Producto identificado: {producto} ({marca})
+
+"
         if variantes:
-            reporte += "| Gramaje/Tamaño | Fuente | Precio aprox. |\n|---|---|---|\n"
+            reporte += "| Gramaje/Tamaño | Fuente | Precio aprox. |
+|---|---|---|
+"
             for v in variantes:
-                reporte += f"| {v.get('gramaje','-')} | {v.get('fuente','-')} | {v.get('precio_aprox','-')} |\n"
+                reporte += f"| {v.get('gramaje','-')} | {v.get('fuente','-')} | {v.get('precio_aprox','-')} |
+"
         else:
-            reporte += "_No se encontraron otras presentaciones a la venta actualmente._\n"
-        reporte += f"\n**Justificación de la IA:** {justificacion}"
+            reporte += "_No se encontraron otras presentaciones a la venta actualmente._
+"
+        reporte += f"
+**Justificación de la IA:** {justificacion}"
 
         return recomendacion, reporte, tipo_recomendado
     except Exception as e:
         return f"❌ Error en la búsqueda visual: {e}", "", "Simple"
+
 
 def investigar_prompts(producto, marca, desc, api_key):
     prompt = (
@@ -429,59 +626,76 @@ def investigar_prompts(producto, marca, desc, api_key):
         f"Devuelve un JSON estricto con dos claves: 'lifestyle' y 'comercial'. "
         f"REGLA 1: Si es comida/bebida, describe escenas con ingredientes volando y consumo feliz. "
         f"REGLA 2: Si NO es comida, describe un estudio estilizado, neón, pop-art. "
-        f"CRÍTICO: All prompt instructions MUST be exclusively in English. The physical product packaging MUST be clearly visible and centered. DO NOT invent packaging. DO NOT ask for text or logos. MENTION THAT THE IMAGE MUST BE 1:1 SQUARE."
+        f"CRÍTICO: All prompt instructions MUST be exclusively in English. The physical product packaging "
+        f"MUST be clearly visible and centered. DO NOT invent packaging. DO NOT ask for text or logos. "
+        f"MENTION THAT THE IMAGE MUST BE 1:1 SQUARE."
     )
     try:
         client = genai.Client(api_key=api_key)
-        res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-        texto_limpio = res.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(texto_limpio)
-    except:
+        res = client.models.generate_content(model=MODELO_TEXTO, contents=prompt)
+        return _extraer_json(res.text)
+    except Exception:
         return {
-            "lifestyle": f"Warm lifestyle photography of the exact packaging of {producto}, highly detailed scene, authentic interaction, natural lighting, 1:1 square aspect ratio.",
-            "comercial": f"Dynamic epic commercial photography highlighting the exact packaging of {producto} by {marca}, highly stylized studio lighting, 1:1 square aspect ratio."
+            "lifestyle": (
+                f"Warm lifestyle photography of the exact packaging of {producto}, highly detailed scene, "
+                f"authentic interaction, natural lighting, 1:1 square aspect ratio."
+            ),
+            "comercial": (
+                f"Dynamic epic commercial photography highlighting the exact packaging of {producto} by {marca}, "
+                f"highly stylized studio lighting, 1:1 square aspect ratio."
+            ),
         }
 
-def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, service, logo_id):
+
+def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, service, logo_id, correccion=""):
+    """Genera una imagen. Si 'correccion' viene con contenido, se le explica al modelo
+    exactamente por qué se está rehaciendo la imagen y qué debe arreglar."""
     try:
         client = genai.Client(api_key=api_key)
         archivo_ref = client.files.upload(file=ruta_base)
         prompt_seguro = (
             f"{prompt} "
             f"CRITICAL INSTRUCTIONS: "
-            f"1. YOU MUST USE THE EXACT PRODUCT PACKAGING FROM THE REFERENCE IMAGE. DO NOT invent, alter, or hallucinate boxes, text, or shapes. The physical product is untouchable. "
+            f"1. YOU MUST USE THE EXACT PRODUCT PACKAGING FROM THE REFERENCE IMAGE. DO NOT invent, alter, "
+            f"or hallucinate boxes, text, or shapes. The physical product is untouchable. "
             f"2. ABSOLUTELY NO LOGOS, NO WATERMARKS, NO EXTRA TEXT anywhere. "
-            f"3. Generate the final output natively in a STRICTLY SQUARE 1:1 ASPECT RATIO."
+            f"3. Respect the real proportions and scale of the product. "
+            f"4. Generate the final output natively in a STRICTLY SQUARE 1:1 ASPECT RATIO."
+            f"{correccion}"
         )
         response = client.models.generate_content(
-            model="gemini-3.1-flash-image",
+            model=MODELO_IMAGEN,
             contents=[archivo_ref, prompt_seguro]
         )
-        for part in response.parts:
-            if hasattr(part, 'inline_data') and part.inline_data:
-                with open(ruta_salida_local, "wb") as f:
-                    f.write(part.inline_data.data)
-                if logo_id:
-                    estampar_logo(ruta_salida_local, service, logo_id)
-                return ruta_salida_local
+        datos_imagen = _extraer_imagen_bytes(response)
+        if not datos_imagen:
+            print("❌ El modelo no devolvió imagen.")
+            return None
+        with open(ruta_salida_local, "wb") as f:
+            f.write(datos_imagen)
+        if logo_id:
+            estampar_logo(ruta_salida_local, service, logo_id)
+        return ruta_salida_local
     except Exception as e:
         print(f"❌ Error al generar imagen: {e}")
         return None
 
+
 def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Request):
     sesion, error = _validar_sesion(request)
     if error:
-        return [error, "", "", "", "", 0, "Simple", "", "", "", "", "", None]
+        return [error, "", "", "", "", 0, "Simple", gr.update(visible=False), "", "", "", "", None]
     if imagen_1 is None:
-        return ["❌ Sube al menos la foto principal.", "", "", "", "", 0, "Simple", "", "", "", "", "", None]
+        return ["❌ Sube al menos la foto principal.", "", "", "", "", 0, "Simple",
+                gr.update(visible=False), "", "", "", "", None]
 
     api_key = sesion["gemini_key"]
     client = genai.Client(api_key=api_key)
     service, csv_id, df_actual = _cargar_df(sesion)
 
-    lista_cats = df_actual['categoria'].dropna().unique().tolist()
+    lista_cats = df_actual['categoria'].dropna().unique().tolist() if 'categoria' in df_actual else []
     lista_cats = lista_cats if lista_cats else CATEGORIAS_DEFECTO
-    lista_subcats = df_actual['subcategoria'].dropna().unique().tolist()
+    lista_subcats = df_actual['subcategoria'].dropna().unique().tolist() if 'subcategoria' in df_actual else []
     lista_subcats = lista_subcats if lista_subcats else SUBCATEGORIAS_DEFECTO
 
     archivos_ia = []
@@ -501,22 +715,33 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
 
     prompt_datos = (
         f"Analiza el producto de las imágenes. Contexto extra: '{descripcion_breve}'. "
-        f"Actúa como un experto en SEO para e-commerce. Devuelve un JSON estricto con:\n"
-        f"1. 'nombre': El nombre del producto claro y comercial.\n"
-        f"2. 'marca': La marca del producto.\n"
-        f"3. 'gramaje': La unidad de medida y cantidad EXACTA. Puede ser G, KG, ML, L, OZ o PZ. Ejemplo: '500G', '12OZ', '1L', '10PZ'.\n"
-        f"4. 'categoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Categorías: {lista_cats}. NO inventes ninguna.\n"
-        f"5. 'subcategoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Subcategorías: {lista_subcats}. NO inventes ninguna.\n"
-        f"6. 'desc_corta': Optimizado para SEO (Máximo 150 caracteres).\n"
-        f"7. 'desc_larga': Optimizado para SEO con beneficios/ingredientes en formato de viñetas (-).\n"
+        f"Actúa como un experto en SEO para e-commerce. Devuelve un JSON estricto con:
+"
+        f"1. 'nombre': El nombre del producto claro y comercial.
+"
+        f"2. 'marca': La marca del producto.
+"
+        f"3. 'gramaje': La unidad de medida y cantidad EXACTA. Puede ser G, KG, ML, L, OZ o PZ. "
+        f"Ejemplo: '500G', '12OZ', '1L', '10PZ'.
+"
+        f"4. 'categoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Categorías: "
+        f"{lista_cats}. NO inventes ninguna.
+"
+        f"5. 'subcategoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Subcategorías: "
+        f"{lista_subcats}. NO inventes ninguna.
+"
+        f"6. 'desc_corta': Optimizado para SEO (Máximo 150 caracteres).
+"
+        f"7. 'desc_larga': Optimizado para SEO con beneficios/ingredientes en formato de viñetas (-).
+"
     )
 
     try:
-        res_datos = client.models.generate_content(model="gemini-2.5-flash", contents=archivos_ia + [prompt_datos])
-        texto_json = res_datos.text.replace('```json', '').replace('```', '').strip()
-        datos = json.loads(texto_json)
+        res_datos = client.models.generate_content(model=MODELO_TEXTO, contents=archivos_ia + [prompt_datos])
+        datos = _extraer_json(res_datos.text)
     except Exception as e:
-        return [f"❌ Error leyendo imagen: {e}", "", "", "", "", 0, "Simple", "", "", "", "", "", None]
+        return [f"❌ Error leyendo imagen: {e}", "", "", "", "", 0, "Simple",
+                gr.update(visible=False), "", "", "", "", None]
 
     nombre = datos.get("nombre", "Producto Desconocido")
     marca = datos.get("marca", "Genérica")
@@ -541,65 +766,101 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         ruta_base_memoria
     ]
 
+
 # ==========================================
-# 5. GENERACIÓN DE FOTOS Y GUARDADO (ahora hacia el Drive del usuario)
+# 5. GENERACIÓN DE FOTOS Y GUARDADO (hacia el Drive del usuario)
 # ==========================================
-def rehacer_hd(ruta_base, sku, request: gr.Request):
-    sesion, error = _validar_sesion(request)
-    if error or not ruta_base: return None
+PROMPT_HD = (
+    "Create a clean e-commerce studio shot of this exact product packaging. Isolated on a pure white "
+    "background. Crisp details, bright and even studio lighting. MUST BE 1:1 SQUARE ASPECT RATIO."
+)
+
+
+def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial, sesion):
+    """Núcleo compartido: arma la corrección, genera, sube a Drive y devuelve
+    (ruta_imagen, historial_actualizado, mensaje)."""
+    correccion, historial_nuevo, resumen = _construir_correccion(errores, feedback, historial)
+
     service = _get_drive_service(sesion)
     _, carpeta_imagenes_id, _, logo_id = _preparar_estructura(service)
-    prompt = "Create a clean e-commerce studio shot of this exact product packaging. Isolated on a pure white background. Crisp details, bright and even studio lighting. MUST BE 1:1 SQUARE ASPECT RATIO."
-    ruta_local = f"/tmp/{sku}_1_hd.jpg"
-    resultado = generar_foto_individual(prompt, ruta_base, ruta_local, sesion["gemini_key"], service, logo_id)
-    if resultado:
-        _subir_imagen_drive(service, carpeta_imagenes_id, f"{sku}_1_hd.jpg", resultado)
-    return resultado
 
-def rehacer_life(ruta_base, sku, nombre, marca, desc, request: gr.Request):
-    sesion, error = _validar_sesion(request)
-    if error or not ruta_base: return None
-    service = _get_drive_service(sesion)
-    _, carpeta_imagenes_id, _, logo_id = _preparar_estructura(service)
-    prompts = investigar_prompts(nombre, marca, desc, sesion["gemini_key"])
-    ruta_local = f"/tmp/{sku}_2_uso.jpg"
-    resultado = generar_foto_individual(prompts['lifestyle'], ruta_base, ruta_local, sesion["gemini_key"], service, logo_id)
-    if resultado:
-        _subir_imagen_drive(service, carpeta_imagenes_id, f"{sku}_2_uso.jpg", resultado)
-    return resultado
+    nombre_archivo = f"{sku}_{slot}.jpg"
+    ruta_local = f"/tmp/{nombre_archivo}"
 
-def rehacer_comercial(ruta_base, sku, nombre, marca, desc, request: gr.Request):
-    sesion, error = _validar_sesion(request)
-    if error or not ruta_base: return None
-    service = _get_drive_service(sesion)
-    _, carpeta_imagenes_id, _, logo_id = _preparar_estructura(service)
-    prompts = investigar_prompts(nombre, marca, desc, sesion["gemini_key"])
-    ruta_local = f"/tmp/{sku}_3_comercial.jpg"
-    resultado = generar_foto_individual(prompts['comercial'], ruta_base, ruta_local, sesion["gemini_key"], service, logo_id)
-    if resultado:
-        _subir_imagen_drive(service, carpeta_imagenes_id, f"{sku}_3_comercial.jpg", resultado)
-    return resultado
+    resultado = generar_foto_individual(
+        prompt, ruta_base, ruta_local, sesion["gemini_key"], service, logo_id, correccion=correccion
+    )
+    if not resultado:
+        return None, historial_nuevo, "❌ La IA no devolvió imagen. Intenta de nuevo o ajusta el feedback."
 
-def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request):
+    _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, resultado)
+    mensaje = f"✅ {nombre_archivo} regenerada y guardada en Drive.
+{resumen}"
+    return resultado, historial_nuevo, mensaje
+
+
+def rehacer_hd(ruta_base, sku, errores, feedback, historial, request: gr.Request):
     sesion, error = _validar_sesion(request)
     if error:
-        yield error, None, None, None
+        return None, historial, error
+    if not ruta_base:
+        return None, historial, "❌ Extrae los textos primero (necesito la foto base)."
+    return _rehacer_generico("1_hd", PROMPT_HD, ruta_base, sku, errores, feedback, historial, sesion)
+
+
+def rehacer_life(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: gr.Request):
+    sesion, error = _validar_sesion(request)
+    if error:
+        return None, historial, error
+    if not ruta_base:
+        return None, historial, "❌ Extrae los textos primero (necesito la foto base)."
+    prompts = investigar_prompts(nombre, marca, desc, sesion["gemini_key"])
+    return _rehacer_generico("2_uso", prompts['lifestyle'], ruta_base, sku, errores, feedback, historial, sesion)
+
+
+def rehacer_comercial(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: gr.Request):
+    sesion, error = _validar_sesion(request)
+    if error:
+        return None, historial, error
+    if not ruta_base:
+        return None, historial, "❌ Extrae los textos primero (necesito la foto base)."
+    prompts = investigar_prompts(nombre, marca, desc, sesion["gemini_key"])
+    return _rehacer_generico("3_comercial", prompts['comercial'], ruta_base, sku, errores, feedback, historial, sesion)
+
+
+def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request):
+    """Primera pasada: sin correcciones y reseteando el historial de feedback."""
+    sesion, error = _validar_sesion(request)
+    if error:
+        yield error, None, None, None, [], [], []
         return
     if not ruta_base:
-        yield "❌ Extrae los textos primero", None, None, None
+        yield "❌ Extrae los textos primero", None, None, None, [], [], []
         return
-    yield "📸 Generando fondo blanco...", None, None, None
-    out_1 = rehacer_hd(ruta_base, sku, request)
-    yield "📸 Generando estilo de vida...", out_1, None, None
-    out_2 = rehacer_life(ruta_base, sku, nombre, marca, desc, request)
-    yield "📸 Generando comercial épica...", out_1, out_2, None
-    out_3 = rehacer_comercial(ruta_base, sku, nombre, marca, desc, request)
-    yield "✅ ¡Set fotográfico completo, guardado en tu Google Drive!", out_1, out_2, out_3
 
-def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat, desc_corta, desc_larga, request: gr.Request):
+    yield "📸 Generando fondo blanco...", None, None, None, [], [], []
+    out_1, _, _ = rehacer_hd(ruta_base, sku, [], "", [], request)
+
+    yield "📸 Generando estilo de vida...", out_1, None, None, [], [], []
+    out_2, _, _ = rehacer_life(ruta_base, sku, nombre, marca, desc, [], "", [], request)
+
+    yield "📸 Generando comercial épica...", out_1, out_2, None, [], [], []
+    out_3, _, _ = rehacer_comercial(ruta_base, sku, nombre, marca, desc, [], "", [], request)
+
+    yield (
+        "✅ ¡Set fotográfico completo, guardado en tu Google Drive! "
+        "Si algo salió mal, usa el panel 🔧 de cada imagen para decirle a la IA qué corregir.",
+        out_1, out_2, out_3, [], [], []
+    )
+
+
+def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat,
+                        desc_corta, desc_larga, request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
-    if error: return error
-    if not sku: return "❌ Error: No hay datos para guardar."
+    if error:
+        return error
+    if not sku:
+        return "❌ Error: No hay datos para guardar."
     try:
         service, csv_id, df = _cargar_df(sesion)
         carpeta_raiz_id, _, _, _ = _preparar_estructura(service)
@@ -618,21 +879,24 @@ def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, ca
     except Exception as e:
         return f"❌ Error al guardar en Drive: {e}"
 
+
 def detectar_padre(nombre_actual, request: gr.Request):
-    if not nombre_actual: return ""
+    if not nombre_actual:
+        return ""
     sesion, error = _validar_sesion(request, requiere_api_key=False)
-    if error: return "No detectado"
+    if error:
+        return "No detectado"
     try:
         _, _, df = _cargar_df(sesion)
         nombres_existentes = df['nombre_producto'].dropna().tolist()
         similares = difflib.get_close_matches(nombre_actual, nombres_existentes, n=1, cutoff=0.4)
         if similares:
             nombre_padre = similares[0]
-            sku_padre = df[df['nombre_producto'] == nombre_padre].iloc[0]['sku']
-            return sku_padre
+            return df[df['nombre_producto'] == nombre_padre].iloc[0]['sku']
         return "No detectado"
     except Exception:
         return "No detectado"
+
 
 def cambio_tipo_ui(tipo_seleccionado, nombre_actual, request: gr.Request):
     if tipo_seleccionado == "Variable":
@@ -640,18 +904,23 @@ def cambio_tipo_ui(tipo_seleccionado, nombre_actual, request: gr.Request):
         return gr.update(visible=True, value=padre_detectado)
     return gr.update(visible=False, value="")
 
+
 def recalcular_sku_ui(nombre, marca, gramaje):
     return generar_sku_logica(nombre, marca, gramaje)
 
+
 def recalcular_precio_ui(nombre, marca, gramaje, categoria, request: gr.Request):
     sesion, error = _validar_sesion(request)
-    if error: return 0
+    if error:
+        return 0
     datos_precio = estimar_precio_producto(nombre, marca, gramaje, categoria, sesion["gemini_key"])
     return datos_precio.get("precio_sugerido", 0)
 
+
 def obtener_categorias(request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
-    if error: return CATEGORIAS_DEFECTO
+    if error:
+        return CATEGORIAS_DEFECTO
     try:
         _, _, df = _cargar_df(sesion)
         cats = df['categoria'].dropna().unique().tolist()
@@ -659,15 +928,18 @@ def obtener_categorias(request: gr.Request):
     except Exception:
         return CATEGORIAS_DEFECTO
 
+
 def obtener_subcategorias(request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
-    if error: return SUBCATEGORIAS_DEFECTO
+    if error:
+        return SUBCATEGORIAS_DEFECTO
     try:
         _, _, df = _cargar_df(sesion)
         subcats = df['subcategoria'].dropna().unique().tolist()
         return subcats if subcats else SUBCATEGORIAS_DEFECTO
     except Exception:
         return SUBCATEGORIAS_DEFECTO
+
 
 # ==========================================
 # 5.1 ESTADO DE LOGIN / CONFIGURACIÓN
@@ -690,11 +962,13 @@ def _estado_login_html(request: gr.Request):
         "</div>"
     )
 
+
 def cargar_estado_inicial(request: gr.Request):
     html = _estado_login_html(request)
     cats = obtener_categorias(request)
     subcats = obtener_subcategorias(request)
     return html, gr.update(choices=cats), gr.update(choices=subcats)
+
 
 def guardar_api_key(api_key_input, request: gr.Request):
     sesion = _obtener_sesion(request)
@@ -705,20 +979,30 @@ def guardar_api_key(api_key_input, request: gr.Request):
     _guardar_sesion(request.cookies.get("session_id"), gemini_key=api_key_input.strip())
     return "✅ API Key guardada para tu sesión.", _estado_login_html(request)
 
+
 def refrescar_categorias(request: gr.Request):
     return gr.update(choices=obtener_categorias(request)), gr.update(choices=obtener_subcategorias(request))
+
+
+def limpiar_feedback():
+    """Después de mandar el feedback, limpia los checkboxes y el texto libre
+    (el historial se conserva en el State)."""
+    return gr.update(value=[]), gr.update(value="")
+
 
 # ==========================================
 # 6. INTERFAZ GRÁFICA
 # ==========================================
 css_camara = """
-video {
-    transform: none !important;
-}
+video { transform: none !important; }
 """
 
 with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
     memoria_ruta_base = gr.State(None)
+    # Historial de correcciones por cada slot de imagen
+    hist_1 = gr.State([])
+    hist_2 = gr.State([])
+    hist_3 = gr.State([])
 
     gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)")
     estado_login = gr.HTML()
@@ -729,10 +1013,14 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
         # ==================================
         with gr.Tab("⚙️ Configuración"):
             gr.Markdown(
-                "### 1. Conecta tu Google Drive\n"
+                "### 1. Conecta tu Google Drive
+"
                 "Usa el enlace de arriba (o el de abajo) para iniciar sesión con Google. "
-                "Todo lo que generes se guardará en la carpeta `Proyecto_IA` de **tu propio Drive**.\n\n"
-                "### 2. Guarda tu API Key de Gemini\n"
+                "Todo lo que generes se guardará en la carpeta `Proyecto_IA` de **tu propio Drive**.
+
+"
+                "### 2. Guarda tu API Key de Gemini
+"
                 "Se usa solo durante tu sesión; no se comparte con otros usuarios ni se guarda en el código."
             )
             gr.HTML("<a href='/login'><b>🔐 Conectar / Reconectar con Google Drive</b></a>")
@@ -745,7 +1033,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
         # PESTAÑA 1: INGRESO Y EDICIÓN
         # ==================================
         with gr.Tab("1. Ingreso y Edición de Productos"):
-            estado = gr.Textbox(label="Consola de Sistema", interactive=False)
+            estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -762,13 +1050,13 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
                         in_marca = gr.Textbox(label="Marca")
                         in_gramaje = gr.Textbox(label="Medida (Ej. 120G, 1L, 10PZ, 5OZ)")
 
-                        with gr.Row():
-                            in_precio = gr.Number(label="💲 Precio Sugerido (MXN)", precision=2)
-                            btn_act_precio = gr.Button("🔄 Recalcular Precio", size="sm")
+                    with gr.Row():
+                        in_precio = gr.Number(label="💲 Precio Sugerido (MXN)", precision=2)
+                        btn_act_precio = gr.Button("🔄 Recalcular Precio", size="sm")
 
-                        with gr.Row():
-                            in_sku = gr.Textbox(label="SKU (Max 10 caracteres)", interactive=True)
-                            btn_act_sku = gr.Button("🔄 Recalcular SKU", size="sm")
+                    with gr.Row():
+                        in_sku = gr.Textbox(label="SKU (Max 10 caracteres)", interactive=True)
+                        btn_act_sku = gr.Button("🔄 Recalcular SKU", size="sm")
 
                     with gr.Group():
                         in_tipo = gr.Radio(["Simple", "Variable"], label="Tipo de Producto", value="Simple")
@@ -784,26 +1072,64 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
                 with gr.Column(scale=2):
                     gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")
                     btn_generar_fotos = gr.Button("✨ Generar Set de 3 Fotos Comerciales", variant="primary")
+                    gr.Markdown(
+                        "_¿Salió mal una foto? Abre su panel **🔧 ¿Qué salió mal?**, marca el error "
+                        "(empaque inventado, logo que no existe, mala escala...) y dale Rehacer. "
+                        "La IA recibe esa retroalimentación y las correcciones se van acumulando en cada intento._"
+                    )
+
                     with gr.Row():
+                        # ---------- Slot 1: Fondo blanco ----------
                         with gr.Column():
                             out_img1 = gr.Image(label="Fondo Blanco")
-                            btn_rehacer_1 = gr.Button("🔄 Rehacer HD")
+                            with gr.Accordion("🔧 ¿Qué salió mal? (Fondo Blanco)", open=False):
+                                err_1 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
+                                fb_1 = gr.Textbox(
+                                    label="Otra corrección (texto libre)",
+                                    placeholder="Ej. la tapa es roja, no azul",
+                                    lines=2,
+                                )
+                                btn_limpiar_hist_1 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
+                            btn_rehacer_1 = gr.Button("🔄 Rehacer HD con feedback")
+
+                        # ---------- Slot 2: Lifestyle ----------
                         with gr.Column():
                             out_img2 = gr.Image(label="Lifestyle")
-                            btn_rehacer_2 = gr.Button("🔄 Rehacer Life")
+                            with gr.Accordion("🔧 ¿Qué salió mal? (Lifestyle)", open=False):
+                                err_2 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
+                                fb_2 = gr.Textbox(
+                                    label="Otra corrección (texto libre)",
+                                    placeholder="Ej. la mano tapa el nombre del producto",
+                                    lines=2,
+                                )
+                                btn_limpiar_hist_2 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
+                            btn_rehacer_2 = gr.Button("🔄 Rehacer Life con feedback")
+
+                        # ---------- Slot 3: Comercial ----------
                         with gr.Column():
                             out_img3 = gr.Image(label="Comercial")
-                            btn_rehacer_3 = gr.Button("🔄 Rehacer Com")
+                            with gr.Accordion("🔧 ¿Qué salió mal? (Comercial)", open=False):
+                                err_3 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
+                                fb_3 = gr.Textbox(
+                                    label="Otra corrección (texto libre)",
+                                    placeholder="Ej. inventó un sello de 'premium quality'",
+                                    lines=2,
+                                )
+                                btn_limpiar_hist_3 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
+                            btn_rehacer_3 = gr.Button("🔄 Rehacer Com con feedback")
 
             gr.Markdown("---")
-            btn_guardar = gr.Button("💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Drive)", variant="primary", size="lg")
+            btn_guardar = gr.Button(
+                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Drive)", variant="primary", size="lg"
+            )
 
         # ==================================
         # PESTAÑA 2: VARIANTES DE PRESENTACIÓN (GOOGLE LENS IA)
         # ==================================
         with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):
             gr.Markdown(
-                "### 🔎 Busca con IA si el producto existe en otros gramajes/tamaños\n"
+                "### 🔎 Busca con IA si el producto existe en otros gramajes/tamaños
+"
                 "Sube o reutiliza la foto del producto para que la IA lo identifique visualmente "
                 "(como Google Lens) y busque en internet si existen otras presentaciones o gramajes "
                 "del MISMO producto. Así sabrás si conviene marcarlo como **Variable** en la Pestaña 1 "
@@ -811,7 +1137,8 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
             )
             with gr.Row():
                 with gr.Column(scale=1):
-                    img_lens = gr.Image(label="Foto del producto a investigar", type="numpy", sources=["upload", "webcam", "clipboard"])
+                    img_lens = gr.Image(label="Foto del producto a investigar", type="numpy",
+                                        sources=["upload", "webcam", "clipboard"])
                     btn_usar_foto_tab1 = gr.Button("📋 Usar foto de la Pestaña 1", size="sm")
                     btn_buscar_lens = gr.Button("🔍 Buscar Variantes con Google Lens (IA)", variant="primary")
                 with gr.Column(scale=2):
@@ -829,25 +1156,51 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
     btn_refrescar_cats.click(refrescar_categorias, inputs=None, outputs=[in_cat, in_subcat])
 
     entradas_textos = [img1, img2, desc_input]
-    salidas_textos = [estado, in_sku, in_nombre, in_marca, in_gramaje, in_precio, in_tipo, in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, memoria_ruta_base]
+    salidas_textos = [estado, in_sku, in_nombre, in_marca, in_gramaje, in_precio, in_tipo,
+                      in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, memoria_ruta_base]
     btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos)
 
     btn_act_sku.click(recalcular_sku_ui, inputs=[in_nombre, in_marca, in_gramaje], outputs=[in_sku])
     btn_act_precio.click(recalcular_precio_ui, inputs=[in_nombre, in_marca, in_gramaje, in_cat], outputs=[in_precio])
     in_tipo.change(cambio_tipo_ui, inputs=[in_tipo, in_nombre], outputs=[in_sku_padre])
 
+    # Primera pasada: resetea los 3 historiales de feedback
     btn_generar_fotos.click(
         modulo_generar_todo,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta],
-        outputs=[estado, out_img1, out_img2, out_img3]
+        outputs=[estado, out_img1, out_img2, out_img3, hist_1, hist_2, hist_3]
     )
-    btn_rehacer_1.click(rehacer_hd, inputs=[memoria_ruta_base, in_sku], outputs=[out_img1])
-    btn_rehacer_2.click(rehacer_life, inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta], outputs=[out_img2])
-    btn_rehacer_3.click(rehacer_comercial, inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta], outputs=[out_img3])
+
+    # Re-generaciones con retroalimentación
+    btn_rehacer_1.click(
+        rehacer_hd,
+        inputs=[memoria_ruta_base, in_sku, err_1, fb_1, hist_1],
+        outputs=[out_img1, hist_1, estado]
+    ).then(limpiar_feedback, inputs=None, outputs=[err_1, fb_1])
+
+    btn_rehacer_2.click(
+        rehacer_life,
+        inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_2, fb_2, hist_2],
+        outputs=[out_img2, hist_2, estado]
+    ).then(limpiar_feedback, inputs=None, outputs=[err_2, fb_2])
+
+    btn_rehacer_3.click(
+        rehacer_comercial,
+        inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_3, fb_3, hist_3],
+        outputs=[out_img3, hist_3, estado]
+    ).then(limpiar_feedback, inputs=None, outputs=[err_3, fb_3])
+
+    btn_limpiar_hist_1.click(lambda: ([], "🧹 Historial de correcciones (Fondo Blanco) reiniciado."),
+                             inputs=None, outputs=[hist_1, estado])
+    btn_limpiar_hist_2.click(lambda: ([], "🧹 Historial de correcciones (Lifestyle) reiniciado."),
+                             inputs=None, outputs=[hist_2, estado])
+    btn_limpiar_hist_3.click(lambda: ([], "🧹 Historial de correcciones (Comercial) reiniciado."),
+                             inputs=None, outputs=[hist_3, estado])
 
     btn_guardar.click(
         guardar_excel_final,
-        inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje, in_precio, in_cat, in_subcat, in_desc_corta, in_desc_larga],
+        inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje, in_precio,
+                in_cat, in_subcat, in_desc_corta, in_desc_larga],
         outputs=[estado]
     )
 
