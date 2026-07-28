@@ -245,6 +245,7 @@ def login():
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
+        autogenerate_code_verifier=False,
     )
     resp = RedirectResponse(auth_url)
     resp.set_cookie("oauth_state", state, httponly=True, secure=True, samesite="lax", path="/", max_age=600)
@@ -270,7 +271,11 @@ def auth_callback(request: FastAPIRequest):
             )
 
         flow = Flow.from_client_config(
-            CLIENT_CONFIG, scopes=None, redirect_uri=GOOGLE_REDIRECT_URI
+            CLIENT_CONFIG,
+            scopes=DRIVE_SCOPES,
+            redirect_uri=GOOGLE_REDIRECT_URI,
+            state=request.cookies.get("oauth_state"),
+            autogenerate_code_verifier=False,
         )
         flow.fetch_token(code=params["code"])
         creds = flow.credentials
