@@ -248,7 +248,16 @@ def login():
         autogenerate_code_verifier=False,
     )
     resp = RedirectResponse(auth_url)
-    resp.set_cookie("oauth_state", state, httponly=True, secure=True, samesite="lax", path="/", max_age=600)
+    resp.set_cookie(
+        "oauth_state", state,
+        httponly=True, secure=True, samesite="lax",
+        path="/", max_age=600
+    )
+    resp.set_cookie(
+        "oauth_code_verifier", flow.code_verifier,
+        httponly=True, secure=True, samesite="lax",
+        path="/", max_age=600
+    )
     return resp
 
 
@@ -275,8 +284,8 @@ def auth_callback(request: FastAPIRequest):
             scopes=DRIVE_SCOPES,
             redirect_uri=GOOGLE_REDIRECT_URI,
             state=request.cookies.get("oauth_state"),
-            autogenerate_code_verifier=False,
         )
+        flow.code_verifier = request.cookies.get("oauth_code_verifier")
         flow.fetch_token(code=params["code"])
         creds = flow.credentials
 
