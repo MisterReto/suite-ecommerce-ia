@@ -102,8 +102,7 @@ def _construir_correccion(errores_seleccionados, texto_libre, historial):
     for i, instruccion in enumerate(historial, start=1):
         partes.append(str(i) + ". " + instruccion)
     partes.append("===== END FEEDBACK =====")
-    bloque = "
-".join(partes)
+    bloque = "".join(partes)
     marcados = list(errores_seleccionados or [])
     if texto_libre and texto_libre.strip():
         marcados.append(texto_libre.strip())
