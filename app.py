@@ -76,8 +76,8 @@ NOMBRE_LOGO = "logo_rincon_asia.png"
 
 COLUMNAS_CSV = [
     'sku', 'tipo', 'sku_padre', 'nombre_producto', 'marca',
-    'gramaje', 'precio', 'categoria', 'subcategoria', 'descripcion_corta',
-    'descripcion_larga', 'imagenes'
+    'gramaje', 'precio', 'categoria', 'subcategoria', 'etiquetas',
+    'descripcion_corta', 'descripcion_larga', 'imagenes'
 ]
 
 CATEGORIAS_DEFECTO = ["Alimentos", "Bebidas", "K-Pop", "Cosméticos"]
@@ -561,6 +561,69 @@ def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
         return {"precio_min": 0, "precio_max": 0, "precio_sugerido": 0, "moneda": "MXN"}
 
 
+def _obtener_vocabulario_etiquetas(df):
+    """Junta todas las etiquetas ya usadas en el inventario (la columna guarda
+    varias por celda, separadas por coma) en una lista única, sin repetidos."""
+    if df is None or df.empty or 'etiquetas' not in df.columns:
+        return []
+    vistas = []
+    for celda in df['etiquetas'].dropna().tolist():
+        for etiqueta in str(celda).split(','):
+            etiqueta = etiqueta.strip()
+            if etiqueta and etiqueta.lower() not in [v.lower() for v in vistas]:
+                vistas.append(etiqueta)
+    return vistas
+
+
+def estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripcion, vocabulario, api_key):
+    """Si ya existen etiquetas en el catálogo, la IA SOLO puede elegir entre esas
+    (nada de inventar nuevas). Si el catálogo todavía no tiene ninguna, la IA
+    propone unas pocas para empezar a construir el vocabulario."""
+    if not nombre:
+        return []
+    if vocabulario:
+        instruccion = (
+            f"Debes elegir ÚNICAMENTE etiquetas de esta lista que YA EXISTE en el catálogo, escogiendo "
+            f"solo las que apliquen a este producto (puede ser ninguna, una, o varias): {vocabulario}. "
+            f"NO inventes etiquetas que no estén en esa lista, y respeta la ortografía exacta con la que "
+            f"aparecen ahí."
+        )
+    else:
+        instruccion = (
+            "Todavía no hay etiquetas en el catálogo. Sugiere entre 2 y 5 etiquetas cortas y reutilizables "
+            "(en español, minúsculas, sin acentos raros, ej. 'picante', 'sin gluten', 'edición limitada') "
+            "que describan bien este producto y sirvan para clasificar productos parecidos en el futuro."
+        )
+    prompt = (
+        f"Producto: '{nombre}', marca '{marca}', categoría '{categoria}', subcategoría '{subcategoria}'. "
+        f"Contexto adicional: '{descripcion}'. {instruccion} "
+        f"Devuelve ÚNICAMENTE un JSON estricto, sin texto adicional ni markdown, con una sola clave "
+        f"'etiquetas' (array de strings)."
+    )
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(model=MODELO_TEXTO, contents=prompt)
+        datos = _extraer_json(response.text)
+        etiquetas = datos.get("etiquetas", []) or []
+        if vocabulario:
+            vocab_lower = {v.lower(): v for v in vocabulario}
+            etiquetas = [vocab_lower[e.lower()] for e in etiquetas if e.lower() in vocab_lower]
+        return etiquetas
+    except Exception as e:
+        print(f"⚠️ No se pudieron estimar las etiquetas: {e}")
+        return []
+
+
+def recalcular_etiquetas_ui(nombre, marca, categoria, subcategoria, descripcion, request: gr.Request):
+    sesion, error = _validar_sesion(request)
+    if error:
+        return ""
+    _, _, df = _cargar_df(sesion)
+    vocabulario = _obtener_vocabulario_etiquetas(df)
+    etiquetas = estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripcion, vocabulario, sesion["gemini_key"])
+    return ", ".join(etiquetas)
+
+
 def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr.Request):
     """Búsqueda tipo Google Lens: sube la foto del producto y usa Gemini (visión +
     Búsqueda de Google) para detectar si el MISMO producto existe en otros
@@ -699,10 +762,10 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
 def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Request):
     sesion, error = _validar_sesion(request)
     if error:
-        return [error, "", "", "", "", 0, "Simple", gr.update(visible=False), "", "", "", "", None]
+        return [error, "", "", "", "", 0, "Simple", gr.update(visible=False), "", "", "", "", "", None]
     if imagen_1 is None:
         return ["❌ Sube al menos la foto principal.", "", "", "", "", 0, "Simple",
-                gr.update(visible=False), "", "", "", "", None]
+                gr.update(visible=False), "", "", "", "", "", None]
 
     api_key = sesion["gemini_key"]
     client = genai.Client(api_key=api_key)
@@ -748,7 +811,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         datos = _extraer_json(res_datos.text)
     except Exception as e:
         return [f"❌ Error leyendo imagen: {e}", "", "", "", "", 0, "Simple",
-                gr.update(visible=False), "", "", "", "", None]
+                gr.update(visible=False), "", "", "", "", "", None]
 
     nombre = datos.get("nombre", "Producto Desconocido")
     marca = datos.get("marca", "Genérica")
@@ -765,11 +828,18 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
     datos_precio = estimar_precio_producto(nombre, marca, gramaje, cat_final, api_key)
     precio_sugerido = datos_precio.get("precio_sugerido", 0)
 
+    vocabulario_etiquetas = _obtener_vocabulario_etiquetas(df_actual)
+    etiquetas_sugeridas = estimar_etiquetas_producto(
+        nombre, marca, cat_final, subcat_final, descripcion_breve, vocabulario_etiquetas, api_key
+    )
+    etiquetas_str = ", ".join(etiquetas_sugeridas)
+
     return [
-        "✅ Textos y precio sugerido extraídos. Verifica SKU, Categorías y Precio.",
+        "✅ Textos, precio y etiquetas sugeridas. Verifica SKU, Categorías, Precio y Etiquetas.",
         sku_gen, nombre, marca, gramaje, precio_sugerido, "Simple",
         gr.update(visible=False), cat_final, subcat_final,
         datos.get("desc_corta", ""), datos.get("desc_larga", ""),
+        etiquetas_str,
         ruta_base_memoria
     ]
 
@@ -860,7 +930,7 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
     )
 
 
-def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat,
+def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat, etiquetas,
                         desc_corta, desc_larga, request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
@@ -875,7 +945,7 @@ def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, ca
             'sku': sku, 'tipo': tipo,
             'sku_padre': sku_padre if tipo == "Variable" else "",
             'nombre_producto': nombre, 'marca': marca, 'gramaje': gramaje,
-            'precio': precio, 'categoria': cat, 'subcategoria': subcat,
+            'precio': precio, 'categoria': cat, 'subcategoria': subcat, 'etiquetas': etiquetas,
             'descripcion_corta': desc_corta, 'descripcion_larga': desc_larga,
             'imagenes': lista_imagenes_str
         }
@@ -1132,6 +1202,13 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
                         in_cat = gr.Dropdown(choices=CATEGORIAS_DEFECTO, label="Categoría (Estricta)")
                         in_subcat = gr.Dropdown(choices=SUBCATEGORIAS_DEFECTO, label="Subcategoría (Estricta)")
 
+                    with gr.Row():
+                        in_etiquetas = gr.Textbox(
+                            label="🏷️ Etiquetas (separadas por coma)",
+                            placeholder="ej. picante, edición limitada, importado",
+                        )
+                        btn_act_etiquetas = gr.Button("🔄 Recalcular Etiquetas", size="sm")
+
                     in_desc_corta = gr.Textbox(label="Desc. Corta (SEO - max 150 carácteres)", lines=2)
                     in_desc_larga = gr.Textbox(label="Desc. Larga (SEO - Viñetas y Beneficios)", lines=5)
 
@@ -1223,11 +1300,16 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
 
     entradas_textos = [img1, img2, desc_input]
     salidas_textos = [estado, in_sku, in_nombre, in_marca, in_gramaje, in_precio, in_tipo,
-                      in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, memoria_ruta_base]
+                      in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, in_etiquetas, memoria_ruta_base]
     btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos)
 
     btn_act_sku.click(recalcular_sku_ui, inputs=[in_nombre, in_marca, in_gramaje], outputs=[in_sku])
     btn_act_precio.click(recalcular_precio_ui, inputs=[in_nombre, in_marca, in_gramaje, in_cat], outputs=[in_precio])
+    btn_act_etiquetas.click(
+        recalcular_etiquetas_ui,
+        inputs=[in_nombre, in_marca, in_cat, in_subcat, desc_input],
+        outputs=[in_etiquetas]
+    )
     in_tipo.change(cambio_tipo_ui, inputs=[in_tipo, in_nombre, in_marca], outputs=[in_sku_padre])
 
     # Primera pasada: resetea los 3 historiales de feedback
@@ -1266,7 +1348,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
     btn_guardar.click(
         guardar_excel_final,
         inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje, in_precio,
-                in_cat, in_subcat, in_desc_corta, in_desc_larga],
+                in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga],
         outputs=[estado]
     )
 
