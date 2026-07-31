@@ -459,14 +459,16 @@ def limpiar_texto_sku(texto):
 
 
 def generar_sku_logica(nombre, marca, gramaje):
-    """Genera SKU: Marca (3) + Nombre (3) + Unidad/Gramaje. Máximo 10 caracteres."""
+    """Genera un SKU de EXACTAMENTE 10 caracteres: Marca (3) + Nombre (3) + Gramaje (4).
+    Si algún segmento es más corto, se rellena con 'X'; si es más largo, se recorta."""
     str_marca = limpiar_texto_sku(marca)[:3].ljust(3, 'X')
     str_nom = limpiar_texto_sku(nombre)[:3].ljust(3, 'X')
     str_gramaje = limpiar_texto_sku(gramaje)
     if not str_gramaje:
         str_gramaje = "00"
+    str_gramaje = str_gramaje[:4].ljust(4, 'X')
     sku = f"{str_marca}{str_nom}{str_gramaje}"
-    return sku[:10]
+    return sku[:10].ljust(10, 'X')
 
 
 def comprimir_imagen(img_array, max_size=1024):
