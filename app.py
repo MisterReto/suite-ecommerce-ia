@@ -25,7 +25,7 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 from google import genai
 from google.genai import types
@@ -71,13 +71,18 @@ CLIENT_CONFIG = {
 
 NOMBRE_CARPETA_RAIZ = "Proyecto_IA"
 NOMBRE_SUBCARPETA_IMAGENES = "imagenes_generadas"
-NOMBRE_CSV = "inventario_completo.csv"
+NOMBRE_GOOGLE_SHEET = "inventario_completo"
+NOMBRE_HOJA_INVENTARIO = "Gabo nueva"
+# Se conserva únicamente para migrar automáticamente un inventario creado por
+# una versión anterior de la app. El CSV no se elimina y queda como respaldo.
+NOMBRE_CSV_LEGACY = "inventario_completo.csv"
 NOMBRE_LOGO = "logo_rincon_asia.png"
 
-COLUMNAS_CSV = [
-    'sku', 'tipo', 'sku_padre', 'nombre_producto', 'marca',
-    'gramaje', 'precio', 'categoria', 'subcategoria', 'etiquetas',
-    'descripcion_corta', 'descripcion_larga', 'imagenes'
+COLUMNAS_INVENTARIO = [
+    'sku_padre', 'tipo', 'sku', 'nombre_producto',
+    'descripcion_corta', 'descripcion_larga', 'Existencias',
+    'categoria', 'subcategoria', 'etiquetas', 'Web link imagen',
+    'precio', 'Precio descuento', 'imagenes'
 ]
 
 CATEGORIAS_DEFECTO = ["Alimentos", "Bebidas", "K-Pop", "Cosméticos"]
@@ -337,6 +342,15 @@ def _get_drive_service(sesion):
     return build("drive", "v3", credentials=creds)
 
 
+def _get_sheets_service(sesion):
+    """Cliente de Google Sheets usando las mismas credenciales de Drive."""
+    creds = Credentials.from_authorized_user_info(sesion["creds"], DRIVE_SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        sesion["creds"] = json.loads(creds.to_json())
+    return build("sheets", "v4", credentials=creds)
+
+
 def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     query = f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     query += f" and '{parent_id}' in parents" if parent_id else " and 'root' in parents"
@@ -351,26 +365,369 @@ def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     return carpeta['id']
 
 
-def _buscar_archivo(service, nombre, parent_id):
+def _buscar_archivo(service, nombre, parent_id, mime_type=None):
     query = f"name = '{nombre}' and '{parent_id}' in parents and trashed = false"
+    if mime_type:
+        query += f" and mimeType = '{mime_type}'"
     res = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     archivos = res.get('files', [])
     return archivos[0]['id'] if archivos else None
 
 
+def _obtener_gid_inventario(sheets_service, spreadsheet_id):
+    """Devuelve el sheetId de 'Gabo nueva'; crea o renombra la pestaña si hace falta."""
+    libro = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(sheetId,title))",
+    ).execute()
+    hojas = libro.get("sheets", [])
+
+    for hoja in hojas:
+        props = hoja.get("properties", {})
+        if props.get("title") == NOMBRE_HOJA_INVENTARIO:
+            return props["sheetId"]
+
+    if len(hojas) == 1:
+        gid = hojas[0]["properties"]["sheetId"]
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [{
+                    "updateSheetProperties": {
+                        "properties": {"sheetId": gid, "title": NOMBRE_HOJA_INVENTARIO},
+                        "fields": "title",
+                    }
+                }]
+            },
+        ).execute()
+        return gid
+
+    respuesta = sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [{"addSheet": {"properties": {"title": NOMBRE_HOJA_INVENTARIO}}}]},
+    ).execute()
+    return respuesta["replies"][0]["addSheet"]["properties"]["sheetId"]
+
+
+def _aplicar_formato_base(sheets_service, spreadsheet_id, sheet_gid, agregar_reglas=False):
+    """Replica la estructura visual principal de la pestaña 'Gabo nueva'."""
+    requests = [
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_gid,
+                    "gridProperties": {"frozenRowCount": 1},
+                },
+                "fields": "gridProperties.frozenRowCount",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": len(COLUMNAS_INVENTARIO),
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"fontFamily": "Arial", "bold": True},
+                        "verticalAlignment": "BOTTOM",
+                        "wrapStrategy": "WRAP",
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,verticalAlignment,wrapStrategy)",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "dimension": "ROWS",
+                    "startIndex": 0,
+                    "endIndex": 1,
+                },
+                "properties": {"pixelSize": 38},
+                "fields": "pixelSize",
+            }
+        },
+    ]
+
+    # Anchos equivalentes a la hoja de referencia: A, B, C, D, E y F:N.
+    for inicio, fin, pixeles in [
+        (0, 1, 111),
+        (1, 2, 100),
+        (2, 3, 126),
+        (3, 4, 313),
+        (4, 5, 236),
+        (5, 14, 100),
+    ]:
+        requests.append({
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "dimension": "COLUMNS",
+                    "startIndex": inicio,
+                    "endIndex": fin,
+                },
+                "properties": {"pixelSize": pixeles},
+                "fields": "pixelSize",
+            }
+        })
+
+    if agregar_reglas:
+        naranja = {"red": 1.0, "green": 0.6, "blue": 0.0}
+        verde = {"red": 0.7176471, "green": 0.88235295, "blue": 0.8039216}
+        cyan = {"red": 0.0, "green": 1.0, "blue": 1.0}
+        reglas = [
+            # SKU diferente al SKU padre, igual que en la hoja de referencia.
+            (2, 3, '=AND($C2<>"",$C2<>$A2)', cyan),
+            (2, 3, '=COUNTIF($C$2:$C$1000,C2)>1', naranja),
+            (3, 4, '=COUNTIF($D$2:$D$1000,D2)>1', naranja),
+            (4, 5, '=COUNTIF($E$2:$E$1000,E2)>1', verde),
+            (5, 6, '=COUNTIF($F$2:$F$1000,F2)>1', verde),
+        ]
+        for indice, (col_inicio, col_fin, formula, color) in enumerate(reglas):
+            requests.append({
+                "addConditionalFormatRule": {
+                    "index": indice,
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet_gid,
+                            "startRowIndex": 1,
+                            "endRowIndex": 1000,
+                            "startColumnIndex": col_inicio,
+                            "endColumnIndex": col_fin,
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "CUSTOM_FORMULA",
+                                "values": [{"userEnteredValue": formula}],
+                            },
+                            "format": {"backgroundColor": color},
+                        },
+                    },
+                }
+            })
+
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+
+def _aplicar_formato_filas(sheets_service, spreadsheet_id, sheet_gid, inicio, fin):
+    """Formatea únicamente las filas pobladas; inicio/fin son índices base cero."""
+    if fin <= inicio:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": inicio,
+                    "endRowIndex": fin,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 14,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"fontFamily": "Arial"},
+                        "verticalAlignment": "BOTTOM",
+                    }
+                },
+                "fields": "userEnteredFormat(textFormat,verticalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": inicio,
+                    "endRowIndex": fin,
+                    "startColumnIndex": 3,
+                    "endColumnIndex": 6,
+                },
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+                "fields": "userEnteredFormat.wrapStrategy",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": inicio,
+                    "endRowIndex": fin,
+                    "startColumnIndex": 6,
+                    "endColumnIndex": 7,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "numberFormat": {"type": "NUMBER", "pattern": "0"}
+                    }
+                },
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "startRowIndex": inicio,
+                    "endRowIndex": fin,
+                    "startColumnIndex": 11,
+                    "endColumnIndex": 13,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "numberFormat": {"type": "CURRENCY", "pattern": '"$"#,##0.00'}
+                    }
+                },
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_gid,
+                    "dimension": "ROWS",
+                    "startIndex": inicio,
+                    "endIndex": fin,
+                },
+                "properties": {"pixelSize": 21},
+                "fields": "pixelSize",
+            }
+        },
+    ]
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+
+def _limpiar_valor_sheet(valor):
+    try:
+        if pd.isna(valor):
+            return ""
+    except Exception:
+        pass
+    if isinstance(valor, (str, int, float, bool)) or valor is None:
+        return "" if valor is None else valor
+    try:
+        return valor.item()
+    except Exception:
+        return str(valor)
+
+
+def _fila_formato_gabo(registro):
+    """Convierte un diccionario/Series al orden exacto de 'Gabo nueva'."""
+    obtener = registro.get
+    tipo = _limpiar_valor_sheet(obtener('tipo', 'Simple')) or 'Simple'
+    sku_padre = _limpiar_valor_sheet(obtener('sku_padre', '')) if tipo == 'Variable' else ''
+    return [
+        sku_padre,
+        tipo,
+        _limpiar_valor_sheet(obtener('sku', '')),
+        _limpiar_valor_sheet(obtener('nombre_producto', '')),
+        _limpiar_valor_sheet(obtener('descripcion_corta', '')),
+        _limpiar_valor_sheet(obtener('descripcion_larga', '')),
+        _limpiar_valor_sheet(obtener('Existencias', 1)) or 1,
+        _limpiar_valor_sheet(obtener('categoria', '')),
+        _limpiar_valor_sheet(obtener('subcategoria', '')),
+        _limpiar_valor_sheet(obtener('etiquetas', '')),
+        _limpiar_valor_sheet(obtener('Web link imagen', '')),
+        _limpiar_valor_sheet(obtener('precio', 0)) or 0,
+        _limpiar_valor_sheet(obtener('Precio descuento', 0)) or 0,
+        _limpiar_valor_sheet(obtener('imagenes', '')),
+    ]
+
+
+def _crear_o_encontrar_inventario(service, sheets_service, carpeta_raiz_id):
+    mime_sheet = 'application/vnd.google-apps.spreadsheet'
+    spreadsheet_id = _buscar_archivo(
+        service, NOMBRE_GOOGLE_SHEET, carpeta_raiz_id, mime_type=mime_sheet
+    )
+    creado = spreadsheet_id is None
+    if creado:
+        metadata = {
+            'name': NOMBRE_GOOGLE_SHEET,
+            'mimeType': mime_sheet,
+            'parents': [carpeta_raiz_id],
+        }
+        spreadsheet_id = service.files().create(body=metadata, fields='id').execute()['id']
+
+    sheet_gid = _obtener_gid_inventario(sheets_service, spreadsheet_id)
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A1:N1",
+        valueInputOption='RAW',
+        body={'values': [COLUMNAS_INVENTARIO]},
+    ).execute()
+    _aplicar_formato_base(
+        sheets_service, spreadsheet_id, sheet_gid, agregar_reglas=creado
+    )
+    return spreadsheet_id, sheet_gid, creado
+
+
+def _leer_csv_legacy(service, csv_id):
+    if csv_id is None:
+        return pd.DataFrame()
+    peticion = service.files().get_media(fileId=csv_id)
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, peticion)
+    listo = False
+    while not listo:
+        _, listo = downloader.next_chunk()
+    buffer.seek(0)
+    try:
+        return pd.read_csv(buffer)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _migrar_csv_legacy(service, sheets_service, carpeta_raiz_id, spreadsheet_id, sheet_gid):
+    """Copia una vez el CSV anterior al nuevo Sheet; conserva el CSV como respaldo."""
+    csv_id = _buscar_archivo(service, NOMBRE_CSV_LEGACY, carpeta_raiz_id, mime_type='text/csv')
+    df_legacy = _leer_csv_legacy(service, csv_id)
+    if df_legacy.empty:
+        return 0
+    filas = [_fila_formato_gabo(fila) for _, fila in df_legacy.iterrows()]
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A2:N{len(filas) + 1}",
+        valueInputOption='RAW',
+        body={'values': filas},
+    ).execute()
+    _aplicar_formato_filas(sheets_service, spreadsheet_id, sheet_gid, 1, len(filas) + 1)
+    return len(filas)
+
+
 def _preparar_estructura(service, sesion=None):
-    """Asegura que exista la carpeta raíz (la que el usuario haya elegido, o
-    'Proyecto_IA' por defecto) con su subcarpeta imagenes_generadas.
-    Devuelve (carpeta_raiz_id, carpeta_imagenes_id, csv_file_id_o_None, logo_file_id_o_None)"""
-    carpeta_manual = sesion.get("carpeta_raiz_id_manual") if sesion else None
+    """Asegura carpetas, imágenes y un Google Sheet nativo con formato Gabo nueva.
+
+    Devuelve (carpeta_raiz_id, carpeta_imagenes_id, spreadsheet_id, logo_file_id_o_None).
+    """
+    if not sesion:
+        raise RuntimeError("No hay una sesión de Google disponible.")
+    carpeta_manual = sesion.get("carpeta_raiz_id_manual")
     if carpeta_manual:
         carpeta_raiz_id = carpeta_manual
     else:
         carpeta_raiz_id = _buscar_o_crear_carpeta(service, NOMBRE_CARPETA_RAIZ)
-    carpeta_imagenes_id = _buscar_o_crear_carpeta(service, NOMBRE_SUBCARPETA_IMAGENES, parent_id=carpeta_raiz_id)
-    csv_id = _buscar_archivo(service, NOMBRE_CSV, carpeta_raiz_id)
+    carpeta_imagenes_id = _buscar_o_crear_carpeta(
+        service, NOMBRE_SUBCARPETA_IMAGENES, parent_id=carpeta_raiz_id
+    )
+    sheets_service = _get_sheets_service(sesion)
+    spreadsheet_id, sheet_gid, creado = _crear_o_encontrar_inventario(
+        service, sheets_service, carpeta_raiz_id
+    )
+    if creado:
+        _migrar_csv_legacy(
+            service, sheets_service, carpeta_raiz_id, spreadsheet_id, sheet_gid
+        )
     logo_id = _buscar_archivo(service, NOMBRE_LOGO, carpeta_raiz_id)
-    return carpeta_raiz_id, carpeta_imagenes_id, csv_id, logo_id
+    return carpeta_raiz_id, carpeta_imagenes_id, spreadsheet_id, logo_id
 
 
 def _extraer_folder_id(texto):
@@ -387,39 +744,49 @@ def _extraer_folder_id(texto):
     return texto  # asumimos que ya nos pasaron el ID directamente
 
 
-def _leer_csv_drive(service, csv_id):
-    if csv_id is None:
-        return pd.DataFrame(columns=COLUMNAS_CSV)
-    peticion = service.files().get_media(fileId=csv_id)
-    buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(buffer, peticion)
-    listo = False
-    while not listo:
-        _, listo = downloader.next_chunk()
-    buffer.seek(0)
-    try:
-        return pd.read_csv(buffer)
-    except Exception:
-        return pd.DataFrame(columns=COLUMNAS_CSV)
+def _leer_google_sheet(sheets_service, spreadsheet_id):
+    resultado = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A:N",
+        valueRenderOption='UNFORMATTED_VALUE',
+    ).execute()
+    valores = resultado.get('values', [])
+    if len(valores) <= 1:
+        return pd.DataFrame(columns=COLUMNAS_INVENTARIO)
+    filas = []
+    for fila in valores[1:]:
+        completa = list(fila[:len(COLUMNAS_INVENTARIO)])
+        completa.extend([''] * (len(COLUMNAS_INVENTARIO) - len(completa)))
+        filas.append(completa)
+    return pd.DataFrame(filas, columns=COLUMNAS_INVENTARIO)
 
 
-def _guardar_csv_drive(service, carpeta_raiz_id, csv_id, df):
-    buffer = io.BytesIO()
-    df.to_csv(buffer, index=False)
-    buffer.seek(0)
-    media = MediaIoBaseUpload(buffer, mimetype='text/csv', resumable=False)
-    if csv_id:
-        service.files().update(fileId=csv_id, media_body=media).execute()
-        return csv_id
-    metadata = {'name': NOMBRE_CSV, 'parents': [carpeta_raiz_id]}
-    archivo = service.files().create(body=metadata, media_body=media, fields='id').execute()
-    return archivo['id']
+def _agregar_fila_google_sheet(sesion, spreadsheet_id, registro):
+    sheets_service = _get_sheets_service(sesion)
+    fila = _fila_formato_gabo(registro)
+    respuesta = sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A:N",
+        valueInputOption='RAW',
+        insertDataOption='INSERT_ROWS',
+        body={'values': [fila]},
+    ).execute()
+    rango_actualizado = respuesta.get('updates', {}).get('updatedRange', '')
+    match = re.search(r'![A-Z]+(\d+):[A-Z]+(\d+)$', rango_actualizado)
+    if match:
+        fila_uno = int(match.group(1))
+        sheet_gid = _obtener_gid_inventario(sheets_service, spreadsheet_id)
+        _aplicar_formato_filas(
+            sheets_service, spreadsheet_id, sheet_gid, fila_uno - 1, fila_uno
+        )
+    return spreadsheet_id
 
 
 def _cargar_df(sesion):
     service = _get_drive_service(sesion)
-    _, _, csv_id, _ = _preparar_estructura(service, sesion)
-    return service, csv_id, _leer_csv_drive(service, csv_id)
+    _, _, spreadsheet_id, _ = _preparar_estructura(service, sesion)
+    sheets_service = _get_sheets_service(sesion)
+    return service, spreadsheet_id, _leer_google_sheet(sheets_service, spreadsheet_id)
 
 
 def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local):
@@ -771,7 +1138,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
 
     api_key = sesion["gemini_key"]
     client = genai.Client(api_key=api_key)
-    service, csv_id, df_actual = _cargar_df(sesion)
+    service, spreadsheet_id, df_actual = _cargar_df(sesion)
 
     lista_cats = df_actual['categoria'].dropna().unique().tolist() if 'categoria' in df_actual else []
     lista_cats = lista_cats if lista_cats else CATEGORIAS_DEFECTO
@@ -932,30 +1299,40 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
     )
 
 
-def guardar_excel_final(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat, etiquetas,
-                        desc_corta, desc_larga, request: gr.Request):
+def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat, etiquetas,
+                           desc_corta, desc_larga, request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
         return error
     if not sku:
         return "❌ Error: No hay datos para guardar."
     try:
-        service, csv_id, df = _cargar_df(sesion)
-        carpeta_raiz_id, _, _, _ = _preparar_estructura(service, sesion)
-        lista_imagenes_str = f"{sku}_1_hd.jpg, {sku}_2_uso.jpg, {sku}_3_comercial.jpg"
+        _, spreadsheet_id, _ = _cargar_df(sesion)
+        lista_imagenes_str = f"{sku}_1_hd.jpg,{sku}_2_uso.jpg,{sku}_3_comercial.jpg"
         nueva_fila = {
-            'sku': sku, 'tipo': tipo,
             'sku_padre': sku_padre if tipo == "Variable" else "",
-            'nombre_producto': nombre, 'marca': marca, 'gramaje': gramaje,
-            'precio': precio, 'categoria': cat, 'subcategoria': subcat, 'etiquetas': etiquetas,
-            'descripcion_corta': desc_corta, 'descripcion_larga': desc_larga,
-            'imagenes': lista_imagenes_str
+            'tipo': tipo,
+            'sku': sku,
+            'nombre_producto': nombre,
+            'descripcion_corta': desc_corta,
+            'descripcion_larga': desc_larga,
+            'Existencias': 1,
+            'categoria': cat,
+            'subcategoria': subcat,
+            'etiquetas': etiquetas,
+            'Web link imagen': "",
+            'precio': precio or 0,
+            'Precio descuento': 0,
+            'imagenes': lista_imagenes_str,
         }
-        df = pd.concat([df, pd.DataFrame([nueva_fila])], ignore_index=True)
-        _guardar_csv_drive(service, carpeta_raiz_id, csv_id, df)
-        return f"💾 ¡Guardado en tu Google Drive! El producto {sku} está en tu inventario maestro."
+        _agregar_fila_google_sheet(sesion, spreadsheet_id, nueva_fila)
+        url_sheet = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        return (
+            f"💾 ¡Guardado en Google Sheets! El producto {sku} está en la pestaña "
+            f"'{NOMBRE_HOJA_INVENTARIO}'.\n{url_sheet}"
+        )
     except Exception as e:
-        return f"❌ Error al guardar en Drive: {e}"
+        return f"❌ Error al guardar en Google Sheets: {e}"
 
 
 def detectar_padre(nombre_actual, marca_actual, request: gr.Request):
@@ -1265,7 +1642,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
 
             gr.Markdown("---")
             btn_guardar = gr.Button(
-                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Drive)", variant="primary", size="lg"
+                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)", variant="primary", size="lg"
             )
 
         # ==================================
@@ -1348,7 +1725,7 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara) as demo:
                              inputs=None, outputs=[hist_3, estado])
 
     btn_guardar.click(
-        guardar_excel_final,
+        guardar_producto_sheet,
         inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje, in_precio,
                 in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga],
         outputs=[estado]
