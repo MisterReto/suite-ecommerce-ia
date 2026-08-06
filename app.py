@@ -219,12 +219,18 @@ def _nueva_session_id():
     return secrets.token_urlsafe(32)
 
 
-def _guardar_sesion(session_id, **kwargs):
-    if not session_id:
+def _guardar_sesion(clave_sesion, **kwargs):
+    """Crea o actualiza una sesión y conserva su ID dentro del registro.
+
+    El parámetro se llama ``clave_sesion`` para que ``session_id`` pueda formar
+    parte de los datos guardados sin colisionar con el argumento posicional.
+    """
+    if not clave_sesion:
         return
-    if session_id not in SESSIONS:
-        SESSIONS[session_id] = {}
-    SESSIONS[session_id].update(kwargs)
+    if clave_sesion not in SESSIONS:
+        SESSIONS[clave_sesion] = {}
+    SESSIONS[clave_sesion].update(kwargs)
+    SESSIONS[clave_sesion]["session_id"] = clave_sesion
 
 
 def _obtener_sesion(request: gr.Request):
@@ -312,7 +318,6 @@ def auth_callback(request: FastAPIRequest):
         session_id = _nueva_session_id()
         _guardar_sesion(
             session_id,
-            session_id=session_id,
             creds=json.loads(creds.to_json()),
             email=email,
             gemini_key=None,
