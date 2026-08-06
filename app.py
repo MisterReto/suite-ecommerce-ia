@@ -2003,10 +2003,10 @@ def limpiar_feedback():
 # ==========================================
 TUTORIAL_JS = r"""
 (() => {
-    if (window.__suiteEcommerceTutorialInicializado) return;
-    window.__suiteEcommerceTutorialInicializado = true;
+    const inicializarTutorial = () => {
+        if (window.__suiteEcommerceTutorialInicializado) return;
+        window.__suiteEcommerceTutorialInicializado = true;
 
-    const STORAGE_KEY = "suite_ecommerce_tutorial_v1_completado";
     const pasos = [
         {
             titulo: "Bienvenido a Suite Ecommerce",
@@ -2080,7 +2080,7 @@ TUTORIAL_JS = r"""
         },
         {
             titulo: "¡Recorrido terminado!",
-            texto: "Ya conoces el flujo principal. El tutorial no volverá a abrirse automáticamente en este navegador, pero siempre podrás iniciarlo de nuevo con el botón “Ver tutorial”."
+            texto: "Ya conoces el flujo principal. El tutorial solamente se inicia cuando presionas el botón “VER TUTORIAL GUIADO”, así que puedes repetirlo todas las veces que quieras."
         }
     ];
 
@@ -2135,14 +2135,6 @@ TUTORIAL_JS = r"""
     const esperar = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
     const limitar = (valor, minimo, maximo) => Math.min(Math.max(valor, minimo), maximo);
     const normalizar = (valor) => (valor || "").replace(/\s+/g, " ").trim().toLowerCase();
-
-    const guardarCompletado = () => {
-        try { window.localStorage.setItem(STORAGE_KEY, "1"); } catch (_) {}
-    };
-
-    const yaFueCompletado = () => {
-        try { return window.localStorage.getItem(STORAGE_KEY) === "1"; } catch (_) { return false; }
-    };
 
     const activarTab = (nombre) => {
         if (!nombre) return;
@@ -2243,14 +2235,13 @@ TUTORIAL_JS = r"""
         temporizadorPosicion = window.setTimeout(actualizarPosicion, 30);
     };
 
-    const cerrar = (recordar = true) => {
+    const cerrar = () => {
         activo = false;
         document.documentElement.classList.remove("suite-tour-active");
         tarjeta.classList.remove("visible");
         ocultarSombras();
         if (objetivoActual) objetivoActual.classList.remove("suite-tour-target");
         objetivoActual = null;
-        if (recordar) guardarCompletado();
     };
 
     const mostrarPaso = async (nuevoIndice) => {
@@ -2293,31 +2284,48 @@ TUTORIAL_JS = r"""
 
     window.startSuiteEcommerceTutorial = iniciar;
 
+    // El listener nativo evita depender del sistema de eventos de Gradio.
+    // Al estar delegado sobre document también funciona aunque Gradio termine
+    // de montar el botón después de cargar el HTML principal.
+    document.addEventListener("click", (evento) => {
+        const elemento = evento.target instanceof Element ? evento.target : null;
+        if (!elemento || !elemento.closest("#tour-launcher")) return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        iniciar();
+    });
+
     btnAnterior.addEventListener("click", () => mostrarPaso(indiceActual - 1));
     btnSiguiente.addEventListener("click", () => {
-        if (indiceActual >= pasos.length - 1) cerrar(true);
+        if (indiceActual >= pasos.length - 1) cerrar();
         else mostrarPaso(indiceActual + 1);
     });
-    btnSaltar.addEventListener("click", () => cerrar(true));
-    btnCerrar.addEventListener("click", () => cerrar(true));
+    btnSaltar.addEventListener("click", cerrar);
+    btnCerrar.addEventListener("click", cerrar);
 
     window.addEventListener("resize", programarPosicion, { passive: true });
     window.addEventListener("scroll", programarPosicion, { passive: true, capture: true });
     document.addEventListener("keydown", (evento) => {
         if (!activo) return;
-        if (evento.key === "Escape") cerrar(true);
+        if (evento.key === "Escape") cerrar();
         if (evento.key === "ArrowRight") {
-            if (indiceActual >= pasos.length - 1) cerrar(true);
+            if (indiceActual >= pasos.length - 1) cerrar();
             else mostrarPaso(indiceActual + 1);
         }
         if (evento.key === "ArrowLeft") mostrarPaso(indiceActual - 1);
     });
 
-    window.setTimeout(() => {
-        if (!yaFueCompletado()) iniciar();
-    }, 1200);
+    };
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", inicializarTutorial, { once: true });
+    } else {
+        inicializarTutorial();
+    }
 })();
 """
+
+TUTORIAL_HEAD = "<script>\n" + TUTORIAL_JS + "\n</script>"
 
 
 css_camara = """
@@ -2327,14 +2335,17 @@ video { transform: none !important; }
     position: fixed !important;
     right: 20px;
     bottom: 20px;
-    width: auto !important;
-    min-width: 0 !important;
+    width: 260px !important;
+    min-width: 260px !important;
     z-index: 9000;
 }
 #tour-launcher button {
     border-radius: 999px !important;
     box-shadow: 0 10px 30px rgba(67, 56, 202, 0.28) !important;
-    padding: 10px 16px !important;
+    min-height: 58px !important;
+    padding: 14px 24px !important;
+    font-size: 17px !important;
+    font-weight: 800 !important;
 }
 .suite-tour-shade {
     display: none;
@@ -2457,6 +2468,8 @@ video { transform: none !important; }
     #tour-launcher {
         right: 12px;
         bottom: 12px;
+        width: min(260px, calc(100vw - 24px)) !important;
+        min-width: min(260px, calc(100vw - 24px)) !important;
     }
     #suite-tour-card {
         left: 12px !important;
@@ -2485,7 +2498,7 @@ video { transform: none !important; }
 }
 """
 
-with gr.Blocks(theme=gr.themes.Soft(), css=css_camara, js=TUTORIAL_JS) as demo:
+with gr.Blocks(theme=gr.themes.Soft(), css=css_camara, head=TUTORIAL_HEAD) as demo:
     memoria_ruta_base = gr.State(None)
     # Historial de correcciones por cada slot de imagen
     hist_1 = gr.State([])
@@ -2493,7 +2506,12 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara, js=TUTORIAL_JS) as demo:
     hist_3 = gr.State([])
 
     gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")
-    btn_tutorial = gr.Button("🧭 Ver tutorial", size="sm", elem_id="tour-launcher")
+    btn_tutorial = gr.Button(
+        "🧭 VER TUTORIAL GUIADO",
+        variant="primary",
+        size="lg",
+        elem_id="tour-launcher",
+    )
     estado_login = gr.HTML(elem_id="tour-login-status")
 
     with gr.Tabs():
@@ -2686,14 +2704,6 @@ with gr.Blocks(theme=gr.themes.Soft(), css=css_camara, js=TUTORIAL_JS) as demo:
     # 7. CONEXIONES
     # ==========================================
     demo.load(cargar_estado_inicial, inputs=None, outputs=[estado_login, in_cat, in_subcat])
-
-    btn_tutorial.click(
-        fn=None,
-        inputs=None,
-        outputs=None,
-        js="() => { if (window.startSuiteEcommerceTutorial) window.startSuiteEcommerceTutorial(); }",
-        queue=False,
-    )
 
     btn_guardar_key.click(guardar_api_key, inputs=[in_api_key], outputs=[estado_config, estado_login])
     btn_refrescar_cats.click(refrescar_categorias, inputs=None, outputs=[in_cat, in_subcat])
