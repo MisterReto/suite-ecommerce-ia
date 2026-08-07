@@ -2011,7 +2011,7 @@ TUTORIAL_HEAD = """
 <script defer src="/static/tutorial.js?v=2"></script>
 """
 
-with gr.Blocks(theme=gr.themes.Soft(), head=TUTORIAL_HEAD) as demo:
+with gr.Blocks() as demo:
     memoria_ruta_base = gr.State(None)
     # Historial de correcciones por cada slot de imagen
     hist_1 = gr.State([])
@@ -2291,7 +2291,13 @@ with gr.Blocks(theme=gr.themes.Soft(), head=TUTORIAL_HEAD) as demo:
 # ==========================================
 # 8. MONTAJE FINAL (FastAPI + Gradio)
 # ==========================================
-gr.mount_gradio_app(fastapi_app, demo, path="/")
+fastapi_app = gr.mount_gradio_app(
+    fastapi_app,
+    demo,
+    path="/",
+    theme=gr.themes.Soft(),
+    head=TUTORIAL_HEAD,
+)
 
 if __name__ == "__main__":
     import uvicorn
