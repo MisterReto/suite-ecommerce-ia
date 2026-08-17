@@ -91,7 +91,53 @@ class WooCommerceClient:
             raise WooCommerceError(f"No se pudo conectar con WooCommerce: {exc.reason}") from exc
 
     def list_products(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
-        return self.request("GET", "products", params={"page": page, "per_page": per_page})
+        return self.request("GET", "products", params={"page": page, "per_page": per_page}) or []
+
+    def list_variations(self, product_id: int, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        return self.request(
+            "GET", f"products/{int(product_id)}/variations",
+            params={"page": page, "per_page": per_page},
+        ) or []
+
+    def _paginate(self, getter, *, per_page: int = 100, max_pages: int = 100):
+        rows = []
+        for page in range(1, max_pages + 1):
+            batch = getter(page=page, per_page=per_page)
+            rows.extend(batch)
+            if len(batch) < per_page:
+                break
+        return rows
+
+    def list_all_products(self) -> list[dict[str, Any]]:
+        return self._paginate(self.list_products)
+
+    def list_all_variations(self, product_id: int) -> list[dict[str, Any]]:
+        return self._paginate(lambda **kw: self.list_variations(product_id, **kw))
+
+    def catalog_by_sku(self, *, include_variations: bool = True):
+        """Devuelve (índice SKU->producto, duplicados SKU->[productos])."""
+        index: dict[str, dict[str, Any]] = {}
+        duplicates: dict[str, list[dict[str, Any]]] = {}
+
+        def add(row: dict[str, Any], entity_type: str, parent_id: int | None = None):
+            sku = str(row.get("sku", "") or "").strip()
+            if not sku:
+                return
+            item = dict(row)
+            item["_entity_type"] = entity_type
+            item["_parent_product_id"] = parent_id
+            if sku in index:
+                duplicates.setdefault(sku, [index[sku]]).append(item)
+            else:
+                index[sku] = item
+
+        productos = self.list_all_products()
+        for product in productos:
+            add(product, "product")
+            if include_variations and product.get("type") == "variable":
+                for variation in self.list_all_variations(product["id"]):
+                    add(variation, "variation", parent_id=product["id"])
+        return index, duplicates
 
     def find_product_by_sku(self, sku: str) -> dict[str, Any] | None:
         rows = self.request("GET", "products", params={"sku": sku, "per_page": 100})
