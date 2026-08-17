@@ -1,15 +1,17 @@
-"""Capa de integración segura para WooCommerce.
+"""Integración segura de WooCommerce sobre la app FastAPI/Gradio existente.
 
-Envuelve la app existente sin alterar su UI/flujo de Google OAuth y agrega rutas
-de diagnóstico de solo lectura. La app Gradio sigue montada en "/".
+Importante: NO envolvemos la Suite en una segunda FastAPI. Reutilizamos exactamente
+legacy_app.fastapi_app para conservar el lifespan/cola de Gradio y añadimos las
+rutas de diagnóstico antes del mount raíz de Gradio.
 """
 from __future__ import annotations
 
 import html
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.routing import Mount
 
 import app as legacy_app
 from inventory_schema import MASTER_SHEET, normalize_product_row
@@ -133,7 +135,9 @@ def _build_preview(rows, *, limit: int | None = None):
     }
 
 
-fastapi_app = FastAPI(title="Suite Ecommerce IA + WooCommerce")
+# Reutilizamos la MISMA aplicación que ya contiene OAuth + Gradio.
+# Así Uvicorn ejecuta su lifespan original y la cola de Gradio sí arranca.
+fastapi_app = legacy_app.fastapi_app
 
 
 @fastapi_app.get("/wc-health")
@@ -217,5 +221,15 @@ def inventory_sync_dashboard(request: Request):
     return HTMLResponse(body)
 
 
-# La app existente queda debajo de las rutas de diagnóstico.
-fastapi_app.mount("/", legacy_app.fastapi_app)
+# gr.mount_gradio_app() ya agregó un Mount("/") antes de que server.py añadiera
+# las rutas anteriores. Si ese mount queda antes, captura /wc-* y /inventory-sync.
+# Lo movemos al final SIN crear una segunda aplicación ni alterar su lifespan.
+_root_gradio_mounts = [
+    route
+    for route in fastapi_app.router.routes
+    if isinstance(route, Mount) and getattr(route, "path", None) == "/"
+]
+if _root_gradio_mounts:
+    fastapi_app.router.routes[:] = [
+        route for route in fastapi_app.router.routes if route not in _root_gradio_mounts
+    ] + _root_gradio_mounts
