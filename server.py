@@ -6,6 +6,7 @@ lifespan y la cola de Gradio, y añade rutas WooCommerce en modo diagnóstico.
 from __future__ import annotations
 
 import html
+from collections import Counter
 from typing import Any
 
 from fastapi import Request
@@ -93,6 +94,27 @@ def _connection_test() -> dict[str, Any]:
     }
 
 
+def _stock_source_profile(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [int(row.get("Existencias", 0) or 0) for row in rows]
+    counts = Counter(values)
+    unique_values = sorted(counts)
+    all_same = bool(values) and len(unique_values) == 1
+    suspicious_placeholder = bool(values) and all_same and unique_values[0] in {0, 1}
+    return {
+        "row_count": len(values),
+        "unique_values": unique_values,
+        "distribution": dict(sorted(counts.items())),
+        "all_same": all_same,
+        "suspicious_placeholder": suspicious_placeholder,
+        "safe_for_automatic_stock_write": not suspicious_placeholder,
+        "warning": (
+            f"Las {len(values)} filas tienen Existencias={unique_values[0]}. "
+            "Ese patrón parece un valor de carga inicial, no un conteo físico; la escritura automática de stock queda bloqueada."
+            if suspicious_placeholder else ""
+        ),
+    }
+
+
 def _build_preview(rows, *, limit: int | None = None):
     client = WooCommerceClient()
     wc_index, duplicate_skus = client.catalog_by_sku(include_variations=True)
@@ -122,6 +144,7 @@ def _build_preview(rows, *, limit: int | None = None):
 
     return {
         "summary": counts,
+        "source_stock": _stock_source_profile(rows),
         "woocommerce": _wc_config_status(),
         "duplicate_skus": sorted(duplicate_skus.keys()),
         "rows": previews,
@@ -204,6 +227,7 @@ def inventory_sync_dashboard(request: Request):
         _, rows = _read_master_inventory(session)
         payload = _build_preview(rows, limit=0)
         summary = payload["summary"]
+        source_stock = payload["source_stock"]
         by_status: dict[str, list[dict[str, Any]]] = {}
         for row in payload["rows"]:
             by_status.setdefault(row["status"], []).append(row)
@@ -219,6 +243,17 @@ def inventory_sync_dashboard(request: Request):
         </div>
         """
         duplicate_html = ", ".join(f"<code>{html.escape(s)}</code>" for s in payload["duplicate_skus"]) or "Ninguno"
+        source_warning = ""
+        if source_stock["suspicious_placeholder"]:
+            source_warning = f"""
+            <div class='warning'>
+              <b>🛑 Sincronización de stock bloqueada por seguridad</b><br>
+              {html.escape(source_stock['warning'])}<br>
+              Distribución actual: <code>{html.escape(str(source_stock['distribution']))}</code><br><br>
+              Primero hay que registrar existencias físicas reales o construir el módulo de movimientos de inventario.
+            </div>
+            """
+
         body = f"""
         <!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
         <title>Inventario ↔ WooCommerce</title>
@@ -227,13 +262,15 @@ def inventory_sync_dashboard(request: Request):
         .card,.metric{{background:white;border-radius:12px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
         .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:16px 0}}
         .metric b{{font-size:30px;display:block}} .metric span{{font-size:13px;color:#6b7280}}
-        .card{{margin:16px 0}} table{{border-collapse:collapse;width:100%;font-size:13px}} th,td{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;white-space:nowrap}} th{{position:sticky;top:0;background:#f3f4f6}}
+        .card{{margin:16px 0}} .warning{{margin:16px 0;padding:18px;border-radius:12px;background:#fff4e5;border:1px solid #f59e0b;color:#78350f}}
+        table{{border-collapse:collapse;width:100%;font-size:13px}} th,td{{border-bottom:1px solid #e5e7eb;padding:8px;text-align:left;white-space:nowrap}} th{{position:sticky;top:0;background:#f3f4f6}}
         code{{background:#f3f4f6;padding:2px 5px;border-radius:4px}} a.btn{{display:inline-block;padding:10px 14px;background:#111827;color:#fff;border-radius:8px;text-decoration:none;margin-right:8px}}
         details{{margin:14px 0}} summary{{cursor:pointer;font-weight:bold;font-size:18px}}
         </style></head><body>
         <h1>📦 Inventario ↔ WooCommerce</h1>
         <div class='card'><b>🟢 Modo seguro: {html.escape(cfg['mode'])}</b><br>Tienda: <code>{html.escape(cfg['url'])}</code><br><br>
         <a class='btn' href='/'>← Suite</a><a class='btn' href='/wc-health' target='_blank'>Probar API</a><a class='btn' href='/wc-preview?limit=0' target='_blank'>JSON completo</a></div>
+        {source_warning}
         {cards}
         <div class='card'><b>SKU duplicados en WooCommerce:</b> {duplicate_html}</div>
         <div class='card'>
