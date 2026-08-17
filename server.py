@@ -1,15 +1,16 @@
-"""Capa de integración segura para WooCommerce.
+"""Integración segura de WooCommerce sobre la app FastAPI/Gradio existente.
 
-Envuelve la app existente sin alterar su UI/flujo de Google OAuth y agrega rutas
-de diagnóstico de solo lectura. La app Gradio sigue montada en "/".
+No crea una segunda FastAPI: reutiliza la aplicación original para conservar el
+lifespan y la cola de Gradio, y añade rutas WooCommerce en modo diagnóstico.
 """
 from __future__ import annotations
 
 import html
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.routing import Mount
 
 import app as legacy_app
 from inventory_schema import MASTER_SHEET, normalize_product_row
@@ -25,7 +26,6 @@ def _current_session(request: Request):
 
 
 def _read_master_inventory(session) -> tuple[str, list[dict[str, Any]]]:
-    """Lee Lista completa sin crear/renombrar pestañas ni modificar el Sheet."""
     drive = legacy_app._get_drive_service(session)
     manual_folder = session.get("carpeta_raiz_id_manual")
     if manual_folder:
@@ -133,12 +133,12 @@ def _build_preview(rows, *, limit: int | None = None):
     }
 
 
-fastapi_app = FastAPI(title="Suite Ecommerce IA + WooCommerce")
+# Misma app que ya contiene OAuth + Gradio.
+fastapi_app = legacy_app.fastapi_app
 
 
 @fastapi_app.get("/wc-health")
 def wc_health():
-    """Comprueba credenciales/API. No modifica WooCommerce."""
     try:
         return _connection_test()
     except Exception as exc:
@@ -150,7 +150,6 @@ def wc_health():
 
 @fastapi_app.get("/wc-preview")
 def wc_preview(request: Request, limit: int = 50):
-    """Compara inventario con WooCommerce por SKU, incluyendo variaciones."""
     session = _current_session(request)
     if not session:
         return JSONResponse(
@@ -168,15 +167,10 @@ def wc_preview(request: Request, limit: int = 50):
 
 @fastapi_app.get("/inventory-sync", response_class=HTMLResponse)
 def inventory_sync_dashboard(request: Request):
-    """Panel humano de diagnóstico; todo permanece en solo lectura."""
     cfg = _wc_config_status()
     session = _current_session(request)
     login_state = "✅ Google Drive conectado" if session else "⚠️ Inicia sesión con Google Drive primero"
-    write_state = (
-        "🔴 Escrituras habilitadas"
-        if cfg["write_enabled"]
-        else "🟢 Modo seguro: SOLO LECTURA"
-    )
+    write_state = "🔴 Escrituras habilitadas" if cfg["write_enabled"] else "🟢 Modo seguro: SOLO LECTURA"
     body = f"""
     <!doctype html>
     <html lang="es">
@@ -207,8 +201,6 @@ def inventory_sync_dashboard(request: Request):
         <a class="btn" href="/wc-preview?limit=0" target="_blank">Comparar TODO</a>
       </div>
       <div class="card">
-        <h2>Siguiente fase</h2>
-        <p>Después de validar los resultados, esta misma lógica se integrará como pestaña de Gradio y se habilitará sincronización controlada de stock.</p>
         <a class="btn" href="/">← Volver a Suite Ecommerce</a>
       </div>
     </body>
@@ -217,5 +209,15 @@ def inventory_sync_dashboard(request: Request):
     return HTMLResponse(body)
 
 
-# La app existente queda debajo de las rutas de diagnóstico.
-fastapi_app.mount("/", legacy_app.fastapi_app)
+# gr.mount_gradio_app() registra el mount raíz antes de que server.py cargue.
+# Starlette puede representar el path raíz como "" o "/". Lo mandamos al final
+# para que /wc-health, /wc-preview e /inventory-sync se resuelvan primero.
+_root_gradio_mounts = [
+    route
+    for route in fastapi_app.router.routes
+    if isinstance(route, Mount) and getattr(route, "path", None) in {"", "/"}
+]
+if _root_gradio_mounts:
+    fastapi_app.router.routes[:] = [
+        route for route in fastapi_app.router.routes if route not in _root_gradio_mounts
+    ] + _root_gradio_mounts
