@@ -9,6 +9,7 @@ COPY app.py .
 COPY server.py .
 COPY inventory_schema.py .
 COPY inventory_operations.py .
+COPY inventory_bulk.py .
 COPY inventory_web.py .
 COPY woocommerce_client.py .
 COPY woocommerce_inventory.py .
