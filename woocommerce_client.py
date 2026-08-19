@@ -99,6 +99,15 @@ class WooCommerceClient:
             params={"page": page, "per_page": per_page},
         ) or []
 
+    def list_setting_groups(self) -> list[dict[str, Any]]:
+        return self.request("GET", "settings") or []
+
+    def list_settings(self, group_id: str) -> list[dict[str, Any]]:
+        return self.request("GET", f"settings/{group_id}") or []
+
+    def get_setting(self, group_id: str, setting_id: str) -> dict[str, Any]:
+        return self.request("GET", f"settings/{group_id}/{setting_id}") or {}
+
     def _paginate(self, getter, *, per_page: int = 100, max_pages: int = 100):
         rows = []
         for page in range(1, max_pages + 1):
@@ -151,4 +160,14 @@ class WooCommerceClient:
             "PUT",
             f"products/{product_id}",
             payload={"manage_stock": True, "stock_quantity": int(stock_quantity)},
+        )
+
+    def update_product(self, product_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("PUT", f"products/{int(product_id)}", payload=payload)
+
+    def update_variation(self, parent_product_id: int, variation_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request(
+            "PUT",
+            f"products/{int(parent_product_id)}/variations/{int(variation_id)}",
+            payload=payload,
         )
