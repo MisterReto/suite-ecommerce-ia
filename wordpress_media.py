@@ -1,4 +1,4 @@
-"""Cliente mínimo de WordPress Media usando Application Passwords."""
+"""Cliente de WordPress Media con keep-alive y payloads pequeños."""
 from __future__ import annotations
 
 import base64
@@ -7,9 +7,11 @@ import mimetypes
 import os
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse, unquote
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse, unquote
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class WordPressMediaError(RuntimeError):
@@ -22,7 +24,21 @@ class WordPressMediaClient:
         self.username = os.getenv("WP_USERNAME", "").strip()
         self.app_password = os.getenv("WP_APP_PASSWORD", "").strip()
         self.write_enabled = os.getenv("WP_MEDIA_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-        self.timeout = max(5, int(os.getenv("WP_TIMEOUT", "30")))
+        self.timeout = max(10, int(os.getenv("WP_TIMEOUT", "60")))
+        self.session = requests.Session()
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=1,
+            status=2,
+            backoff_factor=0.35,
+            status_forcelist=(429, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     @property
     def configured(self) -> bool:
@@ -40,29 +56,37 @@ class WordPressMediaClient:
         if require_write and not self.write_enabled:
             raise WordPressMediaError("Subida de medios deshabilitada. Define WP_MEDIA_WRITE_ENABLED=true después de validar el preview.")
         url = f"{self.base_url}/wp-json/wp/v2/{endpoint.lstrip('/')}"
-        if params:
-            url += "?" + urlencode(params, doseq=True)
         headers = {
             "Authorization": self._auth(),
             "Accept": "application/json",
             "Content-Type": content_type,
             "User-Agent": "RinconDeAsia-SuiteEcommerceIA/1.0",
+            "Connection": "keep-alive",
         }
         if extra_headers:
             headers.update(extra_headers)
-        req = Request(url, data=body, method=method.upper(), headers=headers)
         try:
-            with urlopen(req, timeout=self.timeout) as response:
-                data = response.read().decode("utf-8")
-                return json.loads(data) if data else None
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise WordPressMediaError(f"WordPress HTTP {exc.code}: {detail[:600]}") from exc
-        except URLError as exc:
-            raise WordPressMediaError(f"No se pudo conectar con WordPress: {exc.reason}") from exc
+            response = self.session.request(
+                method.upper(),
+                url,
+                params=params,
+                data=body,
+                headers=headers,
+                timeout=(10, self.timeout),
+            )
+            if response.status_code >= 400:
+                raise WordPressMediaError(
+                    f"WordPress HTTP {response.status_code}: {response.text[:600]}"
+                )
+            return response.json() if response.content else None
+        except requests.RequestException as exc:
+            raise WordPressMediaError(f"No se pudo conectar con WordPress: {exc}") from exc
 
     def health(self) -> dict[str, Any]:
-        rows = self._request("GET", "users/me", params={"context": "edit"})
+        rows = self._request(
+            "GET", "users/me",
+            params={"context": "edit", "_fields": "id,name"},
+        )
         return {
             "ok": True,
             "url": self.base_url,
@@ -82,7 +106,15 @@ class WordPressMediaClient:
 
     def find_media_by_filename(self, filename: str) -> dict[str, Any] | None:
         stem = PurePosixPath(filename).stem
-        rows = self._request("GET", "media", params={"search": stem, "per_page": 100, "context": "edit"}) or []
+        rows = self._request(
+            "GET", "media",
+            params={
+                "search": stem,
+                "per_page": 20,
+                "context": "edit",
+                "_fields": "id,source_url",
+            },
+        ) or []
         target = filename.casefold()
         for row in rows:
             if self._source_filename(row).casefold() == target:
@@ -97,6 +129,7 @@ class WordPressMediaClient:
         uploaded = self._request(
             "POST",
             "media",
+            params={"_fields": "id,source_url"},
             body=data,
             content_type=mime_type,
             extra_headers={"Content-Disposition": f'attachment; filename="{filename}"'},
@@ -109,10 +142,13 @@ class WordPressMediaClient:
         if title:
             metadata["title"] = title
         if metadata:
-            uploaded = self._request(
+            updated = self._request(
                 "POST",
                 f"media/{media_id}",
+                params={"_fields": "id,source_url"},
                 body=json.dumps(metadata).encode("utf-8"),
                 require_write=True,
             )
+            if updated:
+                uploaded = updated
         return uploaded
