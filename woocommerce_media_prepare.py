@@ -1,8 +1,7 @@
 """Prepara medios para un producto sin hacer PUT a WooCommerce.
 
-Usado por Sync Lite para evitar el doble ciclo:
-1) subir/reutilizar medios
-2) un único PUT de producto completo con esos IDs
+Sync Lite carga `Media Sync` una vez al inicio del lote; aquí solo anexamos las
+filas nuevas directamente para evitar revalidar la pestaña en cada SKU.
 """
 from __future__ import annotations
 
@@ -11,10 +10,22 @@ from typing import Any, Callable
 
 from wordpress_media import WordPressMediaClient
 from woocommerce_image_sync import (
+    MEDIA_SYNC_SHEET,
     _download_drive_file,
-    append_media_log,
     resolve_product_images,
 )
+
+
+def _append_logs_fast(sheets_service, spreadsheet_id: str, values: list[list[Any]]) -> None:
+    if not values:
+        return
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{MEDIA_SYNC_SHEET}'!A:I",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values},
+    ).execute()
 
 
 def prepare_product_media(
@@ -103,7 +114,7 @@ def prepare_product_media(
     if not ordered_ids:
         raise ValueError(f"No hay imágenes resolubles en Drive para {sku}.")
 
-    append_media_log(sheets_service, spreadsheet_id, logs)
+    _append_logs_fast(sheets_service, spreadsheet_id, logs)
     optional_ignored = sum(
         1 for r in refs if r.get("optional_legacy") and not r.get("drive_file")
     )
