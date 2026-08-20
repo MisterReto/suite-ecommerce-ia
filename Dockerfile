@@ -21,8 +21,16 @@ COPY media_web.py .
 COPY static ./static
 
 ENV PORT=7860
-ENV GRADIO_DEFAULT_CONCURRENCY_LIMIT=2
+# Render tiene RAM limitada: una sola ejecución pesada de Gradio a la vez.
+ENV GRADIO_DEFAULT_CONCURRENCY_LIMIT=1
+# Evita arenas extra de glibc por thread y limita librerías numéricas internas.
+ENV MALLOC_ARENA_MAX=2
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
-# media_web.py carga Suite + inventario + diagnósticos + preview/sync de imágenes.
-CMD ["uvicorn", "media_web:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers"]
+# Un solo worker de Uvicorn; la concurrencia I/O interna ya está controlada en código.
+CMD ["uvicorn", "media_web:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
