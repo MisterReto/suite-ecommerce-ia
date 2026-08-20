@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - zip-imagenes-faltantes-20260820
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
