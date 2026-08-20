@@ -1,22 +1,17 @@
-"""Cliente seguro para WooCommerce, optimizado para Render con poca RAM.
-
-El catálogo por SKU usa respuestas REST ultraligeras y concurrencia separada para
-metadatos. Las imágenes/productos completos siguen procesándose de forma
-conservadora para evitar picos de memoria.
-"""
+"""Cliente seguro para WooCommerce con keep-alive y payloads mínimos."""
 from __future__ import annotations
 
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
 import os
 from dataclasses import dataclass
 from threading import Lock
 import time
 from typing import Any, Iterator
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class WooCommerceError(RuntimeError):
@@ -36,26 +31,26 @@ class WooCommerceConfig:
     consumer_key: str = ""
     consumer_secret: str = ""
     write_enabled: bool = False
-    timeout: int = 20
+    timeout: int = 45
     max_workers: int = 3
-    metadata_workers: int = 8
+    metadata_workers: int = 4
     cache_ttl: int = 120
 
     @classmethod
     def from_env(cls) -> "WooCommerceConfig":
         base_url = os.getenv("WC_URL", "https://rincon.creandotusite.com").rstrip("/")
         requested_workers = int(os.getenv("WC_MAX_WORKERS", "3"))
-        requested_metadata = int(os.getenv("WC_METADATA_WORKERS", "8"))
+        requested_metadata = int(os.getenv("WC_METADATA_WORKERS", "4"))
         requested_ttl = int(os.getenv("WC_CACHE_TTL", "120"))
         return cls(
             base_url=base_url,
             consumer_key=os.getenv("WC_CONSUMER_KEY", "").strip(),
             consumer_secret=os.getenv("WC_CONSUMER_SECRET", "").strip(),
             write_enabled=os.getenv("WC_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
-            timeout=max(5, int(os.getenv("WC_TIMEOUT", "20"))),
+            timeout=max(10, int(os.getenv("WC_TIMEOUT", "45"))),
             max_workers=max(1, min(3, requested_workers)),
-            metadata_workers=max(2, min(10, requested_metadata)),
-            cache_ttl=max(0, min(300, requested_ttl)),
+            metadata_workers=max(1, min(6, requested_metadata)),
+            cache_ttl=max(0, min(1800, requested_ttl)),
         )
 
     @property
@@ -66,6 +61,20 @@ class WooCommerceConfig:
 class WooCommerceClient:
     def __init__(self, config: WooCommerceConfig | None = None):
         self.config = config or WooCommerceConfig.from_env()
+        self.session = requests.Session()
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=1,
+            status=2,
+            backoff_factor=0.35,
+            status_forcelist=(429, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "PUT"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=8, pool_maxsize=8)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def _auth_header(self) -> str:
         if not self.config.configured:
@@ -90,33 +99,32 @@ class WooCommerceClient:
             )
 
         url = f"{self.config.base_url}/wp-json/wc/v3/{endpoint.lstrip('/')}"
-        if params:
-            url += "?" + urlencode(params, doseq=True)
-        body = None if payload is None else json.dumps(payload).encode("utf-8")
-        req = Request(
-            url,
-            data=body,
-            method=method,
-            headers={
-                "Authorization": self._auth_header(),
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "RinconDeAsia-SuiteEcommerceIA/1.0",
-            },
-        )
+        headers = {
+            "Authorization": self._auth_header(),
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "RinconDeAsia-SuiteEcommerceIA/1.0",
+            "Connection": "keep-alive",
+        }
         try:
-            with urlopen(req, timeout=self.config.timeout) as response:
-                raw = response.read()
-            parsed = json.loads(raw.decode("utf-8")) if raw else None
-            del raw
+            response = self.session.request(
+                method,
+                url,
+                params=params,
+                json=payload,
+                headers=headers,
+                timeout=(10, self.config.timeout),
+            )
+            if response.status_code >= 400:
+                raise WooCommerceError(
+                    f"WooCommerce HTTP {response.status_code}: {response.text[:500]}"
+                )
+            parsed = response.json() if response.content else None
             if method != "GET":
                 self._invalidate_catalog_cache()
             return parsed
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise WooCommerceError(f"WooCommerce HTTP {exc.code}: {detail[:500]}") from exc
-        except URLError as exc:
-            raise WooCommerceError(f"No se pudo conectar con WooCommerce: {exc.reason}") from exc
+        except requests.RequestException as exc:
+            raise WooCommerceError(f"No se pudo conectar con WooCommerce: {exc}") from exc
 
     def list_products(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", "products", params={"page": page, "per_page": per_page}) or []
@@ -167,7 +175,6 @@ class WooCommerceClient:
             for row in batch:
                 yield row
             last = len(batch) < per_page
-            del batch
             if last:
                 break
 
@@ -198,7 +205,6 @@ class WooCommerceClient:
         }
 
     def catalog_by_sku(self, *, include_variations: bool = True, force_refresh: bool = False):
-        """Índice SKU->entidad usando payload mínimo y concurrencia alta solo para metadata."""
         cache_key = (self.config.base_url, include_variations)
         if not force_refresh and self.config.cache_ttl > 0:
             with _CACHE_LOCK:
@@ -242,10 +248,8 @@ class WooCommerceClient:
                             raise WooCommerceError(f"No pude leer variaciones del producto {parent_id}: {exc}") from exc
                         for variation in variations:
                             add(variation, "variation", parent_id=parent_id)
-                        variations.clear()
                     futures.clear()
 
-        variable_ids.clear()
         if self.config.cache_ttl > 0:
             with _CACHE_LOCK:
                 _CATALOG_CACHE[cache_key] = (time.time(), index, duplicates)
