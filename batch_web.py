@@ -77,14 +77,12 @@ def _run_batch(session, batch_id: str) -> None:
         if not wp.write_enabled:
             raise RuntimeError("WP_MEDIA_WRITE_ENABLED=false en Render.")
 
-        # Los índices caros se construyen UNA vez para todo el lote.
         drive_index = media_web._drive_index(session)
         media_cache = read_media_cache(sheets, spreadsheet_id)
         wc_index, duplicates = wc.catalog_by_sku(include_variations=True)
 
         items = read_batch(sheets, spreadsheet_id, batch_id)
         for item in items:
-            # Resume: solo omite lo ya verificado exitosamente.
             if str(item.get("status") or "") == "success":
                 continue
 
@@ -136,7 +134,6 @@ def _run_batch(session, batch_id: str) -> None:
                     started_at=started, finished_at=_now(), permalink=permalink,
                 )
             except Exception as exc:
-                # El error de un SKU NO detiene el lote.
                 update_batch_item(
                     sheets, spreadsheet_id, sheet_row=sheet_row,
                     status="error", message=str(exc),
@@ -144,17 +141,14 @@ def _run_batch(session, batch_id: str) -> None:
                 )
             finally:
                 gc.collect()
-                # Cede tiempo al proceso web y evita ráfagas contra WordPress.
                 time.sleep(0.15)
 
-        # Libera explícitamente índices antes de soltar el worker.
         inventory_by_sku.clear()
         media_cache.clear()
         wc_index.clear()
         duplicates.clear()
         gc.collect()
     except Exception as exc:
-        # Si falla la preparación global, deja el mensaje en las filas aún pendientes.
         try:
             spreadsheet_id, _, sheets = media_web._direct_inventory_context(session)
             for item in read_batch(sheets, spreadsheet_id, batch_id):
@@ -246,12 +240,13 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 let currentBatch=localStorage.getItem('wc_current_batch')||''; let pollTimer=null;
 if(currentBatch){{document.getElementById('batch-id').textContent=currentBatch; startPolling();}}
 async function createBatch(mode){{
- const body={{mode:mode,skip_successful:document.getElementById('skip').checked,custom:document.getElementById('custom').value}};
- try{{const r=await fetch('/batch-create',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');currentBatch=d.batch_id;localStorage.setItem('wc_current_batch',currentBatch);document.getElementById('batch-id').textContent=currentBatch;startPolling();}}catch(e){{alert(e.message);}}
+ const reqBody={{mode:mode,skip_successful:document.getElementById('skip').checked,custom:document.getElementById('custom').value}};
+ try{{const r=await fetch('/batch-create',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(reqBody)}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');currentBatch=d.batch_id;localStorage.setItem('wc_current_batch',currentBatch);document.getElementById('batch-id').textContent=currentBatch;startPolling();}}catch(e){{alert(e.message);}}
 }}
 async function resumeBatch(){{if(!currentBatch){{alert('No hay lote seleccionado');return;}}try{{const r=await fetch('/batch-resume',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{batch_id:currentBatch}})}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');startPolling();}}catch(e){{alert(e.message);}}}}
 function esc(s){{return String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));}}
-async function refreshStatus(){{if(!currentBatch)return;try{{const r=await fetch('/batch-status?batch_id='+encodeURIComponent(currentBatch));const d=await r.json();if(!r.ok)return;const s=d.summary;document.getElementById('total').textContent=s.total;document.getElementById('success').textContent=s.success;document.getElementById('errors').textContent=s.error;document.getElementById('pending').textContent=s.pending+s.running;document.getElementById('progress').value=s.total?((s.success+s.error)/s.total*100):0;document.getElementById('worker').textContent=d.worker_active?'🟢 Worker activo':'⚪ Worker detenido / lote terminado';document.getElementById('rows').innerHTML=d.rows.map(x=>`<tr><td>${x.position}</td><td><code>${esc(x.sku)}</code></td><td class='${esc(x.status)}'>${x.status==='success'?'✅':x.status==='error'?'❌':x.status==='running'?'🔄':'⏳'} ${esc(x.status)}</td><td>${esc(x.message)}</td><td>${x.permalink?`<a href='${esc(x.permalink)}' target='_blank'>Abrir</a>`:'—'}</td></tr>`).join('');if(!d.worker_active && s.pending===0 && s.running===0){{clearInterval(pollTimer);pollTimer=null;}}}}catch(e){{}}}}
+function rowHtml(x){{var icon=x.status==='success'?'✅':x.status==='error'?'❌':x.status==='running'?'🔄':'⏳';var link=x.permalink?("<a href='"+esc(x.permalink)+"' target='_blank'>Abrir</a>"):'—';return '<tr><td>'+esc(x.position)+'</td><td><code>'+esc(x.sku)+'</code></td><td class="'+esc(x.status)+'">'+icon+' '+esc(x.status)+'</td><td>'+esc(x.message)+'</td><td>'+link+'</td></tr>';}}
+async function refreshStatus(){{if(!currentBatch)return;try{{const r=await fetch('/batch-status?batch_id='+encodeURIComponent(currentBatch));const d=await r.json();if(!r.ok)return;const s=d.summary;document.getElementById('total').textContent=s.total;document.getElementById('success').textContent=s.success;document.getElementById('errors').textContent=s.error;document.getElementById('pending').textContent=s.pending+s.running;document.getElementById('progress').value=s.total?((s.success+s.error)/s.total*100):0;document.getElementById('worker').textContent=d.worker_active?'🟢 Worker activo':'⚪ Worker detenido / lote terminado';document.getElementById('rows').innerHTML=d.rows.map(rowHtml).join('');if(!d.worker_active && s.pending===0 && s.running===0){{clearInterval(pollTimer);pollTimer=null;}}}}catch(e){{}}}}
 function startPolling(){{if(pollTimer)clearInterval(pollTimer);refreshStatus();pollTimer=setInterval(refreshStatus,3000);}}
 </script></body></html>"""
     return HTMLResponse(body)
