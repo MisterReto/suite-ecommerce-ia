@@ -21,6 +21,7 @@ COPY media_web.py .
 COPY static ./static
 
 ENV PORT=7860
+ENV GRADIO_DEFAULT_CONCURRENCY_LIMIT=2
 EXPOSE 7860
 
 # media_web.py carga Suite + inventario + diagnósticos + preview/sync de imágenes.
