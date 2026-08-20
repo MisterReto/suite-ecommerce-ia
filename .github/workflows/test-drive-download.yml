@@ -23,6 +23,6 @@ jobs:
       - name: Test downloading the shared Drive folder
         run: |
           mkdir -p source
-          gdown --folder 'https://drive.google.com/drive/folders/1V4HgnTCRnwVGwrGD968eNdtvQDGGY7wt?usp=drive_link' -O source --remaining-ok
+          gdown --folder 'https://drive.google.com/drive/folders/1V4HgnTCRnwVGwrGD968eNdtvQDGGY7wt?usp=drive_link' -O source
           echo "Files downloaded: $(find source -type f | wc -l)"
           test "$(find source -type f | wc -l)" -gt 0
