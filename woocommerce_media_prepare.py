@@ -55,12 +55,21 @@ def prepare_product_media(
             f"Faltan archivos obligatorios en Drive para {sku}: {', '.join(required_missing)}"
         )
 
+    sync_refs = [r for r in refs if r.get("drive_file")]
+    uncached_names = [
+        r["resolved_filename"]
+        for r in sync_refs
+        if str(r["drive_file"]["id"]) not in media_cache
+    ]
+    # Una sola búsqueda WordPress para las 3 imágenes del SKU.
+    existing_by_name = wp_client.find_media_by_filenames(uncached_names) if uncached_names else {}
+
     ordered_ids: list[int] = []
     logs: list[list[Any]] = []
     reused = 0
     uploaded_count = 0
 
-    for ref in [r for r in refs if r.get("drive_file")]:
+    for ref in sync_refs:
         drive_file = ref["drive_file"]
         file_id = str(drive_file["id"])
         cached = media_cache.get(file_id)
@@ -71,7 +80,7 @@ def prepare_product_media(
             reused += 1
         else:
             filename = ref["resolved_filename"]
-            existing = wp_client.find_media_by_filename(filename)
+            existing = existing_by_name.get(filename.casefold())
             if existing:
                 media_id = int(existing["id"])
                 media_url = str(existing.get("source_url") or "")
