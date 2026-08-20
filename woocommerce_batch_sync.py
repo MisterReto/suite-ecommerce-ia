@@ -88,6 +88,15 @@ def successful_skus(sheets_service, spreadsheet_id: str) -> set[str]:
     }
 
 
+def processed_skus(sheets_service, spreadsheet_id: str) -> set[str]:
+    """SKU ya incluidos en cualquier lote; errores se reintentan con Reanudar lote."""
+    return {
+        str(row.get("sku") or "").strip()
+        for row in _all_rows(sheets_service, spreadsheet_id)
+        if str(row.get("sku") or "").strip()
+    }
+
+
 def create_batch(sheets_service, spreadsheet_id: str, skus: list[str]) -> str:
     ensure_batch_sheet(sheets_service, spreadsheet_id)
     clean = []
