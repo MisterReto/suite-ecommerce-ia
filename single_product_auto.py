@@ -2,7 +2,7 @@
 
 No procesa lotes. Lee exactamente el SKU recién guardado en `Lista completa` y:
 - prepara/sube sus imágenes si existe el set generado;
-- actualiza el producto si el SKU ya existe en WooCommerce;
+- actualiza el producto/variación si el SKU ya existe en WooCommerce;
 - crea un producto SIMPLE nuevo si el SKU todavía no existe.
 
 Las variaciones nuevas se conservan en Lista completa pero no se inventa una
@@ -71,8 +71,8 @@ def _create_simple(row: dict[str, Any], wc: WooCommerceClient, image_result: dic
 
 
 def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
-    """Sincroniza solo el SKU recién guardado. Se llama desde el callback de IA."""
-    # Imports tardíos: evitan ciclos durante el arranque de FastAPI/Gradio.
+    """Sincroniza exclusivamente el SKU recién guardado por la interfaz IA."""
+    # Imports tardíos para evitar ciclos durante el arranque FastAPI/Gradio.
     import app as runtime_app
     import media_web
     import server as integration_server
@@ -82,6 +82,7 @@ def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
     if len(matches) != 1:
         raise RuntimeError(f"Esperaba una fila para {sku} en Lista completa; encontré {len(matches)}.")
     row = matches[0]
+    tipo = _text(row.get("tipo")).casefold()
 
     wc = WooCommerceClient()
     wp = WordPressMediaClient()
@@ -101,12 +102,21 @@ def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
         wp_client=wp,
     )
 
-    # La búsqueda puntual evita reconstruir todo el catálogo al guardar cada SKU.
+    # Simples se resuelven con una búsqueda puntual muy barata.
     entity = wc.find_product_by_sku(_text(sku))
     if entity:
         entity = dict(entity)
         entity["_entity_type"] = "product"
         entity["_parent_product_id"] = None
+    elif tipo == "variable":
+        # WooCommerce no ofrece una búsqueda global barata de variaciones por SKU;
+        # solo en este caso usamos el índice completo para localizar una variación existente.
+        wc_index, duplicates = wc.catalog_by_sku(include_variations=True)
+        if _text(sku) in duplicates:
+            raise RuntimeError(f"SKU duplicado en WooCommerce: {sku}")
+        entity = wc_index.get(_text(sku))
+
+    if entity:
         result = sync_complete_product(
             row=row,
             wc_client=wc,
@@ -118,11 +128,10 @@ def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
         result["image_sync"] = image_result
         return result
 
-    tipo = _text(row.get("tipo")).casefold()
     if tipo == "variable":
         raise RuntimeError(
-            "El SKU quedó guardado en Lista completa, pero es una variación nueva y todavía no existe en WooCommerce. "
-            "No se creó automáticamente porque primero hay que definir correctamente su producto padre y atributos."
+            "El SKU quedó guardado en Lista completa, pero es una variación NUEVA y su estructura padre todavía no existe en WooCommerce. "
+            "No se creó automáticamente para evitar inventar atributos o un padre incorrecto."
         )
 
     result = _create_simple(row, wc, image_result)
