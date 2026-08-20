@@ -1,12 +1,12 @@
 """Lotes persistentes de sincronización WooCommerce.
 
-El estado vive en Google Sheets, no en RAM. Un reinicio de Render puede detener
-el thread actual, pero el mismo batch se puede reanudar y continuará con todo SKU
-que no tenga status=success.
+El estado vive en Google Sheets. Las operaciones frecuentes usan actualizaciones
+E:I directas para evitar un GET previo por cada cambio de estado.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import Lock
 import uuid
 from typing import Any
 
@@ -15,6 +15,9 @@ BATCH_COLUMNS = (
     "batch_id", "created_at", "position", "sku", "status", "message",
     "started_at", "finished_at", "permalink",
 )
+
+_READY_LOCK = Lock()
+_READY_GIDS: dict[str, int] = {}
 
 
 def _now() -> str:
@@ -33,6 +36,11 @@ def _sheet_map(sheets_service, spreadsheet_id: str) -> dict[str, int]:
 
 
 def ensure_batch_sheet(sheets_service, spreadsheet_id: str) -> int:
+    with _READY_LOCK:
+        cached = _READY_GIDS.get(spreadsheet_id)
+    if cached is not None:
+        return cached
+
     sheets = _sheet_map(sheets_service, spreadsheet_id)
     gid = sheets.get(BATCH_SHEET)
     if gid is None:
@@ -54,7 +62,10 @@ def ensure_batch_sheet(sheets_service, spreadsheet_id: str) -> int:
             valueInputOption="RAW",
             body={"values": [list(BATCH_COLUMNS)]},
         ).execute()
-    return gid
+
+    with _READY_LOCK:
+        _READY_GIDS[spreadsheet_id] = int(gid)
+    return int(gid)
 
 
 def _all_rows(sheets_service, spreadsheet_id: str) -> list[dict[str, Any]]:
@@ -89,7 +100,6 @@ def successful_skus(sheets_service, spreadsheet_id: str) -> set[str]:
 
 
 def processed_skus(sheets_service, spreadsheet_id: str) -> set[str]:
-    """SKU ya incluidos en cualquier lote; errores se reintentan con Reanudar lote."""
     return {
         str(row.get("sku") or "").strip()
         for row in _all_rows(sheets_service, spreadsheet_id)
@@ -133,6 +143,33 @@ def read_batch(sheets_service, spreadsheet_id: str, batch_id: str) -> list[dict[
     return sorted(result, key=lambda r: r["position"])
 
 
+def update_batch_item_fast(
+    sheets_service,
+    spreadsheet_id: str,
+    *,
+    sheet_row: int,
+    status: str,
+    message: str = "",
+    started_at: str = "",
+    finished_at: str = "",
+    permalink: str = "",
+) -> None:
+    """Actualiza solo E:I en una llamada; ideal para el loop de sincronización."""
+    ensure_batch_sheet(sheets_service, spreadsheet_id)
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{BATCH_SHEET}'!E{sheet_row}:I{sheet_row}",
+        valueInputOption="RAW",
+        body={"values": [[
+            str(status or ""),
+            str(message or "")[:1000],
+            str(started_at or ""),
+            str(finished_at or ""),
+            str(permalink or ""),
+        ]]},
+    ).execute()
+
+
 def update_batch_item(
     sheets_service,
     spreadsheet_id: str,
@@ -144,6 +181,7 @@ def update_batch_item(
     finished_at: str | None = None,
     permalink: str = "",
 ) -> None:
+    """Compatibilidad: preserva campos omitidos leyendo la fila antes de escribir."""
     current = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{BATCH_SHEET}'!A{sheet_row}:I{sheet_row}",
