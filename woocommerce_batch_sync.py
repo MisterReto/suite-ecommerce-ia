@@ -57,6 +57,37 @@ def ensure_batch_sheet(sheets_service, spreadsheet_id: str) -> int:
     return gid
 
 
+def _all_rows(sheets_service, spreadsheet_id: str) -> list[dict[str, Any]]:
+    ensure_batch_sheet(sheets_service, spreadsheet_id)
+    values = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{BATCH_SHEET}'!A:I",
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute().get("values", [])
+    if len(values) < 2:
+        return []
+    headers = [str(v) for v in values[0]]
+    result = []
+    for sheet_row, raw in enumerate(values[1:], start=2):
+        padded = list(raw) + [""] * max(0, len(headers) - len(raw))
+        row = dict(zip(headers, padded[:len(headers)]))
+        row["_sheet_row"] = sheet_row
+        try:
+            row["position"] = int(float(row.get("position") or 0))
+        except (TypeError, ValueError):
+            row["position"] = 0
+        result.append(row)
+    return result
+
+
+def successful_skus(sheets_service, spreadsheet_id: str) -> set[str]:
+    return {
+        str(row.get("sku") or "").strip()
+        for row in _all_rows(sheets_service, spreadsheet_id)
+        if str(row.get("status") or "") == "success" and str(row.get("sku") or "").strip()
+    }
+
+
 def create_batch(sheets_service, spreadsheet_id: str, skus: list[str]) -> str:
     ensure_batch_sheet(sheets_service, spreadsheet_id)
     clean = []
@@ -86,27 +117,10 @@ def create_batch(sheets_service, spreadsheet_id: str, skus: list[str]) -> str:
 
 
 def read_batch(sheets_service, spreadsheet_id: str, batch_id: str) -> list[dict[str, Any]]:
-    ensure_batch_sheet(sheets_service, spreadsheet_id)
-    values = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{BATCH_SHEET}'!A:I",
-        valueRenderOption="UNFORMATTED_VALUE",
-    ).execute().get("values", [])
-    if len(values) < 2:
-        return []
-    headers = [str(v) for v in values[0]]
     result = []
-    for sheet_row, raw in enumerate(values[1:], start=2):
-        padded = list(raw) + [""] * max(0, len(headers) - len(raw))
-        row = dict(zip(headers, padded[:len(headers)]))
-        if str(row.get("batch_id") or "") != batch_id:
-            continue
-        row["_sheet_row"] = sheet_row
-        try:
-            row["position"] = int(float(row.get("position") or 0))
-        except (TypeError, ValueError):
-            row["position"] = 0
-        result.append(row)
+    for row in _all_rows(sheets_service, spreadsheet_id):
+        if str(row.get("batch_id") or "") == batch_id:
+            result.append(row)
     return sorted(result, key=lambda r: r["position"])
 
 
@@ -121,7 +135,6 @@ def update_batch_item(
     finished_at: str | None = None,
     permalink: str = "",
 ) -> None:
-    # A:I = batch_id,created_at,position,sku,status,message,started,finished,permalink.
     current = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{BATCH_SHEET}'!A{sheet_row}:I{sheet_row}",
