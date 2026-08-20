@@ -62,6 +62,9 @@ def _parse_custom_skus(value: str) -> list[str]:
 
 def _run_batch(session, batch_id: str) -> None:
     """Worker único: un SKU a la vez, sin paralelizar imágenes ni productos."""
+    first_item = None
+    spreadsheet_id = None
+    sheets = None
     try:
         spreadsheet_id, inventory, sheets = media_web._direct_inventory_context(session)
         inventory_by_sku = {}
@@ -70,6 +73,25 @@ def _run_batch(session, batch_id: str) -> None:
             if sku:
                 inventory_by_sku.setdefault(sku, []).append(row)
 
+        items = read_batch(sheets, spreadsheet_id, batch_id)
+        pending_items = [item for item in items if str(item.get("status") or "") != "success"]
+        if not pending_items:
+            return
+
+        # Marca inmediatamente actividad real antes de cualquier preparación cara.
+        first_item = pending_items[0]
+        first_started = _now()
+        update_batch_item(
+            sheets,
+            spreadsheet_id,
+            sheet_row=int(first_item["_sheet_row"]),
+            status="running",
+            message="Preparando catálogo WooCommerce e índices de Drive...",
+            started_at=first_started,
+            finished_at="",
+            permalink="",
+        )
+
         wc = WooCommerceClient()
         wp = WordPressMediaClient()
         if not wc.config.write_enabled:
@@ -77,21 +99,22 @@ def _run_batch(session, batch_id: str) -> None:
         if not wp.write_enabled:
             raise RuntimeError("WP_MEDIA_WRITE_ENABLED=false en Render.")
 
+        # Índices caros una sola vez por lote. El catálogo WooCommerce usa payload
+        # ultraligero + workers de metadata; imágenes siguen secuenciales.
         drive_index = media_web._drive_index(session)
         media_cache = read_media_cache(sheets, spreadsheet_id)
         wc_index, duplicates = wc.catalog_by_sku(include_variations=True)
 
-        items = read_batch(sheets, spreadsheet_id, batch_id)
         for item in items:
             if str(item.get("status") or "") == "success":
                 continue
 
             sku = str(item.get("sku") or "").strip()
             sheet_row = int(item["_sheet_row"])
-            started = _now()
+            started = str(item.get("started_at") or "") or _now()
             update_batch_item(
                 sheets, spreadsheet_id, sheet_row=sheet_row,
-                status="running", message="Sincronizando...", started_at=started,
+                status="running", message="Sincronizando producto...", started_at=started,
                 finished_at="", permalink="",
             )
 
@@ -106,6 +129,11 @@ def _run_batch(session, batch_id: str) -> None:
                     raise RuntimeError(f"SKU no encontrado en WooCommerce: {sku}")
                 row = matches[0]
 
+                update_batch_item(
+                    sheets, spreadsheet_id, sheet_row=sheet_row,
+                    status="running", message="Imágenes Drive → WordPress...", started_at=started,
+                    finished_at="", permalink="",
+                )
                 image_result = sync_one_product_images(
                     row=row,
                     drive_index=drive_index,
@@ -117,6 +145,12 @@ def _run_batch(session, batch_id: str) -> None:
                     wc_client=wc,
                     wc_entity=entity,
                     max_workers=1,
+                )
+
+                update_batch_item(
+                    sheets, spreadsheet_id, sheet_row=sheet_row,
+                    status="running", message="Contenido, categorías, precio y stock...", started_at=started,
+                    finished_at="", permalink="",
                 )
                 product_result = sync_complete_product(
                     row=row,
@@ -150,7 +184,8 @@ def _run_batch(session, batch_id: str) -> None:
         gc.collect()
     except Exception as exc:
         try:
-            spreadsheet_id, _, sheets = media_web._direct_inventory_context(session)
+            if spreadsheet_id is None or sheets is None:
+                spreadsheet_id, _, sheets = media_web._direct_inventory_context(session)
             for item in read_batch(sheets, spreadsheet_id, batch_id):
                 if str(item.get("status") or "") == "success":
                     continue
@@ -228,7 +263,7 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 </style></head><body><div class='wrap'>
 <h1>🚚 Sincronización WooCommerce por lotes</h1>
 <div class='card'><a class='btn' href='/woocommerce-product-sync'>← 1 SKU</a><a class='btn' href='/inventory-manager'>Inventario</a><a class='btn' href='/woocommerce-image-preview'>Imágenes</a></div>
-<div class='{'ok' if enabled else 'warn'}'><b>{html.escape(gate)}</b><br>Procesa <b>un producto a la vez</b>. El progreso se guarda en <code>WooCommerce Batch Sync</code>, por lo que un reinicio puede reanudarse.</div>
+<div class='{'ok' if enabled else 'warn'}'><b>{html.escape(gate)}</b><br>Procesa <b>un producto a la vez</b>. La preparación de catálogo usa metadata ligera en paralelo; imágenes permanecen secuenciales.</div>
 <div class='card'><h2>Crear lote</h2><p>Los botones “siguientes” avanzan sobre SKU que aún no han sido incluidos en un lote. Los errores se vuelven a intentar con <b>Reanudar lote</b>.</p>
 <label><input type='checkbox' id='skip' checked> Omitir SKU ya incluidos en lotes anteriores</label><br><br>
 <button {disabled} onclick='createBatch("10")'>Sincronizar siguientes 10</button><button {disabled} onclick='createBatch("50")'>Siguientes 50</button><button {disabled} onclick='createBatch("all")'>Todos los pendientes</button>
