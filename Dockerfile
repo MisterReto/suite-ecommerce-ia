@@ -14,6 +14,7 @@ COPY woocommerce_catalog_light.py .
 COPY woocommerce_batch_sync.py .
 COPY wordpress_media.py .
 COPY woocommerce_image_sync.py .
+COPY woocommerce_media_prepare.py .
 COPY woocommerce_product_sync.py .
 
 ENV PORT=7860
@@ -25,5 +26,4 @@ ENV NUMEXPR_NUM_THREADS=1
 ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
-# Servidor dedicado de sincronización para la instancia Free de 512 MB.
 CMD ["uvicorn", "sync_lite_app:app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
