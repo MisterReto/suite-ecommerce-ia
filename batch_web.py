@@ -19,8 +19,8 @@ from wordpress_media import WordPressMediaClient
 from woocommerce_batch_sync import (
     batch_summary,
     create_batch,
+    processed_skus,
     read_batch,
-    successful_skus,
     update_batch_item,
 )
 from woocommerce_client import WooCommerceClient
@@ -229,8 +229,8 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 <h1>🚚 Sincronización WooCommerce por lotes</h1>
 <div class='card'><a class='btn' href='/woocommerce-product-sync'>← 1 SKU</a><a class='btn' href='/inventory-manager'>Inventario</a><a class='btn' href='/woocommerce-image-preview'>Imágenes</a></div>
 <div class='{'ok' if enabled else 'warn'}'><b>{html.escape(gate)}</b><br>Procesa <b>un producto a la vez</b>. El progreso se guarda en <code>WooCommerce Batch Sync</code>, por lo que un reinicio puede reanudarse.</div>
-<div class='card'><h2>Crear lote</h2><p>Por defecto se omiten los SKU que ya terminaron con ✅ en lotes anteriores.</p>
-<label><input type='checkbox' id='skip' checked> Omitir SKU ya completados en lotes anteriores</label><br><br>
+<div class='card'><h2>Crear lote</h2><p>Los botones “siguientes” avanzan sobre SKU que aún no han sido incluidos en un lote. Los errores se vuelven a intentar con <b>Reanudar lote</b>.</p>
+<label><input type='checkbox' id='skip' checked> Omitir SKU ya incluidos en lotes anteriores</label><br><br>
 <button {disabled} onclick='createBatch("10")'>Sincronizar siguientes 10</button><button {disabled} onclick='createBatch("50")'>Siguientes 50</button><button {disabled} onclick='createBatch("all")'>Todos los pendientes</button>
 <h3>O lote personalizado</h3><textarea id='custom' placeholder='SKU1, SKU2, SKU3...'></textarea><br><button {disabled} onclick='createBatch("custom")'>Sincronizar lista personalizada</button></div>
 <div class='card'><h2>Progreso</h2><div><b>Lote:</b> <code id='batch-id'>—</code> <button onclick='resumeBatch()'>Reanudar lote</button></div><br>
@@ -240,7 +240,7 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 let currentBatch=localStorage.getItem('wc_current_batch')||''; let pollTimer=null;
 if(currentBatch){{document.getElementById('batch-id').textContent=currentBatch; startPolling();}}
 async function createBatch(mode){{
- const reqBody={{mode:mode,skip_successful:document.getElementById('skip').checked,custom:document.getElementById('custom').value}};
+ const reqBody={{mode:mode,skip_processed:document.getElementById('skip').checked,custom:document.getElementById('custom').value}};
  try{{const r=await fetch('/batch-create',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(reqBody)}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');currentBatch=d.batch_id;localStorage.setItem('wc_current_batch',currentBatch);document.getElementById('batch-id').textContent=currentBatch;startPolling();}}catch(e){{alert(e.message);}}
 }}
 async function resumeBatch(){{if(!currentBatch){{alert('No hay lote seleccionado');return;}}try{{const r=await fetch('/batch-resume',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{batch_id:currentBatch}})}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');startPolling();}}catch(e){{alert(e.message);}}}}
@@ -260,21 +260,21 @@ async def batch_create_route(request: Request):
     try:
         payload = await request.json()
         mode = str(payload.get("mode") or "10")
-        skip_done = bool(payload.get("skip_successful", True))
+        skip_processed = bool(payload.get("skip_processed", True))
         custom = _parse_custom_skus(payload.get("custom") or "")
 
         spreadsheet_id, inventory, sheets = media_web._direct_inventory_context(session)
         known_skus = [str(row.get("sku") or "").strip() for row in inventory if str(row.get("sku") or "").strip()]
         known_set = set(known_skus)
-        done = successful_skus(sheets, spreadsheet_id) if skip_done else set()
+        already = processed_skus(sheets, spreadsheet_id) if skip_processed else set()
 
         if mode == "custom":
             missing = [sku for sku in custom if sku not in known_set]
             if missing:
                 raise ValueError("Estos SKU no existen en Lista completa: " + ", ".join(missing[:15]))
-            selected = [sku for sku in custom if sku not in done]
+            selected = [sku for sku in custom if sku not in already]
         else:
-            candidates = [sku for sku in known_skus if sku not in done]
+            candidates = [sku for sku in known_skus if sku not in already]
             if mode == "10":
                 selected = candidates[:10]
             elif mode == "50":
