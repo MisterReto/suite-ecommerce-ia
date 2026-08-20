@@ -39,6 +39,26 @@
     }
   }
 
+  function addTutorialAliases(root) {
+    const aliases = [
+      ['Ajustes', 'Configuración'],
+      ['Nuevo producto', 'Ingreso y Edición de Productos'],
+      ['Buscar variantes', 'Variantes de Presentación'],
+    ];
+    root.querySelectorAll('[role="tab"]').forEach((tab) => {
+      if (tab.querySelector('.rda-tutorial-alias')) return;
+      const visible = (tab.textContent || '').replace(/\s+/g, ' ').trim();
+      const match = aliases.find(([needle]) => visible.includes(needle));
+      if (!match) return;
+      const span = document.createElement('span');
+      span.className = 'rda-tutorial-alias';
+      span.setAttribute('aria-hidden', 'true');
+      span.textContent = ` ${match[1]}`;
+      span.style.display = 'none';
+      tab.appendChild(span);
+    });
+  }
+
   function fixHiddenTabCopies(root) {
     root.querySelectorAll('[aria-hidden="true"] button, .visually-hidden button').forEach((button) => {
       button.setAttribute('tabindex', '-1');
@@ -128,6 +148,7 @@
     roots().forEach((root) => {
       ensureUiStyles(root);
       markStatus(root);
+      addTutorialAliases(root);
       fixHiddenTabCopies(root);
       enhanceTabs(root);
       enhanceButtons(root);
