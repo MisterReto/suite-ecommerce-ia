@@ -1,11 +1,12 @@
 """Entrypoint de la Suite IA con `Lista completa` como fuente única.
 
-La UI sigue viviendo en app.py, pero este módulo adapta únicamente la capa de
-inventario para:
+La UI sigue viviendo en app.py, pero este módulo adapta la capa de inventario y
+la presentación para:
 - no leer/escribir Gabo nueva;
 - guardar las 14 columnas canónicas de Lista completa;
 - dejar Lista Simple/Lista Variable como vistas FILTER del Sheet;
-- publicar automáticamente SOLO el SKU recién guardado (sin lotes).
+- publicar automáticamente SOLO el SKU recién guardado (sin lotes);
+- aplicar una interfaz limpia, responsive y accesible sin alterar la lógica IA.
 """
 from __future__ import annotations
 
@@ -97,6 +98,59 @@ new_save_tail = """        _agregar_fila_google_sheet(sesion, spreadsheet_id, nu
             f\"'{NOMBRE_HOJA_INVENTARIO}'.\\n{url_sheet}{sync_text}\"
         )"""
 _replace_once(old_save_tail, new_save_tail, "publicación individual después de guardar")
+
+# ---------------------------------------------------------------------------
+# 6) Capa UX / accesibilidad. Solo cambia presentación, no callbacks.
+# ---------------------------------------------------------------------------
+old_head = """TUTORIAL_HEAD = \"\"\"
+<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=2\">
+<script defer src=\"/static/tutorial.js?v=2\"></script>
+\"\"\""""
+new_head = """TUTORIAL_HEAD = \"\"\"
+<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=2\">
+<link rel=\"stylesheet\" href=\"/static/ui.css?v=1\">
+<script defer src=\"/static/tutorial.js?v=2\"></script>
+<script defer src=\"/static/accessibility.js?v=1\"></script>
+\"\"\""""
+_replace_once(old_head, new_head, "assets de interfaz accesible")
+
+_replace_once(
+    '    gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")',
+    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y publícalo sin cambiar de herramienta.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;✅ Publica</div>\n    </header>""", elem_id="tour-app-title")''',
+    "encabezado principal",
+)
+
+old_tutorial_button = '''    btn_tutorial = gr.Button(
+        "🧭 VER TUTORIAL GUIADO",
+        variant="primary",
+        size="lg",
+        elem_id="tour-launcher",
+    )'''
+new_tutorial_button = '''    btn_tutorial = gr.Button(
+        "❔ Ver guía de uso",
+        variant="secondary",
+        size="sm",
+        elem_id="tour-launcher",
+    )'''
+_replace_once(old_tutorial_button, new_tutorial_button, "botón de ayuda")
+
+# La tarea principal abre por defecto; Configuración queda disponible como ajuste.
+_replace_once("    with gr.Tabs():", "    with gr.Tabs(selected=1):", "pestaña inicial")
+_replace_once('        with gr.Tab("⚙️ Configuración"):', '        with gr.Tab("⚙️ Ajustes"):', "nombre tab ajustes")
+
+old_product_start = '''        with gr.Tab("1. Ingreso y Edición de Productos"):
+            estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)'''
+new_product_start = '''        with gr.Tab("＋ Nuevo producto"):
+            gr.HTML("""<div class=\"rda-workflow\" aria-label=\"Pasos para publicar un producto\">\n              <div class=\"rda-step\"><span class=\"rda-step-num\">1</span><div><strong>Captura</strong><span>Fotos del producto</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">2</span><div><strong>Revisa</strong><span>Datos, precio y clasificación</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">3</span><div><strong>Genera</strong><span>Imágenes para e-commerce</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">4</span><div><strong>Publica</strong><span>Sheets + WooCommerce</span></div></div>\n            </div>""")
+            estado = gr.Textbox(label="Estado del proceso", interactive=False, lines=3, elem_id="process-status")'''
+_replace_once(old_product_start, new_product_start, "inicio de nuevo producto")
+
+_replace_once('                    gr.Markdown("### 1. Imágenes y Análisis")', '                    gr.Markdown("### 📷 Captura del producto")', "título captura")
+_replace_once('                    gr.Markdown("### 2. Clasificación, Textos y Precio")', '                    gr.Markdown("### ✏️ Información del producto")', "título información")
+_replace_once('                    gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")', '                    gr.Markdown("### ✨ Imágenes para la tienda")', "título imágenes")
+_replace_once('                        "🔍 Analizar Producto (SEO + Info + Precio)",', '                        "✨ Analizar producto con IA",', "botón analizar")
+_replace_once('                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)",', '                "✅ Guardar y publicar producto",', "botón guardar")
+_replace_once('        with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):', '        with gr.Tab("🔎 Buscar variantes"):', "nombre tab variantes")
 
 
 # Ejecutamos app.py en un módulo independiente; no modificamos el archivo original.
