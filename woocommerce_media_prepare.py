@@ -2,6 +2,11 @@
 
 Sync Lite carga `Media Sync` una vez al inicio del lote; aquí solo anexamos las
 filas nuevas directamente para evitar revalidar la pestaña en cada SKU.
+
+Regla importante para catálogo legacy:
+- si existe un set generado completo/resoluble, se prepara para reemplazar las imágenes;
+- si faltan imágenes generadas obligatorias, NO se bloquea el producto: se devuelve
+  `assigned_media_ids=[]` y el PUT final conserva las imágenes actuales de WooCommerce.
 """
 from __future__ import annotations
 
@@ -28,6 +33,21 @@ def _append_logs_fast(sheets_service, spreadsheet_id: str, values: list[list[Any
     ).execute()
 
 
+def _skip_images(sku: str, reason: str, missing: list[str] | None = None) -> dict[str, Any]:
+    """Resultado no fatal: producto se sincroniza sin tocar las imágenes remotas."""
+    return {
+        "sku": sku,
+        "assigned_media_ids": [],
+        "uploaded": 0,
+        "reused": 0,
+        "optional_legacy_ignored": 0,
+        "images_skipped": True,
+        "missing_images": list(missing or []),
+        "backend_verified": None,
+        "note": reason,
+    }
+
+
 def prepare_product_media(
     *,
     row: dict[str, Any],
@@ -44,24 +64,35 @@ def prepare_product_media(
     sku = str(row.get("sku") or "").strip()
     refs = resolve_product_images(row, drive_index)
     if not refs:
-        raise ValueError(f"{sku} no tiene nombres en la columna imagenes.")
+        return _skip_images(
+            sku,
+            "El producto no tiene nombres de imagen en Lista completa; se conservarán las imágenes actuales de WooCommerce.",
+        )
 
     required_missing = [
         r["requested_filename"] for r in refs
         if not r.get("drive_file") and not r.get("optional_legacy")
     ]
     if required_missing:
-        raise ValueError(
-            f"Faltan archivos obligatorios en Drive para {sku}: {', '.join(required_missing)}"
+        return _skip_images(
+            sku,
+            "No existe un set generado completo en Drive; se sincronizará el producto sin reemplazar sus imágenes actuales.",
+            required_missing,
         )
 
     sync_refs = [r for r in refs if r.get("drive_file")]
+    if not sync_refs:
+        return _skip_images(
+            sku,
+            "No hay archivos de imagen resolubles en Drive; se conservarán las imágenes actuales de WooCommerce.",
+        )
+
     uncached_names = [
         r["resolved_filename"]
         for r in sync_refs
         if str(r["drive_file"]["id"]) not in media_cache
     ]
-    # Una sola búsqueda WordPress para las 3 imágenes del SKU.
+    # Una sola búsqueda WordPress para todas las imágenes del SKU.
     existing_by_name = wp_client.find_media_by_filenames(uncached_names) if uncached_names else {}
 
     ordered_ids: list[int] = []
@@ -92,8 +123,10 @@ def prepare_product_media(
                     filename,
                     data,
                     mime_type=drive_file.get("mimeType"),
-                    alt_text=str(row.get("nombre_producto") or ""),
-                    title=str(row.get("nombre_producto") or sku),
+                    # El PUT final del producto asigna las imágenes. Evitamos una
+                    # segunda petición por medio solo para metadata durante lotes.
+                    alt_text="",
+                    title="",
                 )
                 media_id = int(uploaded["id"])
                 media_url = str(uploaded.get("source_url") or "")
@@ -121,7 +154,10 @@ def prepare_product_media(
         ])
 
     if not ordered_ids:
-        raise ValueError(f"No hay imágenes resolubles en Drive para {sku}.")
+        return _skip_images(
+            sku,
+            "No se obtuvo ningún medio válido; se conservarán las imágenes actuales de WooCommerce.",
+        )
 
     _append_logs_fast(sheets_service, spreadsheet_id, logs)
     optional_ignored = sum(
@@ -133,6 +169,8 @@ def prepare_product_media(
         "uploaded": uploaded_count,
         "reused": reused,
         "optional_legacy_ignored": optional_ignored,
+        "images_skipped": False,
+        "missing_images": [],
         "backend_verified": None,
         "note": "Medios preparados; WooCommerce se actualizará en el PUT final del producto.",
     }
