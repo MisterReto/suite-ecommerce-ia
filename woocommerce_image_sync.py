@@ -6,6 +6,7 @@
 - Cuando las 3 imágenes canónicas actuales existen, referencias legacy extra
   (_4, _5, etc.) se consideran opcionales y no bloquean la sincronización.
 - Media Sync evita subir dos veces el mismo archivo de Drive.
+- Después de cada PUT, WooCommerce se relee para verificar que los IDs quedaron guardados.
 """
 from __future__ import annotations
 
@@ -90,9 +91,6 @@ def resolve_product_images(row: dict[str, Any], drive_index: dict[str, dict[str,
             "optional_legacy": False,
         })
 
-    # La app actual genera tres imágenes por SKU. Algunos de los primeros productos
-    # conservan 4/5 nombres .png de un esquema anterior. Si las tres imágenes
-    # canónicas actuales están presentes, esos nombres extra dejan de ser requisito.
     canonical_three_present = len(resolved) >= 3 and all(r.get("drive_file") for r in resolved[:3])
     if canonical_three_present:
         for ref in resolved[3:]:
@@ -229,7 +227,7 @@ def sync_one_product_images(
     wp_client: WordPressMediaClient, wc_client: WooCommerceClient, wc_entity: dict[str, Any],
     max_workers: int = 3,
 ) -> dict[str, Any]:
-    """Sube medios faltantes en paralelo y asigna imágenes al SKU. Requiere ambos write gates."""
+    """Sube medios, asigna al SKU y verifica el estado guardado en WooCommerce."""
     if not wp_client.write_enabled:
         raise RuntimeError("WP_MEDIA_WRITE_ENABLED=false")
     if not wc_client.config.write_enabled:
@@ -293,21 +291,37 @@ def sync_one_product_images(
 
     ordered_ids = [media_ids[i] for i in sorted(media_ids)]
     entity_type = wc_entity.get("_entity_type")
+    product_id = int(wc_entity["id"])
+    permalink = ""
+    modified_gmt = ""
+
     if entity_type == "variation":
-        wc_client.update_variation(
-            int(wc_entity["_parent_product_id"]),
-            int(wc_entity["id"]),
-            {"image": {"id": ordered_ids[0]}},
-        )
+        parent_id = int(wc_entity["_parent_product_id"])
+        wc_client.update_variation(parent_id, product_id, {"image": {"id": ordered_ids[0]}})
+        remote = wc_client.get_variation(parent_id, product_id)
+        remote_image = remote.get("image") or {}
+        remote_ids = [int(remote_image["id"])] if remote_image.get("id") else []
         assigned = [ordered_ids[0]]
-        note = "Variación: se asignó la primera imagen; las demás quedaron en Media Library."
+        backend_verified = remote_ids == assigned
+        note = "Variación: se asignó y verificó la primera imagen; las demás quedaron en Media Library."
     else:
         wc_client.update_product(
-            int(wc_entity["id"]),
+            product_id,
             {"images": [{"id": mid, "position": pos} for pos, mid in enumerate(ordered_ids)]},
         )
+        remote = wc_client.get_product(product_id)
+        remote_ids = [int(img["id"]) for img in (remote.get("images") or []) if img.get("id")]
         assigned = ordered_ids
-        note = "Producto: imagen principal + galería asignadas."
+        backend_verified = remote_ids == assigned
+        permalink = str(remote.get("permalink") or "")
+        modified_gmt = str(remote.get("date_modified_gmt") or "")
+        note = "Producto: imagen principal + galería asignadas y verificadas en WooCommerce."
+
+    if not backend_verified:
+        raise RuntimeError(
+            f"WooCommerce respondió al PUT pero la verificación posterior no coincide. "
+            f"Esperado={assigned}; guardado={remote_ids}."
+        )
 
     append_media_log(sheets_service, spreadsheet_id, logs)
     optional_ignored = sum(1 for r in refs if r.get("optional_legacy") and not r.get("drive_file"))
@@ -315,6 +329,14 @@ def sync_one_product_images(
         "sku": sku,
         "uploaded_or_reused": len(ordered_ids),
         "assigned_media_ids": assigned,
+        "backend_verified": backend_verified,
+        "remote_image_ids": remote_ids,
+        "permalink": permalink,
+        "date_modified_gmt": modified_gmt,
         "optional_legacy_ignored": optional_ignored,
         "note": note,
+        "cache_hint": (
+            "Si la página pública sigue mostrando imágenes anteriores aunque backend_verified=true, "
+            "purga la caché de WP-Optimize/WordPress y recarga con Ctrl+Shift+R."
+        ),
     }
