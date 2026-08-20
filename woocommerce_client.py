@@ -107,8 +107,14 @@ class WooCommerceClient:
     def list_products(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", "products", params={"page": page, "per_page": per_page}) or []
 
+    def get_product(self, product_id: int) -> dict[str, Any]:
+        return self.request("GET", f"products/{int(product_id)}") or {}
+
     def list_variations(self, product_id: int, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", f"products/{int(product_id)}/variations", params={"page": page, "per_page": per_page}) or []
+
+    def get_variation(self, parent_product_id: int, variation_id: int) -> dict[str, Any]:
+        return self.request("GET", f"products/{int(parent_product_id)}/variations/{int(variation_id)}") or {}
 
     def list_setting_groups(self) -> list[dict[str, Any]]:
         return self.request("GET", "settings") or []
