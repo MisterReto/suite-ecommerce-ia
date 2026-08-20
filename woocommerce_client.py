@@ -1,4 +1,9 @@
-"""Cliente seguro para WooCommerce, optimizado para instancias Render con poca RAM."""
+"""Cliente seguro para WooCommerce, optimizado para Render con poca RAM.
+
+El catálogo por SKU usa respuestas REST ultraligeras y concurrencia separada para
+metadatos. Las imágenes/productos completos siguen procesándose de forma
+conservadora para evitar picos de memoria.
+"""
 from __future__ import annotations
 
 import base64
@@ -18,8 +23,6 @@ class WooCommerceError(RuntimeError):
     pass
 
 
-# El caché guarda SOLO representaciones ligeras; nunca respuestas completas con
-# descripciones, imágenes, meta_data, categorías, etc.
 _CATALOG_CACHE: dict[
     tuple[str, bool],
     tuple[float, dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]],
@@ -35,14 +38,14 @@ class WooCommerceConfig:
     write_enabled: bool = False
     timeout: int = 20
     max_workers: int = 3
+    metadata_workers: int = 8
     cache_ttl: int = 120
 
     @classmethod
     def from_env(cls) -> "WooCommerceConfig":
         base_url = os.getenv("WC_URL", "https://rincon.creandotusite.com").rstrip("/")
-        # Aunque Render tenga WC_MAX_WORKERS=6 de pruebas anteriores, limitamos a
-        # 3 para evitar picos de RAM. La velocidad viene principalmente del cache.
         requested_workers = int(os.getenv("WC_MAX_WORKERS", "3"))
+        requested_metadata = int(os.getenv("WC_METADATA_WORKERS", "8"))
         requested_ttl = int(os.getenv("WC_CACHE_TTL", "120"))
         return cls(
             base_url=base_url,
@@ -51,6 +54,7 @@ class WooCommerceConfig:
             write_enabled=os.getenv("WC_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
             timeout=max(5, int(os.getenv("WC_TIMEOUT", "20"))),
             max_workers=max(1, min(3, requested_workers)),
+            metadata_workers=max(2, min(10, requested_metadata)),
             cache_ttl=max(0, min(300, requested_ttl)),
         )
 
@@ -117,11 +121,33 @@ class WooCommerceClient:
     def list_products(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", "products", params={"page": page, "per_page": per_page}) or []
 
+    def list_products_catalog(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        return self.request(
+            "GET",
+            "products",
+            params={
+                "page": page,
+                "per_page": per_page,
+                "_fields": "id,sku,name,type,manage_stock,stock_quantity,stock_status,regular_price,price,permalink",
+            },
+        ) or []
+
     def get_product(self, product_id: int) -> dict[str, Any]:
         return self.request("GET", f"products/{int(product_id)}") or {}
 
     def list_variations(self, product_id: int, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", f"products/{int(product_id)}/variations", params={"page": page, "per_page": per_page}) or []
+
+    def list_variations_catalog(self, product_id: int, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        return self.request(
+            "GET",
+            f"products/{int(product_id)}/variations",
+            params={
+                "page": page,
+                "per_page": per_page,
+                "_fields": "id,sku,manage_stock,stock_quantity,stock_status,regular_price,price",
+            },
+        ) or []
 
     def get_variation(self, parent_product_id: int, variation_id: int) -> dict[str, Any]:
         return self.request("GET", f"products/{int(parent_product_id)}/variations/{int(variation_id)}") or {}
@@ -136,7 +162,6 @@ class WooCommerceClient:
         return self.request("GET", f"settings/{group_id}/{setting_id}") or {}
 
     def _iter_pages(self, getter, *, per_page: int = 100, max_pages: int = 100) -> Iterator[dict[str, Any]]:
-        """Hace streaming por páginas para no acumular respuestas completas en RAM."""
         for page in range(1, max_pages + 1):
             batch = getter(page=page, per_page=per_page)
             for row in batch:
@@ -147,15 +172,16 @@ class WooCommerceClient:
                 break
 
     def list_all_products(self) -> list[dict[str, Any]]:
-        # Se conserva por compatibilidad, pero catalog_by_sku no la usa.
         return list(self._iter_pages(self.list_products))
 
     def list_all_variations(self, product_id: int) -> list[dict[str, Any]]:
         return list(self._iter_pages(lambda **kw: self.list_variations(product_id, **kw)))
 
+    def list_all_variations_catalog(self, product_id: int) -> list[dict[str, Any]]:
+        return list(self._iter_pages(lambda **kw: self.list_variations_catalog(product_id, **kw)))
+
     @staticmethod
     def _slim(row: dict[str, Any], entity_type: str, parent_id: int | None = None) -> dict[str, Any]:
-        """Conserva únicamente campos usados por inventario, preview y media sync."""
         return {
             "id": row.get("id"),
             "sku": row.get("sku", ""),
@@ -172,7 +198,7 @@ class WooCommerceClient:
         }
 
     def catalog_by_sku(self, *, include_variations: bool = True, force_refresh: bool = False):
-        """Índice SKU->entidad, con RAM acotada y concurrencia limitada."""
+        """Índice SKU->entidad usando payload mínimo y concurrencia alta solo para metadata."""
         cache_key = (self.config.base_url, include_variations)
         if not force_refresh and self.config.cache_ttl > 0:
             with _CACHE_LOCK:
@@ -194,22 +220,18 @@ class WooCommerceClient:
             else:
                 index[sku] = item
 
-        # Productos por streaming: no retenemos las respuestas completas.
-        for product in self._iter_pages(self.list_products):
+        for product in self._iter_pages(self.list_products_catalog):
             add(product, "product")
             if include_variations and product.get("type") == "variable" and product.get("id"):
                 variable_ids.append(int(product["id"]))
-            del product
 
-        # Procesamos padres variables en lotes del tamaño de workers. Así no existe
-        # un diccionario de cientos de Future reteniendo todas sus respuestas.
         if variable_ids:
-            workers = min(self.config.max_workers, len(variable_ids))
-            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wc-variations") as executor:
-                for start in range(0, len(variable_ids), workers):
-                    batch_ids = variable_ids[start:start + workers]
+            workers = min(self.config.metadata_workers, len(variable_ids))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wc-meta") as executor:
+                for start in range(0, len(variable_ids), workers * 2):
+                    batch_ids = variable_ids[start:start + workers * 2]
                     futures = {
-                        executor.submit(self.list_all_variations, parent_id): parent_id
+                        executor.submit(self.list_all_variations_catalog, parent_id): parent_id
                         for parent_id in batch_ids
                     }
                     for future in as_completed(futures):
