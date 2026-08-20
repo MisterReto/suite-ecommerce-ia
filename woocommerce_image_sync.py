@@ -3,6 +3,8 @@
 - `Lista completa.imagenes` es la fuente de verdad para los nombres solicitados.
 - Si un nombre legacy SKU_1.png/SKU_2.png/SKU_3.png no existe, se intenta el
   patrón actual de la app: _1_hd.jpg, _2_uso.jpg, _3_comercial.jpg.
+- Cuando las 3 imágenes canónicas actuales existen, referencias legacy extra
+  (_4, _5, etc.) se consideran opcionales y no bloquean la sincronización.
 - Media Sync evita subir dos veces el mismo archivo de Drive.
 """
 from __future__ import annotations
@@ -67,7 +69,7 @@ def fallback_names(sku: str, position: int) -> list[str]:
 def resolve_product_images(row: dict[str, Any], drive_index: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     sku = str(row.get("sku") or "").strip()
     requested = parse_image_names(row.get("imagenes"))
-    resolved = []
+    resolved: list[dict[str, Any]] = []
     for position, requested_name in enumerate(requested):
         item = drive_index.get(requested_name.casefold())
         method = "exact"
@@ -85,7 +87,18 @@ def resolve_product_images(row: dict[str, Any], drive_index: dict[str, dict[str,
             "resolved_filename": resolved_name if item else "",
             "drive_file": item,
             "resolution": method if item else "missing",
+            "optional_legacy": False,
         })
+
+    # La app actual genera tres imágenes por SKU. Algunos de los primeros productos
+    # conservan 4/5 nombres .png de un esquema anterior. Si las tres imágenes
+    # canónicas actuales están presentes, esos nombres extra dejan de ser requisito.
+    canonical_three_present = len(resolved) >= 3 and all(r.get("drive_file") for r in resolved[:3])
+    if canonical_three_present:
+        for ref in resolved[3:]:
+            if not ref.get("drive_file"):
+                ref["optional_legacy"] = True
+                ref["resolution"] = "optional_legacy_missing"
     return resolved
 
 
@@ -151,7 +164,8 @@ def build_image_preview(rows: list[dict[str, Any]], drive_index: dict[str, dict[
     summary = {
         "products": len(rows), "with_images": 0, "without_images": 0,
         "requested_files": 0, "exact_files": 0, "fallback_files": 0,
-        "missing_files": 0, "already_uploaded": 0, "ready_files": 0,
+        "missing_files": 0, "optional_legacy_missing": 0,
+        "already_uploaded": 0, "ready_files": 0,
         "ready_products": 0, "missing_wc_products": 0, "duplicate_wc_skus": len(duplicate_skus),
     }
     result = []
@@ -168,6 +182,8 @@ def build_image_preview(rows: list[dict[str, Any]], drive_index: dict[str, dict[
                 summary["exact_files"] += 1
             elif ref["resolution"] == "fallback":
                 summary["fallback_files"] += 1
+            elif ref["resolution"] == "optional_legacy_missing":
+                summary["optional_legacy_missing"] += 1
             else:
                 summary["missing_files"] += 1
             drive_file = ref.get("drive_file")
@@ -179,8 +195,9 @@ def build_image_preview(rows: list[dict[str, Any]], drive_index: dict[str, dict[
         duplicate = sku in duplicate_skus
         if wc is None:
             summary["missing_wc_products"] += 1
-        all_found = bool(refs) and all(r.get("drive_file") for r in refs)
-        ready = all_found and wc is not None and not duplicate
+        mandatory_refs = [r for r in refs if not r.get("optional_legacy")]
+        all_required_found = bool(mandatory_refs) and all(r.get("drive_file") for r in mandatory_refs)
+        ready = all_required_found and wc is not None and not duplicate
         if ready:
             summary["ready_products"] += 1
         result.append({
@@ -222,9 +239,17 @@ def sync_one_product_images(
     refs = resolve_product_images(row, drive_index)
     if not refs:
         raise ValueError(f"{sku} no tiene nombres en la columna imagenes.")
-    missing = [r["requested_filename"] for r in refs if not r.get("drive_file")]
-    if missing:
-        raise ValueError(f"Faltan archivos en Drive para {sku}: {', '.join(missing)}")
+
+    required_missing = [
+        r["requested_filename"] for r in refs
+        if not r.get("drive_file") and not r.get("optional_legacy")
+    ]
+    if required_missing:
+        raise ValueError(f"Faltan archivos obligatorios en Drive para {sku}: {', '.join(required_missing)}")
+
+    refs_to_sync = [r for r in refs if r.get("drive_file")]
+    if not refs_to_sync:
+        raise ValueError(f"No hay imágenes resolubles en Drive para {sku}.")
 
     media_ids: dict[int, int] = {}
     logs: list[list[Any]] = []
@@ -252,9 +277,9 @@ def sync_one_product_images(
         )
         return ref["position"], int(uploaded["id"]), uploaded.get("source_url", ""), "uploaded"
 
-    workers = max(1, min(max_workers, len(refs)))
+    workers = max(1, min(max_workers, len(refs_to_sync)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wp-media") as executor:
-        futures = {executor.submit(upload_ref, ref): ref for ref in refs}
+        futures = {executor.submit(upload_ref, ref): ref for ref in refs_to_sync}
         for future in as_completed(futures):
             ref = futures[future]
             position, media_id, media_url, status = future.result()
@@ -269,14 +294,27 @@ def sync_one_product_images(
     ordered_ids = [media_ids[i] for i in sorted(media_ids)]
     entity_type = wc_entity.get("_entity_type")
     if entity_type == "variation":
-        # WooCommerce core permite una imagen destacada por variación.
-        wc_client.update_variation(int(wc_entity["_parent_product_id"]), int(wc_entity["id"]), {"image": {"id": ordered_ids[0]}})
+        wc_client.update_variation(
+            int(wc_entity["_parent_product_id"]),
+            int(wc_entity["id"]),
+            {"image": {"id": ordered_ids[0]}},
+        )
         assigned = [ordered_ids[0]]
         note = "Variación: se asignó la primera imagen; las demás quedaron en Media Library."
     else:
-        wc_client.update_product(int(wc_entity["id"]), {"images": [{"id": mid, "position": pos} for pos, mid in enumerate(ordered_ids)]})
+        wc_client.update_product(
+            int(wc_entity["id"]),
+            {"images": [{"id": mid, "position": pos} for pos, mid in enumerate(ordered_ids)]},
+        )
         assigned = ordered_ids
         note = "Producto: imagen principal + galería asignadas."
 
     append_media_log(sheets_service, spreadsheet_id, logs)
-    return {"sku": sku, "uploaded_or_reused": len(ordered_ids), "assigned_media_ids": assigned, "note": note}
+    optional_ignored = sum(1 for r in refs if r.get("optional_legacy") and not r.get("drive_file"))
+    return {
+        "sku": sku,
+        "uploaded_or_reused": len(ordered_ids),
+        "assigned_media_ids": assigned,
+        "optional_legacy_ignored": optional_ignored,
+        "note": note,
+    }
