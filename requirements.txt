@@ -7,3 +7,4 @@ google-auth-oauthlib
 google-api-python-client
 pandas
 pillow
+requests>=2.31
