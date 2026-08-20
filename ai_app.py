@@ -1,16 +1,11 @@
-"""Entrypoint del servicio IA.
+"""Entrypoint de la Suite IA con `Lista completa` como fuente única.
 
-Reutiliza la UI y generación de `app.py`, pero cambia únicamente la capa de
-inventario para que la fuente de verdad sea `Lista completa`.
-
-- No lee/escribe `Gabo nueva`.
-- No mantiene `Lista Variable`/`Lista Simple` desde Python; son vistas FILTER.
-- Guarda Marca y `categorias` en formato `Categoría > Subcategoría`.
-- Nuevos productos comienzan con Existencias=0 por seguridad.
-
-No duplica app.py: aplica cuatro reemplazos de código pequeños y verificables al
-cargarlo, después sobrescribe los adaptadores que todavía esperan el esquema
-legacy. Esto permite mantener la interfaz IA existente sin bifurcar 100 KB de UI.
+La UI sigue viviendo en app.py, pero este módulo adapta únicamente la capa de
+inventario para:
+- no leer/escribir Gabo nueva;
+- guardar las 14 columnas canónicas de Lista completa;
+- dejar Lista Simple/Lista Variable como vistas FILTER del Sheet;
+- publicar automáticamente SOLO el SKU recién guardado (sin lotes).
 """
 from __future__ import annotations
 
@@ -32,19 +27,19 @@ def _replace_once(old: str, new: str, label: str) -> None:
     count = source.count(old)
     if count != 1:
         raise RuntimeError(
-            f"No pude preparar el servicio IA: esperaba 1 coincidencia para {label}, encontré {count}."
+            f"No pude preparar la Suite IA: esperaba 1 coincidencia para {label}, encontré {count}."
         )
     source = source.replace(old, new, 1)
 
 
-# 1) Toda referencia operativa de la hoja inventario apunta a Lista completa.
+# 1) La hoja operativa es Lista completa.
 _replace_once(
     'NOMBRE_HOJA_INVENTARIO = "Gabo nueva"',
     'NOMBRE_HOJA_INVENTARIO = "Lista completa"',
     "hoja maestra",
 )
 
-# 2) El orden físico de columnas debe ser exactamente el esquema canónico.
+# 2) Orden físico exacto de Lista completa.
 old_columns = """COLUMNAS_INVENTARIO = [
     'sku_padre', 'tipo', 'sku', 'nombre_producto',
     'descripcion_corta', 'descripcion_larga', 'Existencias',
@@ -58,21 +53,53 @@ new_columns = """COLUMNAS_INVENTARIO = [
 ]"""
 _replace_once(old_columns, new_columns, "columnas canónicas")
 
-# 3) El callback existente ya recibe `marca`; hacemos que realmente la persista.
+# 3) Persistir Marca, que el callback original recibía pero no guardaba.
 _replace_once(
     "            'nombre_producto': nombre,\n            'descripcion_corta': desc_corta,",
     "            'nombre_producto': nombre,\n            'Marca': marca,\n            'descripcion_corta': desc_corta,",
     "persistencia de Marca",
 )
 
-# 4) Un producto nuevo no debe entrar vendible con una existencia ficticia.
+# 4) Nuevos productos arrancan en 0 y categoría queda en una sola columna.
 _replace_once(
     "            'Existencias': 1,\n            'categoria': cat,\n            'subcategoria': subcat,",
     "            'Existencias': 0,\n            'categoria': cat,\n            'subcategoria': subcat,\n            'categorias': f'{cat} > {subcat}' if cat and subcat else (cat or subcat or ''),",
     "stock inicial y ruta de categoría",
 )
 
-# Ejecutamos la misma app en un módulo independiente para no modificar app.py en disco.
+# 5) Después de guardar la fila, dispara únicamente ese SKU hacia WooCommerce.
+old_save_tail = """        _agregar_fila_google_sheet(sesion, spreadsheet_id, nueva_fila)
+        url_sheet = f\"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit\"
+        return (
+            f\"💾 ¡Guardado en Google Sheets! El producto {sku} está en la pestaña \"
+            f\"'{NOMBRE_HOJA_INVENTARIO}'.\\n{url_sheet}\"
+        )"""
+new_save_tail = """        _agregar_fila_google_sheet(sesion, spreadsheet_id, nueva_fila)
+        url_sheet = f\"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit\"
+        sync_text = \"\"
+        hook = globals().get('_AUTO_SYNC_AFTER_SAVE')
+        if hook:
+            try:
+                resultado_sync = hook(sesion, sku)
+                accion = resultado_sync.get('action', 'updated') if isinstance(resultado_sync, dict) else 'updated'
+                enlace = resultado_sync.get('permalink', '') if isinstance(resultado_sync, dict) else ''
+                verbo = 'creado' if accion == 'created' else 'actualizado'
+                sync_text = f\"\\n\\n✅ WooCommerce: producto {verbo} automáticamente.\"
+                if enlace:
+                    sync_text += f\"\\n{enlace}\"
+            except Exception as sync_exc:
+                sync_text = (
+                    \"\\n\\n⚠️ La fila SÍ quedó guardada en Lista completa, pero no pude publicar ese SKU en WooCommerce: \"
+                    f\"{sync_exc}\"
+                )
+        return (
+            f\"💾 ¡Guardado en Google Sheets! El producto {sku} está en la pestaña \"
+            f\"'{NOMBRE_HOJA_INVENTARIO}'.\\n{url_sheet}{sync_text}\"
+        )"""
+_replace_once(old_save_tail, new_save_tail, "publicación individual después de guardar")
+
+
+# Ejecutamos app.py en un módulo independiente; no modificamos el archivo original.
 legacy = types.ModuleType("rincon_ai_runtime")
 legacy.__file__ = str(APP_PATH)
 legacy.__package__ = ""
@@ -81,8 +108,8 @@ exec(compile(source, str(APP_PATH), "exec"), legacy.__dict__)
 
 
 # ---------------------------------------------------------------------------
-# Adaptadores canónicos. Las funciones/callbacks de app.py resuelven estos
-# nombres globales en tiempo de ejecución, por lo que no hay que reconstruir UI.
+# Adaptadores canónicos. Los callbacks de app.py resuelven estos nombres en
+# tiempo de ejecución, por lo que no hay que reconstruir la UI de Gradio.
 # ---------------------------------------------------------------------------
 def _clean(value):
     try:
@@ -99,8 +126,6 @@ def _canonical_row(record):
     sku = str(_clean(get("sku", "")) or "").strip()
     parent = str(_clean(get("sku_padre", "")) or "").strip()
     if kind.casefold() != "variable":
-        # Conservamos la convención que ya usa Lista completa: en simples,
-        # sku_padre == sku. Las vistas por fórmula no dependen de este valor.
         parent = sku
 
     category_path = str(_clean(get("categorias", "")) or "").strip()
@@ -147,7 +172,7 @@ def _read_master(sheets_service, spreadsheet_id):
         rows.append(row)
     df = pd.DataFrame(rows, columns=list(MASTER_COLUMNS))
 
-    # Alias SOLO en memoria para funciones antiguas de dropdown/detección.
+    # Alias solo en memoria para dropdowns/detección heredados.
     if not df.empty:
         paths = df["categorias"].apply(split_category_path)
         df["categoria"] = paths.apply(lambda x: x[0])
@@ -165,10 +190,12 @@ def _no_variable_sync(*args, **kwargs):
 
 
 def _no_legacy_format(*args, **kwargs):
-    # Lista completa ya tiene su formato. Las posiciones numéricas del formateador
-    # legacy corresponden a Gabo nueva y podrían aplicar moneda/número a columnas
-    # equivocadas del esquema canónico.
     return None
+
+
+def _auto_sync_after_save(session, sku):
+    from single_product_auto import sync_saved_sku
+    return sync_saved_sku(session, sku)
 
 
 legacy.NOMBRE_HOJA_INVENTARIO = MASTER_SHEET
@@ -178,6 +205,6 @@ legacy._leer_google_sheet = _read_master
 legacy._sincronizar_lista_variable = _no_variable_sync
 legacy._aplicar_formato_base = _no_legacy_format
 legacy._aplicar_formato_filas = _no_legacy_format
+legacy._AUTO_SYNC_AFTER_SAVE = _auto_sync_after_save
 
-# app.py ya construyó y montó la UI. Exportamos exactamente la misma FastAPI.
 fastapi_app = legacy.fastapi_app
