@@ -18,8 +18,10 @@ COPY publication_web.py .
 COPY wordpress_media.py .
 COPY woocommerce_image_sync.py .
 COPY woocommerce_product_sync.py .
+COPY woocommerce_batch_sync.py .
 COPY media_web.py .
 COPY product_web.py .
+COPY batch_web.py .
 COPY static ./static
 
 ENV PORT=7860
@@ -34,5 +36,5 @@ ENV NUMEXPR_NUM_THREADS=1
 ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
-# Un solo worker de Uvicorn; product_web carga Suite + inventario + imágenes + sync completo.
-CMD ["uvicorn", "product_web:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
+# Un solo worker. batch_web importa y conserva todas las rutas anteriores.
+CMD ["uvicorn", "batch_web:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
