@@ -24,6 +24,7 @@ class WordPressMediaClient:
         self.username = os.getenv("WP_USERNAME", "").strip()
         self.app_password = os.getenv("WP_APP_PASSWORD", "").strip()
         self.write_enabled = os.getenv("WP_MEDIA_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.set_metadata = os.getenv("WP_MEDIA_METADATA_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         self.timeout = max(10, int(os.getenv("WP_TIMEOUT", "60")))
         self.session = requests.Session()
         retry = Retry(
@@ -67,26 +68,17 @@ class WordPressMediaClient:
             headers.update(extra_headers)
         try:
             response = self.session.request(
-                method.upper(),
-                url,
-                params=params,
-                data=body,
-                headers=headers,
+                method.upper(), url, params=params, data=body, headers=headers,
                 timeout=(10, self.timeout),
             )
             if response.status_code >= 400:
-                raise WordPressMediaError(
-                    f"WordPress HTTP {response.status_code}: {response.text[:600]}"
-                )
+                raise WordPressMediaError(f"WordPress HTTP {response.status_code}: {response.text[:600]}")
             return response.json() if response.content else None
         except requests.RequestException as exc:
             raise WordPressMediaError(f"No se pudo conectar con WordPress: {exc}") from exc
 
     def health(self) -> dict[str, Any]:
-        rows = self._request(
-            "GET", "users/me",
-            params={"context": "edit", "_fields": "id,name"},
-        )
+        rows = self._request("GET", "users/me", params={"context": "edit", "_fields": "id,name"})
         return {
             "ok": True,
             "url": self.base_url,
@@ -105,21 +97,27 @@ class WordPressMediaClient:
             return ""
 
     def find_media_by_filename(self, filename: str) -> dict[str, Any] | None:
-        stem = PurePosixPath(filename).stem
+        found = self.find_media_by_filenames([filename])
+        return found.get(filename.casefold())
+
+    def find_media_by_filenames(self, filenames: list[str]) -> dict[str, dict[str, Any]]:
+        """Una sola búsqueda REST para todos los archivos de un mismo SKU."""
+        clean = [str(x or "").strip() for x in filenames if str(x or "").strip()]
+        if not clean:
+            return {}
+        first = PurePosixPath(clean[0]).stem
+        search = first.split("_", 1)[0] if "_" in first else first
         rows = self._request(
             "GET", "media",
-            params={
-                "search": stem,
-                "per_page": 20,
-                "context": "edit",
-                "_fields": "id,source_url",
-            },
+            params={"search": search, "per_page": 100, "context": "edit", "_fields": "id,source_url"},
         ) or []
-        target = filename.casefold()
+        targets = {name.casefold() for name in clean}
+        result: dict[str, dict[str, Any]] = {}
         for row in rows:
-            if self._source_filename(row).casefold() == target:
-                return row
-        return None
+            filename = self._source_filename(row).casefold()
+            if filename in targets:
+                result[filename] = row
+        return result
 
     def upload_media(self, filename: str, data: bytes, *, mime_type: str | None = None,
                      alt_text: str = "", title: str = "") -> dict[str, Any]:
@@ -127,8 +125,7 @@ class WordPressMediaClient:
             raise ValueError("Filename vacío.")
         mime_type = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
         uploaded = self._request(
-            "POST",
-            "media",
+            "POST", "media",
             params={"_fields": "id,source_url"},
             body=data,
             content_type=mime_type,
@@ -136,19 +133,19 @@ class WordPressMediaClient:
             require_write=True,
         )
         media_id = int(uploaded["id"])
-        metadata = {}
-        if alt_text:
-            metadata["alt_text"] = alt_text
-        if title:
-            metadata["title"] = title
-        if metadata:
-            updated = self._request(
-                "POST",
-                f"media/{media_id}",
-                params={"_fields": "id,source_url"},
-                body=json.dumps(metadata).encode("utf-8"),
-                require_write=True,
-            )
-            if updated:
-                uploaded = updated
+        if self.set_metadata:
+            metadata = {}
+            if alt_text:
+                metadata["alt_text"] = alt_text
+            if title:
+                metadata["title"] = title
+            if metadata:
+                updated = self._request(
+                    "POST", f"media/{media_id}",
+                    params={"_fields": "id,source_url"},
+                    body=json.dumps(metadata).encode("utf-8"),
+                    require_write=True,
+                )
+                if updated:
+                    uploaded = updated
         return uploaded
