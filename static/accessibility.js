@@ -19,6 +19,47 @@
     root.appendChild(link);
   }
 
+  function addToolNavigation(root) {
+    const host = root.querySelector('#tour-app-title');
+    if (!host || root.querySelector('.rda-tool-nav')) return;
+
+    const items = [
+      { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar y publicar un producto con IA' },
+      { href: '/inventory-manager', icon: '📦', label: 'Inventario', help: 'Consultar y ajustar existencias' },
+      { href: '/woocommerce-image-preview', icon: '🖼️', label: 'Imágenes', help: 'Revisar imágenes de Drive y WordPress' },
+      { href: '/woocommerce-product-sync', icon: '🔄', label: 'WooCommerce', help: 'Sincronizar manualmente un SKU' },
+      { href: '/woocommerce-publish-preview', icon: '📊', label: 'Preview stock', help: 'Comparar stock antes de escribir' },
+    ];
+
+    const nav = document.createElement('nav');
+    nav.className = 'rda-tool-nav';
+    nav.setAttribute('aria-label', 'Herramientas de catálogo');
+
+    const heading = document.createElement('span');
+    heading.className = 'rda-tool-nav-label';
+    heading.textContent = 'Herramientas';
+    nav.appendChild(heading);
+
+    const links = document.createElement('div');
+    links.className = 'rda-tool-nav-links';
+
+    items.forEach((item) => {
+      const link = document.createElement('a');
+      link.className = 'rda-tool-link';
+      link.href = item.href;
+      link.title = item.help;
+      link.innerHTML = `<span aria-hidden="true">${item.icon}</span><span>${item.label}</span>`;
+      if (window.location.pathname === item.href) {
+        link.classList.add('is-current');
+        link.setAttribute('aria-current', 'page');
+      }
+      links.appendChild(link);
+    });
+
+    nav.appendChild(links);
+    host.insertAdjacentElement('afterend', nav);
+  }
+
   function markStatus(root) {
     const statusBox = root.querySelector('#process-status');
     if (statusBox) {
@@ -147,6 +188,7 @@
     document.documentElement.lang = 'es';
     roots().forEach((root) => {
       ensureUiStyles(root);
+      addToolNavigation(root);
       markStatus(root);
       addTutorialAliases(root);
       fixHiddenTabCopies(root);
