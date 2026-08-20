@@ -1,12 +1,12 @@
 """UI de imágenes: preview rápido + prueba controlada de 1 SKU.
 
-La operación de escritura se ejecuta con asyncio.to_thread(): el request espera el
-resultado final, pero el event loop de FastAPI/Gradio permanece libre. No usamos
-jobs en memoria, evitando pérdidas de estado durante deploys/rolling restarts.
+La escritura se ejecuta fuera del event loop, pero con concurrencia conservadora
+para funcionar en instancias Render con poca RAM.
 """
 from __future__ import annotations
 
 import asyncio
+import gc
 import html
 from threading import Lock
 import time
@@ -32,7 +32,7 @@ fastapi_app = publication_web.fastapi_app
 _DRIVE_CACHE: dict[str, tuple[float, dict]] = {}
 _DRIVE_CACHE_LOCK = Lock()
 _SYNC_LOCK = Lock()
-DRIVE_CACHE_TTL = 180
+DRIVE_CACHE_TTL = 120
 
 
 def _session(request: Request):
@@ -50,6 +50,8 @@ def _drive_index(session, force: bool = False):
     drive = legacy_app._get_drive_service(session)
     index = list_drive_images(drive)
     with _DRIVE_CACHE_LOCK:
+        # Solo conservamos la entrada vigente de esta sesión/carpeta.
+        _DRIVE_CACHE.clear()
         _DRIVE_CACHE[key] = (time.time(), index)
     return index
 
@@ -123,6 +125,8 @@ def _sync_one_sku(session, sku: str) -> dict:
         if not entity:
             raise RuntimeError(f"SKU no encontrado en WooCommerce: {sku}")
 
+        # En un plan con poca RAM preferimos una imagen a la vez. El cuello de
+        # botella real es red/WordPress, no CPU local.
         return sync_one_product_images(
             row=row,
             drive_index=drive_index,
@@ -133,7 +137,7 @@ def _sync_one_sku(session, sku: str) -> dict:
             wp_client=wp,
             wc_client=wc,
             wc_entity=entity,
-            max_workers=3,
+            max_workers=1,
         )
     finally:
         _SYNC_LOCK.release()
@@ -180,13 +184,13 @@ def image_preview(request: Request):
 <div class='{gate_class}'><b>{gate_title}</b><br><code>{html.escape(gates)}</code></div>
 <div class='grid'><div class='metric'><b>{s['products']}</b><span>SKU</span></div><div class='metric'><b>{s['with_images']}</b><span>Con nombres de imagen</span></div><div class='metric'><b>{s['requested_files']}</b><span>Referencias en Sheet</span></div><div class='metric'><b>{s['exact_files']}</b><span>Coincidencia exacta</span></div><div class='metric'><b>{s['fallback_files']}</b><span>Resueltos por patrón nuevo</span></div><div class='metric'><b>{s['optional_legacy_missing']}</b><span>Legacy opcionales ignorados</span></div><div class='metric'><b>{s['missing_files']}</b><span>Faltantes obligatorios</span></div><div class='metric'><b>{s['already_uploaded']}</b><span>Ya registrados en Media Sync</span></div><div class='metric'><b>{s['ready_products']}</b><span>Productos listos</span></div></div>
 <div class='card {'ok' if s['missing_files']==0 else 'warn'}'><b>{'✅' if s['missing_files']==0 else '⚠️'} Resolución de archivos</b><br>➖ significa una referencia antigua adicional que la app actual ya no genera; no bloquea si existen las tres imágenes canónicas.</div>
-<div class='card'><h2>Prueba controlada de 1 SKU</h2><p>La petición espera el resultado final, pero la operación corre en un thread de servidor para no bloquear la Suite. Empieza con un SKU cuyo destino diga <b>Producto</b>, no Variación.</p><input id='test-sku' placeholder='Ej. HTBUVA238U'><button id='sync-btn' {disabled} onclick='syncOne()'>Subir y asignar 1 SKU</button><pre id='job'></pre></div>
+<div class='card'><h2>Prueba controlada de 1 SKU</h2><p>La subida procesa una imagen a la vez para mantener estable la RAM de Render. Empieza con un SKU cuyo destino diga <b>Producto</b>, no Variación.</p><input id='test-sku' placeholder='Ej. HTBUVA238U'><button id='sync-btn' {disabled} onclick='syncOne()'>Subir y asignar 1 SKU</button><pre id='job'></pre></div>
 <div class='card'><h2>Detalle</h2><div class='table'><table><thead><tr><th>SKU</th><th>Producto</th><th>Archivos</th><th>Destino WC</th><th>Estado</th></tr></thead><tbody>{_render_rows(payload['rows'])}</tbody></table></div></div>
 </div><script>
 async function syncOne(){{
  const sku=document.getElementById('test-sku').value.trim(); if(!sku){{alert('Escribe un SKU');return;}}
  const btn=document.getElementById('sync-btn'); const out=document.getElementById('job');
- btn.disabled=true; btn.textContent='Subiendo...'; out.textContent='Descargando de Drive, subiendo a WordPress y asignando en WooCommerce...';
+ btn.disabled=true; btn.textContent='Subiendo...'; out.textContent='Descargando de Drive, subiendo a WordPress y verificando WooCommerce...';
  try{{
    const r=await fetch('/image-sync-one',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{sku}})}});
    const d=await r.json(); out.textContent=JSON.stringify(d,null,2);
@@ -211,10 +215,15 @@ async def image_sync_one(request: Request):
         if not sku:
             raise ValueError("SKU requerido.")
         result = await asyncio.to_thread(_sync_one_sku, session, sku)
+        # El thread ya terminó y soltó buffers/respuestas grandes; fuerza recolección
+        # antes de atender la siguiente operación pesada.
+        gc.collect()
         return {"ok": True, "message": "Imágenes sincronizadas correctamente.", "result": result}
     except ValueError as exc:
+        gc.collect()
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     except Exception as exc:
+        gc.collect()
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
