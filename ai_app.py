@@ -4,13 +4,13 @@ Reutiliza la UI y generación de `app.py`, pero cambia únicamente la capa de
 inventario para que la fuente de verdad sea `Lista completa`.
 
 - No lee/escribe `Gabo nueva`.
-- No mantiene `Lista Variable` desde Python; esa pestaña es una vista FILTER.
+- No mantiene `Lista Variable`/`Lista Simple` desde Python; son vistas FILTER.
 - Guarda Marca y `categorias` en formato `Categoría > Subcategoría`.
 - Nuevos productos comienzan con Existencias=0 por seguridad.
 
 No duplica app.py: aplica cuatro reemplazos de código pequeños y verificables al
-cargarlo, después sobrescribe los adaptadores de lectura/formato que todavía
-esperan el esquema legacy.
+cargarlo, después sobrescribe los adaptadores que todavía esperan el esquema
+legacy. Esto permite mantener la interfaz IA existente sin bifurcar 100 KB de UI.
 """
 from __future__ import annotations
 
@@ -99,6 +99,8 @@ def _canonical_row(record):
     sku = str(_clean(get("sku", "")) or "").strip()
     parent = str(_clean(get("sku_padre", "")) or "").strip()
     if kind.casefold() != "variable":
+        # Conservamos la convención que ya usa Lista completa: en simples,
+        # sku_padre == sku. Las vistas por fórmula no dependen de este valor.
         parent = sku
 
     category_path = str(_clean(get("categorias", "")) or "").strip()
@@ -145,7 +147,7 @@ def _read_master(sheets_service, spreadsheet_id):
         rows.append(row)
     df = pd.DataFrame(rows, columns=list(MASTER_COLUMNS))
 
-    # Alias solo en memoria para las funciones antiguas de dropdown/detección.
+    # Alias SOLO en memoria para funciones antiguas de dropdown/detección.
     if not df.empty:
         paths = df["categorias"].apply(split_category_path)
         df["categoria"] = paths.apply(lambda x: x[0])
@@ -162,11 +164,20 @@ def _no_variable_sync(*args, **kwargs):
     return {"sincronizadas": 0, "nuevas": 0, "total": 0, "source": "formula"}
 
 
+def _no_legacy_format(*args, **kwargs):
+    # Lista completa ya tiene su formato. Las posiciones numéricas del formateador
+    # legacy corresponden a Gabo nueva y podrían aplicar moneda/número a columnas
+    # equivocadas del esquema canónico.
+    return None
+
+
 legacy.NOMBRE_HOJA_INVENTARIO = MASTER_SHEET
 legacy.COLUMNAS_INVENTARIO = list(MASTER_COLUMNS)
 legacy._fila_formato_gabo = _canonical_row
 legacy._leer_google_sheet = _read_master
 legacy._sincronizar_lista_variable = _no_variable_sync
+legacy._aplicar_formato_base = _no_legacy_format
+legacy._aplicar_formato_filas = _no_legacy_format
 
 # app.py ya construyó y montó la UI. Exportamos exactamente la misma FastAPI.
 fastapi_app = legacy.fastapi_app
