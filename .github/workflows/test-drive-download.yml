@@ -1,0 +1,31 @@
+name: Test Drive image download
+
+on:
+  push:
+    branches:
+      - zip-imagenes-faltantes-20260820
+
+permissions:
+  contents: read
+
+jobs:
+  test-download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install gdown
+        run: python -m pip install --quiet gdown
+      - name: Download one shared Drive image
+        run: |
+          mkdir -p out
+          gdown 'https://drive.google.com/uc?id=1ZAxGrM6BN-d8R64uVUZzD-sPO2eZoDjK' -O 'out/ACSEKJ150M_1_hd.jpg'
+          test -s 'out/ACSEKJ150M_1_hd.jpg'
+          file 'out/ACSEKJ150M_1_hd.jpg'
+      - name: Upload test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-drive-image
+          path: out/ACSEKJ150M_1_hd.jpg
+          if-no-files-found: error
