@@ -3,6 +3,22 @@
 
   const once = new WeakSet();
 
+  function roots() {
+    const result = [document];
+    const app = document.querySelector('gradio-app');
+    if (app && app.shadowRoot) result.push(app.shadowRoot);
+    return result;
+  }
+
+  function ensureUiStyles(root) {
+    if (root === document || root.querySelector('link[data-rda-ui-css]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = '/static/ui.css?v=1';
+    link.dataset.rdaUiCss = 'true';
+    root.appendChild(link);
+  }
+
   function markStatus(root) {
     const statusBox = root.querySelector('#process-status');
     if (statusBox) {
@@ -23,17 +39,33 @@
     }
   }
 
+  function fixHiddenTabCopies(root) {
+    root.querySelectorAll('[aria-hidden="true"] button, .visually-hidden button').forEach((button) => {
+      button.setAttribute('tabindex', '-1');
+    });
+
+    root.querySelectorAll('[role="tablist"] button').forEach((button) => {
+      const text = (button.textContent || '').replace(/\s+/g, ' ').trim();
+      const named = button.getAttribute('aria-label') || button.getAttribute('title') || text;
+      if (!named && button.querySelector('svg')) {
+        button.setAttribute('aria-label', 'Más secciones');
+        button.setAttribute('title', 'Más secciones');
+      }
+    });
+  }
+
   function enhanceTabs(root) {
-    const tablists = root.querySelectorAll('[role="tablist"]');
-    tablists.forEach((tablist) => {
+    root.querySelectorAll('[role="tablist"]').forEach((tablist) => {
+      tablist.setAttribute('aria-label', 'Secciones principales de la aplicación');
       if (once.has(tablist)) return;
       once.add(tablist);
-      tablist.setAttribute('aria-label', 'Secciones principales de la aplicación');
       tablist.addEventListener('keydown', (event) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-        const tabs = [...tablist.querySelectorAll('[role="tab"]')].filter((el) => !el.disabled);
+        const tabs = [...tablist.querySelectorAll('[role="tab"]')]
+          .filter((el) => !el.disabled && el.getAttribute('tabindex') !== '-1');
         if (!tabs.length) return;
-        const current = tabs.indexOf(document.activeElement);
+        const active = root.activeElement || document.activeElement;
+        const current = tabs.indexOf(active);
         if (current < 0) return;
         let next = current;
         if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
@@ -55,7 +87,11 @@
 
   function addSkipLink() {
     if (document.querySelector('.rda-skip-link')) return;
-    const target = document.querySelector('.gradio-container');
+    let target = null;
+    for (const root of roots()) {
+      target = root.querySelector('.gradio-container');
+      if (target) break;
+    }
     if (!target) return;
     if (!target.id) target.id = 'rda-main-content';
     target.setAttribute('role', 'main');
@@ -65,6 +101,7 @@
     link.className = 'rda-skip-link';
     link.href = `#${target.id}`;
     link.textContent = 'Saltar al contenido principal';
+    link.addEventListener('click', () => window.setTimeout(() => target.focus(), 0));
     document.body.prepend(link);
   }
 
@@ -75,14 +112,29 @@
     });
   }
 
+  function correctTutorialCopy() {
+    const text = document.querySelector('#suite-tour-text');
+    if (!text) return;
+    if (text.textContent.includes('Gabo nueva')) {
+      text.textContent = 'Cuando los datos y las imágenes estén correctos, guarda el producto. Se añadirá a Lista completa y la app intentará crear o actualizar únicamente ese SKU en WooCommerce.';
+    }
+    if (text.textContent.includes('VER TUTORIAL GUIADO')) {
+      text.textContent = text.textContent.replace('VER TUTORIAL GUIADO', 'Ver guía de uso');
+    }
+  }
+
   function enhance() {
     document.documentElement.lang = 'es';
-    const root = document;
+    roots().forEach((root) => {
+      ensureUiStyles(root);
+      markStatus(root);
+      fixHiddenTabCopies(root);
+      enhanceTabs(root);
+      enhanceButtons(root);
+      improveImages(root);
+    });
     addSkipLink();
-    markStatus(root);
-    enhanceTabs(root);
-    enhanceButtons(root);
-    improveImages(root);
+    correctTutorialCopy();
   }
 
   if (document.readyState === 'loading') {
@@ -91,8 +143,6 @@
     enhance();
   }
 
-  // Gradio actualiza gran parte del DOM de forma reactiva; volvemos a aplicar
-  // atributos de accesibilidad sin tocar valores ni eventos funcionales.
   const observer = new MutationObserver(() => {
     window.clearTimeout(window.__rdaA11yTimer);
     window.__rdaA11yTimer = window.setTimeout(enhance, 120);
