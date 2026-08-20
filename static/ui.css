@@ -1,0 +1,344 @@
+/* El Rincón de Asia · Suite Ecommerce IA
+   Interfaz accesible, limpia y orientada a tareas.
+   Inspiración: patrones SaaS/POS claros (sin copiar interfaces de terceros). */
+
+:root,
+.gradio-container {
+  --rda-bg: #f6f7f9;
+  --rda-surface: #ffffff;
+  --rda-surface-soft: #f9fafb;
+  --rda-border: #e4e7ec;
+  --rda-border-strong: #d0d5dd;
+  --rda-text: #101828;
+  --rda-muted: #667085;
+  --rda-primary: #175cd3;
+  --rda-primary-hover: #1849a9;
+  --rda-success: #067647;
+  --rda-success-soft: #ecfdf3;
+  --rda-warning: #b54708;
+  --rda-warning-soft: #fffaeb;
+  --rda-danger: #b42318;
+  --rda-focus: #2e90fa;
+  --rda-radius: 14px;
+  --rda-shadow: 0 1px 2px rgba(16,24,40,.04), 0 4px 14px rgba(16,24,40,.05);
+
+  --body-background-fill: var(--rda-bg) !important;
+  --body-text-color: var(--rda-text) !important;
+  --block-background-fill: var(--rda-surface) !important;
+  --block-border-color: var(--rda-border) !important;
+  --block-radius: var(--rda-radius) !important;
+  --button-primary-background-fill: var(--rda-primary) !important;
+  --button-primary-background-fill-hover: var(--rda-primary-hover) !important;
+  --button-primary-text-color: #fff !important;
+  --input-background-fill: #fff !important;
+  --input-border-color: var(--rda-border-strong) !important;
+}
+
+html { font-size: 16px; }
+html, body { background: var(--rda-bg) !important; }
+body { color: var(--rda-text); }
+
+.gradio-container {
+  max-width: 1500px !important;
+  margin: 0 auto !important;
+  padding: 20px clamp(14px, 2vw, 28px) 48px !important;
+  font-size: 16px !important;
+}
+
+/* Skip link injected by accessibility.js */
+.rda-skip-link {
+  position: fixed;
+  left: 16px;
+  top: -80px;
+  z-index: 99999;
+  background: #fff;
+  color: var(--rda-primary);
+  border: 2px solid var(--rda-focus);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 700;
+  box-shadow: var(--rda-shadow);
+}
+.rda-skip-link:focus { top: 12px; }
+
+/* Header */
+#tour-app-title {
+  margin: 0 0 12px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.rda-app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: var(--rda-surface);
+  border: 1px solid var(--rda-border);
+  border-radius: 18px;
+  box-shadow: var(--rda-shadow);
+  padding: 18px 22px;
+}
+.rda-app-brand { min-width: 0; }
+.rda-app-eyebrow {
+  margin: 0 0 3px;
+  color: var(--rda-primary);
+  font-size: .78rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.rda-app-title {
+  margin: 0;
+  color: var(--rda-text);
+  font-size: clamp(1.35rem, 2vw, 1.75rem);
+  line-height: 1.2;
+  letter-spacing: -.02em;
+}
+.rda-app-subtitle {
+  margin: 5px 0 0;
+  color: var(--rda-muted);
+  font-size: .94rem;
+}
+.rda-flow-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #344054;
+  background: #f2f4f7;
+  border: 1px solid var(--rda-border);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: .84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#tour-launcher {
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: max-content !important;
+  margin: 0 0 12px auto !important;
+}
+#tour-launcher button,
+#tour-launcher { font-size: .9rem !important; }
+
+/* Login/status bar */
+#tour-login-status > div,
+#tour-login-status div {
+  border-radius: 12px !important;
+  border: 1px solid var(--rda-border) !important;
+  box-shadow: none !important;
+}
+
+/* Main tabs: visually behave like compact app navigation */
+.gradio-container .tabs {
+  gap: 14px !important;
+}
+.gradio-container .tab-nav,
+.gradio-container [role="tablist"] {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
+  display: flex;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 5px !important;
+  margin-bottom: 14px !important;
+  background: rgba(255,255,255,.96) !important;
+  border: 1px solid var(--rda-border) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 14px rgba(16,24,40,.06);
+  backdrop-filter: blur(8px);
+}
+.gradio-container [role="tab"] {
+  min-height: 42px !important;
+  padding: 9px 14px !important;
+  border-radius: 8px !important;
+  border: 0 !important;
+  color: #475467 !important;
+  font-size: .92rem !important;
+  font-weight: 650 !important;
+  white-space: nowrap;
+}
+.gradio-container [role="tab"][aria-selected="true"] {
+  background: #eff4ff !important;
+  color: #1849a9 !important;
+}
+
+/* Workflow stepper */
+.rda-workflow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.rda-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 54px;
+  padding: 10px 12px;
+  background: var(--rda-surface);
+  border: 1px solid var(--rda-border);
+  border-radius: 12px;
+}
+.rda-step-num {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 999px;
+  background: #eff4ff;
+  color: #1849a9;
+  font-weight: 800;
+  font-size: .82rem;
+}
+.rda-step strong { display: block; font-size: .88rem; line-height: 1.15; }
+.rda-step span { display: block; margin-top: 2px; color: var(--rda-muted); font-size: .74rem; line-height: 1.2; }
+
+/* Blocks/cards */
+.gradio-container .block,
+.gradio-container .form,
+.gradio-container .group {
+  border-color: var(--rda-border) !important;
+}
+.gradio-container .block:not(.gradio-markdown):not(.gradio-html) {
+  border-radius: 12px !important;
+}
+.gradio-container h1,
+.gradio-container h2,
+.gradio-container h3 {
+  color: var(--rda-text) !important;
+  letter-spacing: -.015em;
+}
+.gradio-container h3 { margin-top: .25rem !important; }
+.gradio-container p { line-height: 1.55; }
+
+/* Inputs: touch target + contrast */
+.gradio-container input,
+.gradio-container textarea,
+.gradio-container select {
+  min-height: 44px !important;
+  font-size: 16px !important; /* prevents iOS zoom and improves legibility */
+  color: var(--rda-text) !important;
+  border-color: var(--rda-border-strong) !important;
+  border-radius: 9px !important;
+}
+.gradio-container textarea { min-height: 76px; }
+.gradio-container label,
+.gradio-container .label-wrap {
+  color: #344054 !important;
+  font-weight: 650 !important;
+}
+
+/* Buttons */
+.gradio-container button,
+.gradio-container a[role="button"] {
+  min-height: 44px !important;
+  border-radius: 9px !important;
+  font-weight: 700 !important;
+  transition: box-shadow .12s ease, transform .12s ease, background-color .12s ease !important;
+}
+.gradio-container button:hover:not(:disabled) { transform: translateY(-1px); }
+.gradio-container button:disabled { opacity: .55 !important; cursor: not-allowed !important; }
+
+/* Clear keyboard focus everywhere */
+.gradio-container button:focus-visible,
+.gradio-container input:focus-visible,
+.gradio-container textarea:focus-visible,
+.gradio-container select:focus-visible,
+.gradio-container [role="tab"]:focus-visible,
+.gradio-container a:focus-visible {
+  outline: 3px solid rgba(46,144,250,.38) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 1px var(--rda-focus) !important;
+}
+
+/* Process status */
+#process-status {
+  margin-bottom: 14px !important;
+}
+#process-status textarea {
+  background: #f8fafc !important;
+  color: #344054 !important;
+  border: 1px solid var(--rda-border) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-size: .86rem !important;
+}
+
+/* Images */
+.gradio-container .image-container,
+.gradio-container [data-testid="image"] {
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+#tour-upload-front { border-radius: 12px !important; }
+
+/* Primary save action: easy to find, but not obstructive */
+#tour-save-product {
+  position: sticky;
+  bottom: 14px;
+  z-index: 25;
+  margin-top: 16px !important;
+  padding: 7px !important;
+  background: rgba(255,255,255,.92) !important;
+  border: 1px solid var(--rda-border) !important;
+  border-radius: 13px !important;
+  box-shadow: 0 10px 30px rgba(16,24,40,.12) !important;
+  backdrop-filter: blur(10px);
+}
+#tour-save-product button,
+#tour-save-product {
+  min-height: 50px !important;
+}
+
+/* Accordions for photo corrections are secondary, not dominant */
+.gradio-container details {
+  border-color: var(--rda-border) !important;
+  border-radius: 10px !important;
+  background: var(--rda-surface-soft) !important;
+}
+
+/* Remove visual noise from Gradio footer */
+.gradio-container footer { opacity: .55; font-size: .8rem; }
+
+@media (max-width: 1050px) {
+  .rda-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gradio-container .row { flex-wrap: wrap !important; }
+}
+
+@media (max-width: 720px) {
+  .gradio-container { padding: 12px 10px 32px !important; }
+  .rda-app-header { align-items: flex-start; flex-direction: column; padding: 15px; }
+  .rda-flow-badge { white-space: normal; }
+  .rda-workflow { grid-template-columns: 1fr; }
+  .gradio-container .row { flex-direction: column !important; }
+  .gradio-container .column { min-width: 100% !important; width: 100% !important; }
+  .gradio-container [role="tablist"] { width: 100%; }
+  #tour-launcher { margin-left: 0 !important; }
+  #tour-save-product { bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root, .gradio-container {
+    --rda-border: #98a2b3;
+    --rda-border-strong: #667085;
+  }
+  .gradio-container button:focus-visible,
+  .gradio-container input:focus-visible,
+  .gradio-container textarea:focus-visible,
+  .gradio-container select:focus-visible { outline-width: 4px !important; }
+}
