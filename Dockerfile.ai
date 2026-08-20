@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+COPY ai_app.py .
+COPY inventory_schema.py .
+COPY static ./static
+
+ENV PORT=7860
+ENV GRADIO_DEFAULT_CONCURRENCY_LIMIT=1
+ENV MALLOC_ARENA_MAX=2
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV PYTHONUNBUFFERED=1
+EXPOSE 7860
+
+# Servicio IA: Gradio/Gemini + escritura exclusiva a Lista completa.
+CMD ["uvicorn", "ai_app:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
