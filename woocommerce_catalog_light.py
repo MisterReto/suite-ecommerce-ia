@@ -1,7 +1,8 @@
 """Índice SKU ligero para lotes de WooCommerce.
 
 Evita descargar descripciones, imágenes y metadata de todos los productos. El
-resultado se cachea en RAM porque el lote NO modifica SKU ni tipos de producto.
+resultado se cachea 30 minutos. Cada thread de variaciones usa su propia sesión
+HTTP para mantener keep-alive sin compartir estado mutable.
 """
 from __future__ import annotations
 
@@ -77,9 +78,9 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
             variable_ids.append(int(product["id"]))
 
     def fetch_variations(parent_id: int):
-        return parent_id, list(_pages(client, f"products/{parent_id}/variations", VARIATION_FIELDS))
+        local_client = WooCommerceClient(client.config)
+        return parent_id, list(_pages(local_client, f"products/{parent_id}/variations", VARIATION_FIELDS))
 
-    # Metadatos muy pequeños; concurrencia moderada para no volver al problema de RAM.
     workers = min(3, len(variable_ids)) if variable_ids else 0
     if workers:
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="wc-light") as executor:
@@ -93,7 +94,6 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
                         raise WooCommerceError(f"No pude leer variaciones: {exc}") from exc
                     for variation in variations:
                         add(variation, "variation", parent_id)
-                    variations.clear()
                 futures.clear()
 
     with _CACHE_LOCK:
