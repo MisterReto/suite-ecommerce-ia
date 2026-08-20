@@ -16,10 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount
 
 import app as legacy_app
-import inventory_web
 import publication_web
 import server as integration_server
-from inventory_operations import read_inventory
 from wordpress_media import WordPressMediaClient
 from woocommerce_client import WooCommerceClient
 from woocommerce_image_sync import (
@@ -33,7 +31,7 @@ from woocommerce_image_sync import (
 fastapi_app = publication_web.fastapi_app
 _DRIVE_CACHE: dict[str, tuple[float, dict]] = {}
 _DRIVE_CACHE_LOCK = Lock()
-_SYNC_LOCK = Lock()  # evita dos escrituras simultáneas sobre el mismo catálogo
+_SYNC_LOCK = Lock()
 DRIVE_CACHE_TTL = 180
 
 
@@ -57,7 +55,6 @@ def _drive_index(session, force: bool = False):
 
 
 def _direct_inventory_context(session):
-    """Lee Lista completa directamente; no ejecuta el mantenimiento legacy de _cargar_df."""
     spreadsheet_id, rows = integration_server._read_master_inventory(session)
     sheets = legacy_app._get_sheets_service(session)
     return spreadsheet_id, rows, sheets
@@ -68,14 +65,18 @@ def _render_rows(rows):
     for row in rows:
         statuses = []
         for ref in row["images"]:
-            if ref["resolution"] == "exact":
+            resolution = ref["resolution"]
+            if resolution == "exact":
                 icon = "✅"
-            elif ref["resolution"] == "fallback":
+            elif resolution == "fallback":
                 icon = "🔁"
+            elif resolution == "optional_legacy_missing":
+                icon = "➖"
             else:
                 icon = "❌"
             label = ref["resolved_filename"] or ref["requested_filename"]
-            statuses.append(f"{icon} {html.escape(label)}")
+            suffix = " (legacy opcional)" if resolution == "optional_legacy_missing" else ""
+            statuses.append(f"{icon} {html.escape(label)}{suffix}")
         if not statuses:
             statuses = ["— Sin nombres en columna imagenes"]
         if row.get("wc_entity_type") == "variation":
@@ -97,7 +98,6 @@ def _render_rows(rows):
 
 
 def _sync_one_sku(session, sku: str) -> dict:
-    """Trabajo bloqueante ejecutado dentro de asyncio.to_thread()."""
     if not _SYNC_LOCK.acquire(blocking=False):
         raise RuntimeError("Ya hay una sincronización de imágenes en curso. Espera a que termine y vuelve a intentar.")
     try:
@@ -106,7 +106,6 @@ def _sync_one_sku(session, sku: str) -> dict:
         if len(matches) != 1:
             raise RuntimeError(f"Esperaba 1 fila para {sku}; encontré {len(matches)}.")
         row = matches[0]
-
         drive_index = _drive_index(session)
         media_cache = read_media_cache(sheets, spreadsheet_id)
 
@@ -147,11 +146,8 @@ def wp_media_health():
     except Exception as exc:
         client = WordPressMediaClient()
         return JSONResponse(status_code=502, content={
-            "ok": False,
-            "error": str(exc),
-            "configured": client.configured,
-            "write_enabled": client.write_enabled,
-            "url": client.base_url,
+            "ok": False, "error": str(exc), "configured": client.configured,
+            "write_enabled": client.write_enabled, "url": client.base_url,
         })
 
 
@@ -182,9 +178,9 @@ def image_preview(request: Request):
 <h1>🖼️ Preview Drive → WordPress → WooCommerce</h1>
 <div class='card'><a class='btn' href='/inventory-manager'>← Inventario</a><a class='btn' href='/woocommerce-publish-preview'>Stock</a><a class='btn' href='/wp-media-health' target='_blank'>Probar WordPress</a><p>Carpeta Drive: <code>{html.escape(IMAGES_FOLDER_ID)}</code> · WordPress: <b>{wp_state}</b></p></div>
 <div class='{gate_class}'><b>{gate_title}</b><br><code>{html.escape(gates)}</code></div>
-<div class='grid'><div class='metric'><b>{s['products']}</b><span>SKU</span></div><div class='metric'><b>{s['with_images']}</b><span>Con nombres de imagen</span></div><div class='metric'><b>{s['requested_files']}</b><span>Archivos solicitados</span></div><div class='metric'><b>{s['exact_files']}</b><span>Coincidencia exacta</span></div><div class='metric'><b>{s['fallback_files']}</b><span>Resueltos por patrón nuevo</span></div><div class='metric'><b>{s['missing_files']}</b><span>Faltantes Drive</span></div><div class='metric'><b>{s['already_uploaded']}</b><span>Ya registrados en Media Sync</span></div><div class='metric'><b>{s['ready_products']}</b><span>Productos listos</span></div></div>
-<div class='card {'ok' if s['missing_files']==0 else 'warn'}'><b>{'✅' if s['missing_files']==0 else '⚠️'} Resolución de archivos</b><br>Los nombres legacy se sustituyen solo en tiempo de sincronización cuando existe el equivalente generado; el Sheet no se modifica.</div>
-<div class='card'><h2>Prueba controlada de 1 SKU</h2><p>La petición espera el resultado final, pero la operación corre en un thread de servidor para no bloquear la Suite. Empieza con un SKU marcado como <b>Producto</b>, no Variación.</p><input id='test-sku' placeholder='Ej. HTBUVA238U'><button id='sync-btn' {disabled} onclick='syncOne()'>Subir y asignar 1 SKU</button><pre id='job'></pre></div>
+<div class='grid'><div class='metric'><b>{s['products']}</b><span>SKU</span></div><div class='metric'><b>{s['with_images']}</b><span>Con nombres de imagen</span></div><div class='metric'><b>{s['requested_files']}</b><span>Referencias en Sheet</span></div><div class='metric'><b>{s['exact_files']}</b><span>Coincidencia exacta</span></div><div class='metric'><b>{s['fallback_files']}</b><span>Resueltos por patrón nuevo</span></div><div class='metric'><b>{s['optional_legacy_missing']}</b><span>Legacy opcionales ignorados</span></div><div class='metric'><b>{s['missing_files']}</b><span>Faltantes obligatorios</span></div><div class='metric'><b>{s['already_uploaded']}</b><span>Ya registrados en Media Sync</span></div><div class='metric'><b>{s['ready_products']}</b><span>Productos listos</span></div></div>
+<div class='card {'ok' if s['missing_files']==0 else 'warn'}'><b>{'✅' if s['missing_files']==0 else '⚠️'} Resolución de archivos</b><br>➖ significa una referencia antigua adicional que la app actual ya no genera; no bloquea si existen las tres imágenes canónicas.</div>
+<div class='card'><h2>Prueba controlada de 1 SKU</h2><p>La petición espera el resultado final, pero la operación corre en un thread de servidor para no bloquear la Suite. Empieza con un SKU cuyo destino diga <b>Producto</b>, no Variación.</p><input id='test-sku' placeholder='Ej. HTBUVA238U'><button id='sync-btn' {disabled} onclick='syncOne()'>Subir y asignar 1 SKU</button><pre id='job'></pre></div>
 <div class='card'><h2>Detalle</h2><div class='table'><table><thead><tr><th>SKU</th><th>Producto</th><th>Archivos</th><th>Destino WC</th><th>Estado</th></tr></thead><tbody>{_render_rows(payload['rows'])}</tbody></table></div></div>
 </div><script>
 async function syncOne(){{
@@ -214,8 +210,6 @@ async def image_sync_one(request: Request):
         sku = str(payload.get("sku") or "").strip()
         if not sku:
             raise ValueError("SKU requerido.")
-        # to_thread mueve TODO el trabajo bloqueante (Drive, WordPress, WooCommerce)
-        # fuera del event loop; la Suite puede seguir atendiendo otras solicitudes.
         result = await asyncio.to_thread(_sync_one_sku, session, sku)
         return {"ok": True, "message": "Imágenes sincronizadas correctamente.", "result": result}
     except ValueError as exc:
