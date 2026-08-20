@@ -1,4 +1,4 @@
-name: Test Drive image download
+name: Build missing WooCommerce images ZIP
 
 on:
   push:
@@ -10,19 +10,166 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
-  test-download:
+  build-zip:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install gdown
+
+      - name: Install downloader
         run: python -m pip install --quiet gdown
-      - name: Test downloading the shared Drive folder
+
+      - name: Recover Drive file inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p source
-          gdown --folder 'https://drive.google.com/drive/folders/1V4HgnTCRnwVGwrGD968eNdtvQDGGY7wt?usp=drive_link' -O source
-          echo "Files downloaded: $(find source -type f | wc -l)"
-          test "$(find source -type f | wc -l)" -gt 0
+          curl -L --fail --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/jobs/96386215966/logs" \
+            -o drive-enumeration.log
+          test -s drive-enumeration.log
+
+      - name: Build ZIP with only missing images
+        run: |
+          cat > build_zip.py <<'PY'
+          import csv
+          import re
+          import subprocess
+          import time
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from pathlib import Path
+
+          MISSING_SKUS = set("""ACSEKJ150M ACSEKJ163M ACSEKJ165L AGSOKC500L ANTSTR230M BEASAU454G BEBDRA330M BOBTÉX240G CAFBEN230M CAFSAN190M CANAPP230M CANBEB230M CANBLA230M CANBLU230M CANGRE230M CANHAZ230M CANPEA230M CANSWE230M CANVAI230M CARBEA4GLO CHASIU397G CHEHOU397G CHIBEA226G CHICHO205G CHIUDO198G DAIMOC007O DAMBTS5GL0 DAMBTS5GL1 DAMBTS5GLO DAMPOKG05G DAMPOKL05G DAMPOKM05G DELTTE300G DONCAS8GLO DONMAX200M DONOTS250M FIDATB400G FIDDEX300G FINSHR227G FOCMAN350M GARBOW215G GARBOW230G HAIHON60G0 HERCHO88G0 HERCHO90G0 HOISA227KG HOISAU397G HTBSWE340M KEEHEL0000 LAYCHI070G LAYGRI070G LAYTEX070G LOTCHI235M LOTCHI250M LOTCHI280M LOTDOR84G0 MAMBEE060G MAMCLE060G MAMDUC060G MEABT21GLO MEASAN2GLO MISPOK010G MLK250LOTU MOGLYC320M MYXDUR330M MYXMAN330M MYXUVA330M NAMDUL13G0 NAMICE24G0 NONANS125G NONCAP200M NONOLI140G NONPRI100G NONPRI102G NONPRI110G NONSHI125G NONTOU127G ORIFIS348G ORISUN80G0 ORITON45G0 OTTSES1150 OTTSOU426G OTTVIN500M OTTYEU1200 OTTYEU1201 OZESAK750M PALSPI130G PALTEU200G PANCALBLGD PANCALBLMD PLAREDC000 POCCHO46G0 POCCYC70GR POCFRE50GR RASAMO120G SAGRKK326G SALCHA397G SALDEX226G SALDEX454G SALDUL730M SALPIC226G SALSRI255M SALSRI435M SALSRI793M SAMBUL120G SAMBUL130G SAMBUL140G SASOYSG179 SEOPOC17G0 SHIRAM120G SHRSAU227G SINRED170G SIXSHR50G0 SLAGKL280G SLTPRG180L SMLKK410ML SOSLKK255G SOSLKK510G SOSLKK907G SOSTKL280G SOSTLKK2KG SPLKK410ML SPTLB680ML SRSKK296ML SSCHKG188L SSCKL640ML SSKLC640ML SSLPR500ML SSOPRG180L SSOSK640ML SSOYOSM150 SUKMED55M0 SUKPOM55M0 TÉXROJGRML UNIBUN18G0 VERBEA250G VIFPOL060G VIFRES060G VINDEX600M VINNEG500M WOONAT180M WSGAAR150G WSGAAR520G YOUMAS600G YOUROS120G YOUSWE140G""".split())
+
+          # Estos cinco productos ya tienen sus imágenes 1/2/3 sincronizadas.
+          # Solo serían faltantes imágenes 4/5 si realmente existieran en Drive.
+          PARTIAL = {"FIDATB400G", "MLK250LOTU", "POCCYC70GR", "POCFRE50GR", "VERBEA250G"}
+
+          log_path = Path("drive-enumeration.log")
+          text = log_path.read_text("utf-8", errors="replace")
+          text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+          pairs = []
+          seen_pairs = set()
+          for line in text.splitlines():
+              m = re.search(r"Processing file\s+([A-Za-z0-9_-]+)\s+(.+)$", line)
+              if not m:
+                  continue
+              fid, name = m.group(1), m.group(2).strip()
+              key = (fid, name)
+              if key not in seen_pairs:
+                  seen_pairs.add(key)
+                  pairs.append(key)
+
+          source_by_sku = {sku: [] for sku in MISSING_SKUS}
+          for fid, name in pairs:
+              for sku in MISSING_SKUS:
+                  if name.startswith(sku + "_"):
+                      source_by_sku[sku].append((fid, name))
+                      break
+
+          chosen = []
+          for sku, files in source_by_sku.items():
+              if sku in PARTIAL:
+                  files = [x for x in files if re.search(r"_(4|5)(?:_|\.|$)", x[1])]
+
+              # Deduplicar por nombre exacto.
+              by_name = {name: (fid, name) for fid, name in files}
+              files = list(by_name.values())
+              lower_names = {name.lower() for _, name in files}
+
+              # Si hay JPG canónico para el mismo número, omitir PNG alternativo.
+              filtered = []
+              for fid, name in files:
+                  low = name.lower()
+                  m = re.match(rf"^{re.escape(sku.lower())}_(\d+)(?:_([^.]+))?\.(png|jpe?g)$", low)
+                  if m and m.group(3) == "png":
+                      idx = m.group(1)
+                      canonical = {
+                          "1": f"{sku.lower()}_1_hd.jpg",
+                          "2": f"{sku.lower()}_2_uso.jpg",
+                          "3": f"{sku.lower()}_3_comercial.jpg",
+                      }.get(idx)
+                      if canonical and canonical in lower_names:
+                          continue
+                  filtered.append((fid, name))
+
+              chosen.extend((sku, fid, name) for fid, name in filtered)
+
+          chosen.sort(key=lambda x: (x[0], x[2]))
+          out = Path("out")
+          out.mkdir(exist_ok=True)
+
+          def download_one(item):
+              sku, fid, name = item
+              dest = out / name
+              last_output = ""
+              for attempt in range(2):
+                  cp = subprocess.run(
+                      ["gdown", f"https://drive.google.com/uc?id={fid}", "-O", str(dest)],
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                  )
+                  last_output = cp.stdout[-1200:]
+                  if cp.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
+                      return sku, name, fid, "included", dest.stat().st_size, ""
+                  if dest.exists():
+                      dest.unlink()
+                  time.sleep(1.5)
+              return sku, name, fid, "download_failed", 0, last_output.replace("\n", " ")
+
+          rows = []
+          with ThreadPoolExecutor(max_workers=6) as pool:
+              futures = {pool.submit(download_one, item): item for item in chosen}
+              total = len(futures)
+              for i, fut in enumerate(as_completed(futures), 1):
+                  result = fut.result()
+                  rows.append(result)
+                  if i % 25 == 0 or i == total:
+                      print(f"Processed {i}/{total}")
+
+          selected_skus = {sku for sku, _, _ in chosen}
+          for sku in sorted(MISSING_SKUS - selected_skus):
+              rows.append((sku, "", "", "not_found_in_drive", 0, "No matching source image found in the supplied Drive folder"))
+
+          rows.sort(key=lambda x: (x[0], x[1]))
+          manifest = Path("manifest_imagenes_faltantes.csv")
+          with manifest.open("w", newline="", encoding="utf-8-sig") as f:
+              w = csv.writer(f)
+              w.writerow(["sku", "filename", "drive_file_id", "status", "bytes", "note"])
+              w.writerows(rows)
+
+          successful = [p for p in out.iterdir() if p.is_file() and p.stat().st_size > 0]
+          if not successful:
+              raise SystemExit("No images could be downloaded")
+
+          zip_path = Path("imagenes_faltantes_woocommerce.zip")
+          with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(successful, key=lambda p: p.name):
+                  z.write(p, p.name)
+              z.write(manifest, manifest.name)
+
+          included_skus = {r[0] for r in rows if r[3] == "included"}
+          failed = sum(1 for r in rows if r[3] == "download_failed")
+          not_found = sum(1 for r in rows if r[3] == "not_found_in_drive")
+          print(f"ZIP ready: {len(successful)} images across {len(included_skus)} SKUs")
+          print(f"Download failures: {failed}; SKUs without matching Drive image: {not_found}")
+          print(f"ZIP bytes: {zip_path.stat().st_size}")
+          PY
+          python build_zip.py
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagenes-faltantes-woocommerce
+          path: imagenes_faltantes_woocommerce.zip
+          if-no-files-found: error
+          retention-days: 1
