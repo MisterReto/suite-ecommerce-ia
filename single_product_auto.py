@@ -108,7 +108,7 @@ def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
         entity = dict(entity)
         entity["_entity_type"] = "product"
         entity["_parent_product_id"] = None
-    elif tipo == "variable":
+    elif tipo == "variation":
         # WooCommerce no ofrece una búsqueda global barata de variaciones por SKU;
         # solo en este caso usamos el índice completo para localizar una variación existente.
         wc_index, duplicates = wc.catalog_by_sku(include_variations=True)
@@ -128,10 +128,15 @@ def sync_saved_sku(session: dict[str, Any], sku: str) -> dict[str, Any]:
         result["image_sync"] = image_result
         return result
 
+    if tipo == "variation":
+        raise RuntimeError(
+            "El SKU quedó guardado en Lista completa como variación, pero todavía no existe en WooCommerce. "
+            "Descarga CSV 2 Variaciones e impórtalo para crear la relación con su producto padre."
+        )
     if tipo == "variable":
         raise RuntimeError(
-            "El SKU quedó guardado en Lista completa, pero es una variación NUEVA y su estructura padre todavía no existe en WooCommerce. "
-            "No se creó automáticamente para evitar inventar atributos o un padre incorrecto."
+            "El producto padre variable quedó guardado, pero todavía no existe en WooCommerce. "
+            "Descarga CSV 2 Variaciones e impórtalo junto con sus variaciones."
         )
 
     result = _create_simple(row, wc, image_result)
