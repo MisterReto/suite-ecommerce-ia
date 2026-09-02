@@ -38,6 +38,24 @@ def normalize_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
     out["sku_padre"] = str(out["sku_padre"] or "").strip()
     out["Marca"] = str(out["Marca"] or row.get("marca", "") or "").strip()
 
+    raw_kind = str(out["tipo"] or "simple").strip().casefold()
+    aliases = {
+        "simple": "simple",
+        "variable": "variable",
+        "variation": "variation",
+        "variación": "variation",
+        "variacion": "variation",
+        "variante": "variation",
+    }
+    kind = aliases.get(raw_kind, "variation" if out["sku_padre"] else "simple")
+    # Compatibilidad con capturas antiguas: la interfaz llamaba "Variable" a
+    # las filas hijas. Un SKU padre informado convierte ese registro en variación.
+    if kind == "variable" and out["sku_padre"]:
+        kind = "variation"
+    out["tipo"] = kind
+    if kind != "variation":
+        out["sku_padre"] = ""
+
     if not out["categorias"]:
         out["categorias"] = join_category_path(row.get("categoria"), row.get("subcategoria"))
 
