@@ -3,8 +3,8 @@
 La UI sigue viviendo en app.py, pero este módulo adapta la capa de inventario y
 la presentación para:
 - no leer/escribir Gabo nueva;
-- guardar las 14 columnas canónicas de Lista completa;
-- dejar Lista Simple/Lista Variable como vistas FILTER del Sheet;
+- guardar las 14 columnas canónicas y los atributos de variación en Lista completa;
+- dejar las listas y los CSV de WooCommerce como vistas calculadas del Sheet;
 - publicar automáticamente SOLO el SKU recién guardado (sin lotes);
 - aplicar una interfaz limpia, responsive y accesible sin alterar la lógica IA.
 """
@@ -109,7 +109,7 @@ old_head = """TUTORIAL_HEAD = \"\"\"
 new_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/static/tutorial.css?v=2\">
 <link rel=\"stylesheet\" href=\"/static/ui.css?v=1\">
-<script defer src=\"/static/tutorial.js?v=3\"></script>
+<script defer src=\"/static/tutorial.js?v=4\"></script>
 <script defer src=\"/static/accessibility.js?v=2\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
@@ -176,11 +176,25 @@ def _clean(value):
 
 def _canonical_row(record):
     get = record.get
-    kind = str(_clean(get("tipo", "Simple")) or "Simple").strip()
+    raw_kind = str(_clean(get("tipo", "simple")) or "simple").strip().casefold()
     sku = str(_clean(get("sku", "")) or "").strip()
     parent = str(_clean(get("sku_padre", "")) or "").strip()
-    if kind.casefold() != "variable":
-        parent = sku
+
+    aliases = {
+        "simple": "simple",
+        "variable": "variable",
+        "variation": "variation",
+        "variación": "variation",
+        "variacion": "variation",
+        "variante": "variation",
+    }
+    kind = aliases.get(raw_kind, "variation" if parent else "simple")
+    # La interfaz heredada llama "Variable" a una fila hija. Si trae SKU padre,
+    # se guarda con el tipo real que WooCommerce espera: variation.
+    if kind == "variable" and parent:
+        kind = "variation"
+    if kind != "variation":
+        parent = ""
 
     category_path = str(_clean(get("categorias", "")) or "").strip()
     if not category_path:
@@ -239,6 +253,128 @@ def _read_master(sheets_service, spreadsheet_id):
     return df
 
 
+
+def _append_master_row(session, spreadsheet_id, record):
+    """Añade una fila A:T y mantiene la relación padre/atributo de WooCommerce."""
+    sheets = legacy._get_sheets_service(session)
+    response = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{MASTER_SHEET}'!A:T",
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
+    values = response.get("values", [])
+    if not values:
+        values = [list(MASTER_COLUMNS) + ["", "", "", "", "atributo_nombre", "atributo_valor"]]
+
+    grid = []
+    for row_number, raw in enumerate(values[1:], start=2):
+        row = list(raw[:20])
+        row.extend([""] * (20 - len(row)))
+        if any(str(value or "").strip() for value in row[:14]):
+            grid.append((row_number, row))
+
+    canonical = _canonical_row(record)
+    sku = str(canonical[2] or "").strip()
+    requested_kind = str(_clean(record.get("tipo", "")) or "").strip().casefold()
+    requested_parent = str(_clean(record.get("sku_padre", "")) or "").strip()
+
+    if not sku:
+        raise ValueError("El SKU es obligatorio.")
+    if any(str(row[2] or "").strip() == sku for _, row in grid):
+        raise ValueError(f"El SKU {sku} ya existe en Lista completa.")
+    if requested_kind == "variable" and (
+        not requested_parent or requested_parent.casefold() == "no detectado"
+    ):
+        raise ValueError(
+            "Una variación necesita el SKU de un padre existente de tipo variable."
+        )
+
+    updates = []
+    attribute_name = ""
+    attribute_value = ""
+    if canonical[1] == "variation":
+        parent_matches = [
+            (row_number, row)
+            for row_number, row in grid
+            if str(row[2] or "").strip() == canonical[0]
+        ]
+        if len(parent_matches) != 1:
+            raise ValueError(
+                f"No encontré un único producto padre con SKU {canonical[0]} en Lista completa."
+            )
+        parent_row_number, parent_row = parent_matches[0]
+        if str(parent_row[1] or "").strip().casefold() != "variable":
+            raise ValueError(
+                f"El SKU {canonical[0]} existe, pero no está marcado como producto variable."
+            )
+
+        attribute_name = str(_clean(record.get("atributo_nombre", "")) or "Tamaño").strip()
+        attribute_value = str(
+            _clean(record.get("atributo_valor", ""))
+            or _clean(record.get("variante", ""))
+            or ""
+        ).strip()
+        if not attribute_value:
+            raise ValueError(
+                "Captura el valor de la variación (por ejemplo: 360ml, Fresa o 5 piezas)."
+            )
+
+        parent_attribute = str(parent_row[18] or "").strip()
+        if parent_attribute and parent_attribute.casefold() != attribute_name.casefold():
+            raise ValueError(
+                f"El padre {canonical[0]} usa el atributo {parent_attribute}; "
+                f"seleccionaste {attribute_name}."
+            )
+        if parent_attribute:
+            attribute_name = parent_attribute
+
+        options = []
+        for value in str(parent_row[19] or "").split(","):
+            value = value.strip()
+            if value and value.casefold() not in {item.casefold() for item in options}:
+                options.append(value)
+        for _, child in grid:
+            if (
+                str(child[0] or "").strip() == canonical[0]
+                and str(child[1] or "").strip().casefold() == "variation"
+                and str(child[18] or "").strip().casefold() == attribute_name.casefold()
+            ):
+                value = str(child[19] or "").strip()
+                if value and value.casefold() not in {item.casefold() for item in options}:
+                    options.append(value)
+        if attribute_value.casefold() not in {item.casefold() for item in options}:
+            options.append(attribute_value)
+
+        updates.append({
+            "range": f"'{MASTER_SHEET}'!S{parent_row_number}:T{parent_row_number}",
+            "majorDimension": "ROWS",
+            "values": [[attribute_name, ", ".join(options)]],
+        })
+
+    next_row = max((row_number for row_number, _ in grid), default=1) + 1
+    physical_row = canonical + ["", "", "", "", attribute_name, attribute_value]
+    updates.insert(0, {
+        "range": f"'{MASTER_SHEET}'!A{next_row}:T{next_row}",
+        "majorDimension": "ROWS",
+        "values": [physical_row],
+    })
+
+    headers = list(values[0][:20])
+    headers.extend([""] * (20 - len(headers)))
+    if headers[18:20] != ["atributo_nombre", "atributo_valor"]:
+        updates.append({
+            "range": f"'{MASTER_SHEET}'!S1:T1",
+            "majorDimension": "ROWS",
+            "values": [["atributo_nombre", "atributo_valor"]],
+        })
+
+    sheets.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"valueInputOption": "RAW", "data": updates},
+    ).execute()
+    return spreadsheet_id
+
+
 def _no_variable_sync(*args, **kwargs):
     return {"sincronizadas": 0, "nuevas": 0, "total": 0, "source": "formula"}
 
@@ -255,6 +391,7 @@ def _auto_sync_after_save(session, sku):
 legacy.NOMBRE_HOJA_INVENTARIO = MASTER_SHEET
 legacy.COLUMNAS_INVENTARIO = list(MASTER_COLUMNS)
 legacy._fila_formato_gabo = _canonical_row
+legacy._agregar_fila_google_sheet = _append_master_row
 legacy._leer_google_sheet = _read_master
 legacy._sincronizar_lista_variable = _no_variable_sync
 legacy._aplicar_formato_base = _no_legacy_format
