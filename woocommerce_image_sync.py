@@ -22,7 +22,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from wordpress_media import WordPressMediaClient
 from woocommerce_client import WooCommerceClient
 
-IMAGES_FOLDER_ID = os.getenv("DRIVE_IMAGES_FOLDER_ID", "1V4HgnTCRnwVGwrGD968eNdtvQDGGY7wt").strip()
+IMAGES_FOLDER_ID = os.getenv("DRIVE_IMAGES_FOLDER_ID", "").strip()
 MEDIA_SYNC_SHEET = "Media Sync"
 MEDIA_SYNC_COLUMNS = (
     "timestamp", "sku", "requested_filename", "resolved_filename", "drive_file_id",
@@ -34,8 +34,13 @@ def parse_image_names(value: Any) -> list[str]:
     return [part.strip() for part in re.split(r"[,;\n]+", str(value or "")) if part.strip()]
 
 
-def list_drive_images(drive_service, folder_id: str = IMAGES_FOLDER_ID) -> dict[str, dict[str, Any]]:
-    """Lista toda la carpeta una sola vez; índice case-insensitive por nombre."""
+def list_drive_images(drive_service, folder_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """Lista la carpeta elegida por el usuario; nunca usa un ID ajeno por defecto."""
+    folder_id = str(folder_id or IMAGES_FOLDER_ID or "").strip()
+    if not folder_id:
+        raise ValueError(
+            "No se configuró la carpeta imagenes_generadas para esta sesión."
+        )
     files: dict[str, dict[str, Any]] = {}
     token = None
     while True:

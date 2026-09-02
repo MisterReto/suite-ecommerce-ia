@@ -44,10 +44,7 @@ from woocommerce_product_sync import sync_complete_product
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
-SPREADSHEET_ID = os.environ.get(
-    "INVENTORY_SPREADSHEET_ID",
-    "1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE",
-).strip()
+SPREADSHEET_ID = os.environ.get("INVENTORY_SPREADSHEET_ID", "").strip()
 
 INVENTORY_CACHE_TTL = max(30, int(os.environ.get("SYNC_INVENTORY_CACHE_TTL", "300")))
 DRIVE_CACHE_TTL = max(60, int(os.environ.get("SYNC_DRIVE_CACHE_TTL", "1800")))

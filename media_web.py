@@ -21,7 +21,6 @@ import server as integration_server
 from wordpress_media import WordPressMediaClient
 from woocommerce_client import WooCommerceClient
 from woocommerce_image_sync import (
-    IMAGES_FOLDER_ID,
     build_image_preview,
     list_drive_images,
     read_media_cache,
@@ -40,15 +39,26 @@ def _session(request: Request):
     return (sid, legacy_app.SESSIONS.get(sid)) if sid else (None, None)
 
 
+def _images_folder_id(session) -> str:
+    drive = legacy_app._get_drive_service(session)
+    _, folder_id, _, _ = legacy_app._preparar_estructura(drive, session)
+    if not folder_id:
+        raise RuntimeError("No pude resolver imagenes_generadas para esta sesión.")
+    session["_images_folder_id"] = str(folder_id)
+    return str(folder_id)
+
+
 def _drive_index(session, force: bool = False):
-    key = f"{session.get('email','')}:{IMAGES_FOLDER_ID}"
+    folder_id = _images_folder_id(session)
+    session_key = session.get("session_id") or session.get("email", "")
+    key = f"{session_key}:{folder_id}"
     if not force:
         with _DRIVE_CACHE_LOCK:
             cached = _DRIVE_CACHE.get(key)
             if cached and time.time() - cached[0] < DRIVE_CACHE_TTL:
                 return cached[1]
     drive = legacy_app._get_drive_service(session)
-    index = list_drive_images(drive)
+    index = list_drive_images(drive, folder_id=folder_id)
     with _DRIVE_CACHE_LOCK:
         # Solo conservamos la entrada vigente de esta sesión/carpeta.
         _DRIVE_CACHE.clear()
@@ -163,6 +173,7 @@ def image_preview(request: Request):
     try:
         spreadsheet_id, inventory, sheets = _direct_inventory_context(session)
         drive_index = _drive_index(session)
+        images_folder_id = session.get("_images_folder_id", "")
         media_cache = read_media_cache(sheets, spreadsheet_id)
         wc = WooCommerceClient()
         wc_index, duplicates = wc.catalog_by_sku(include_variations=True)
@@ -180,7 +191,7 @@ def image_preview(request: Request):
         body = f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Preview imágenes</title>
 <style>body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;padding:24px}}.wrap{{max-width:1500px;margin:auto}}.card,.metric{{background:white;border-radius:14px;padding:18px;box-shadow:0 2px 8px rgba(0,0,0,.05)}}.card{{margin:14px 0}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}.metric b{{font-size:28px;display:block}}.metric span{{font-size:13px;color:#667085}}.btn,button{{display:inline-block;background:#172033;color:white;padding:10px 14px;border-radius:8px;text-decoration:none;border:0;cursor:pointer;margin-right:8px}}button:disabled{{opacity:.45;cursor:not-allowed}}input{{padding:10px;border:1px solid #cfd4dc;border-radius:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #e6e8ec;text-align:left;vertical-align:top}}th{{background:#f2f4f7;position:sticky;top:0}}.table{{max-height:620px;overflow:auto}}code{{background:#eef0f3;padding:2px 5px;border-radius:4px}}.warn{{background:#fff7e8;border:1px solid #f5b84b;padding:14px;border-radius:10px}}.ok{{background:#eefbf3;border:1px solid #86d7a2;padding:14px;border-radius:10px}}pre{{white-space:pre-wrap;word-break:break-word}}</style></head><body><div class='wrap'>
 <h1>🖼️ Preview Drive → WordPress → WooCommerce</h1>
-<div class='card'><a class='btn' href='/inventory-manager'>← Inventario</a><a class='btn' href='/woocommerce-publish-preview'>Stock</a><a class='btn' href='/wp-media-health' target='_blank'>Probar WordPress</a><p>Carpeta Drive: <code>{html.escape(IMAGES_FOLDER_ID)}</code> · WordPress: <b>{wp_state}</b></p></div>
+<div class='card'><a class='btn' href='/inventory-manager'>← Inventario</a><a class='btn' href='/woocommerce-publish-preview'>Stock</a><a class='btn' href='/wp-media-health' target='_blank'>Probar WordPress</a><p>Carpeta de esta sesión: <code>{html.escape(str(images_folder_id))}</code> · WordPress: <b>{wp_state}</b></p></div>
 <div class='{gate_class}'><b>{gate_title}</b><br><code>{html.escape(gates)}</code></div>
 <div class='grid'><div class='metric'><b>{s['products']}</b><span>SKU</span></div><div class='metric'><b>{s['with_images']}</b><span>Con nombres de imagen</span></div><div class='metric'><b>{s['requested_files']}</b><span>Referencias en Sheet</span></div><div class='metric'><b>{s['exact_files']}</b><span>Coincidencia exacta</span></div><div class='metric'><b>{s['fallback_files']}</b><span>Resueltos por patrón nuevo</span></div><div class='metric'><b>{s['optional_legacy_missing']}</b><span>Legacy opcionales ignorados</span></div><div class='metric'><b>{s['missing_files']}</b><span>Faltantes obligatorios</span></div><div class='metric'><b>{s['already_uploaded']}</b><span>Ya registrados en Media Sync</span></div><div class='metric'><b>{s['ready_products']}</b><span>Productos listos</span></div></div>
 <div class='card {'ok' if s['missing_files']==0 else 'warn'}'><b>{'✅' if s['missing_files']==0 else '⚠️'} Resolución de archivos</b><br>➖ significa una referencia antigua adicional que la app actual ya no genera; no bloquea si existen las tres imágenes canónicas.</div>

@@ -28,24 +28,9 @@ def _current_session(request: Request):
 
 def _read_master_inventory(session) -> tuple[str, list[dict[str, Any]]]:
     drive = legacy_app._get_drive_service(session)
-    manual_folder = session.get("carpeta_raiz_id_manual")
-    if manual_folder:
-        root_folder_id = manual_folder
-    else:
-        root_folder_id = legacy_app._buscar_o_crear_carpeta(
-            drive, legacy_app.NOMBRE_CARPETA_RAIZ
-        )
-
-    spreadsheet_id = legacy_app._buscar_archivo(
-        drive,
-        legacy_app.NOMBRE_GOOGLE_SHEET,
-        root_folder_id,
-        mime_type="application/vnd.google-apps.spreadsheet",
-    )
-    if not spreadsheet_id:
-        raise RuntimeError("No encontré 'inventario_completo' en la carpeta configurada de Google Drive.")
-
+    _, _, spreadsheet_id, _ = legacy_app._preparar_estructura(drive, session)
     sheets = legacy_app._get_sheets_service(session)
+    legacy_app._validar_inventario_preparado(sheets, spreadsheet_id)
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{MASTER_SHEET}'!A:N",
