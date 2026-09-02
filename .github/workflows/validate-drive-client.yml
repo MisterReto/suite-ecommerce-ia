@@ -1,0 +1,43 @@
+name: Validar entrega Drive por cliente
+
+on:
+  push:
+    branches:
+      - codex/drive-client-handoff
+      - agent/woocommerce-inventory-foundation
+  pull_request:
+    branches:
+      - agent/woocommerce-inventory-foundation
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Compilar Python
+        run: python -m compileall -q .
+      - name: Verificar arranque y adaptadores
+        env:
+          GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com
+          GOOGLE_CLIENT_SECRET: test-secret
+          GOOGLE_REDIRECT_URI: https://example.com/auth/callback
+        run: |
+          python - <<'PY'
+          import product_web_ai
+          import app
+
+          assert product_web_ai.fastapi_app is not None
+          assert app.NOMBRE_HOJA_INVENTARIO == "Lista completa"
+          assert app.NOMBRE_GOOGLE_SHEET == "inventario_completo"
+          assert hasattr(app, "_convertir_inventario_importable")
+          assert hasattr(app, "_validar_inventario_preparado")
+          assert app.MODELO_IMAGEN == "gemini-3.1-flash-image"
+          print("Arranque canónico correcto.")
+          PY

@@ -8,6 +8,7 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 os.environ.setdefault("OAUTHLIB_IGNORE_SCOPE_CHANGE", "1")
 
 import io
+import html as html_lib
 import re
 import json
 import secrets
@@ -26,7 +27,7 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 from google import genai
 from google.genai import types
@@ -34,8 +35,8 @@ from google.genai import types
 # ==========================================
 # 0. CONFIGURACIÓN INICIAL (variables de entorno / secretos)
 # ==========================================
-MODELO_TEXTO = "gemini-2.5-flash"
-MODELO_IMAGEN = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+MODELO_TEXTO = os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+MODELO_IMAGEN = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
 MAX_INTENTOS_IMAGEN = 3
 PUNTUACION_MINIMA_QA = 90
 
@@ -84,6 +85,12 @@ NOMBRE_HOJA_VARIABLE = "Lista Variable"
 # una versión anterior de la app. El CSV no se elimina y queda como respaldo.
 NOMBRE_CSV_LEGACY = "inventario_completo.csv"
 NOMBRE_LOGO = "logo_rincon_asia.png"
+NOMBRES_INVENTARIO_IMPORTABLE = (
+    "inventario_completo.xlsx",
+    "inventario_completo.xls",
+    "inventario_completo.ods",
+    "inventario_completo.csv",
+)
 
 COLUMNAS_INVENTARIO = [
     'sku_padre', 'tipo', 'sku', 'nombre_producto',
@@ -392,6 +399,83 @@ def _buscar_archivo(service, nombre, parent_id, mime_type=None):
     res = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     archivos = res.get('files', [])
     return archivos[0]['id'] if archivos else None
+
+
+def _buscar_inventario_importable(service, parent_id):
+    """Encuentra el XLSX/ODS/CSV entregado dentro de la carpeta del cliente."""
+    permitidos = {nombre.casefold() for nombre in NOMBRES_INVENTARIO_IMPORTABLE}
+    encontrados = []
+    page_token = None
+    while True:
+        respuesta = service.files().list(
+            q=f"'{parent_id}' in parents and trashed = false",
+            spaces="drive",
+            pageSize=1000,
+            pageToken=page_token,
+            fields="nextPageToken,files(id,name,mimeType,modifiedTime)",
+        ).execute()
+        for archivo in respuesta.get("files", []):
+            if str(archivo.get("name", "")).casefold() in permitidos:
+                encontrados.append(archivo)
+        page_token = respuesta.get("nextPageToken")
+        if not page_token:
+            break
+    if not encontrados:
+        return None
+    prioridad = {nombre.casefold(): posicion for posicion, nombre in enumerate(NOMBRES_INVENTARIO_IMPORTABLE)}
+    encontrados.sort(key=lambda item: prioridad.get(str(item.get("name", "")).casefold(), 999))
+    return encontrados[0]
+
+
+def _convertir_inventario_importable(service, carpeta_raiz_id):
+    """Convierte el archivo subido a una hoja nativa sin borrar el original."""
+    origen = _buscar_inventario_importable(service, carpeta_raiz_id)
+    if not origen:
+        return None
+
+    buffer = io.BytesIO()
+    descarga = MediaIoBaseDownload(buffer, service.files().get_media(fileId=origen["id"]))
+    terminado = False
+    while not terminado:
+        _, terminado = descarga.next_chunk()
+    buffer.seek(0)
+
+    mime_origen = origen.get("mimeType") or "application/octet-stream"
+    media = MediaIoBaseUpload(buffer, mimetype=mime_origen, resumable=False)
+    metadata = {
+        "name": NOMBRE_GOOGLE_SHEET,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [carpeta_raiz_id],
+        "description": f"Convertido automáticamente desde {origen.get('name', 'archivo importado')}.",
+    }
+    creado = service.files().create(
+        body=metadata,
+        media_body=media,
+        fields="id,name,mimeType",
+    ).execute()
+    return creado.get("id")
+
+
+def _validar_inventario_preparado(sheets_service, spreadsheet_id):
+    """Verifica la tabla canónica antes de permitir que la carpeta quede activa."""
+    respuesta = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A:N",
+        valueRenderOption="UNFORMATTED_VALUE",
+    ).execute()
+    values = respuesta.get("values", [])
+    encabezados = [str(value or "").strip() for value in (values[0] if values else [])]
+    faltantes = [columna for columna in COLUMNAS_INVENTARIO if columna not in encabezados]
+    if faltantes:
+        raise ValueError(
+            "El inventario no tiene la estructura esperada. Faltan: "
+            + ", ".join(faltantes)
+        )
+    filas = sum(
+        1 for row in values[1:]
+        if any(str(value or "").strip() for value in row[:len(COLUMNAS_INVENTARIO)])
+    )
+    return filas
 
 
 def _obtener_gid_inventario(sheets_service, spreadsheet_id):
@@ -943,8 +1027,14 @@ def _crear_o_encontrar_inventario(service, sheets_service, carpeta_raiz_id):
     spreadsheet_id = _buscar_archivo(
         service, NOMBRE_GOOGLE_SHEET, carpeta_raiz_id, mime_type=mime_sheet
     )
-    creado = spreadsheet_id is None
-    if creado:
+    creado = False
+    if spreadsheet_id is None:
+        # Una carpeta descargada y vuelta a subir contiene un XLSX, no una hoja
+        # nativa. Lo convertimos una sola vez y conservamos el archivo original.
+        spreadsheet_id = _convertir_inventario_importable(service, carpeta_raiz_id)
+
+    if spreadsheet_id is None:
+        creado = True
         metadata = {
             'name': NOMBRE_GOOGLE_SHEET,
             'mimeType': mime_sheet,
@@ -953,12 +1043,13 @@ def _crear_o_encontrar_inventario(service, sheets_service, carpeta_raiz_id):
         spreadsheet_id = service.files().create(body=metadata, fields='id').execute()['id']
 
     sheet_gid = _obtener_gid_inventario(sheets_service, spreadsheet_id)
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{NOMBRE_HOJA_INVENTARIO}'!A1:N1",
-        valueInputOption='RAW',
-        body={'values': [COLUMNAS_INVENTARIO]},
-    ).execute()
+    if creado:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{NOMBRE_HOJA_INVENTARIO}'!A1:N1",
+            valueInputOption='RAW',
+            body={'values': [COLUMNAS_INVENTARIO]},
+        ).execute()
     _aplicar_formato_base(
         sheets_service, spreadsheet_id, sheet_gid, agregar_reglas=creado
     )
@@ -1931,9 +2022,14 @@ def obtener_subcategorias(request: gr.Request):
 def _estado_login_html(request: gr.Request):
     sesion = _obtener_sesion(request)
     if sesion:
-        email = sesion.get("email", "tu cuenta")
-        tiene_key = "✅ guardada" if sesion.get("gemini_key") else "❌ falta guardarla abajo"
-        carpeta_txt = "personalizada elegida por ti" if sesion.get("carpeta_raiz_id_manual") else "automática 'Proyecto_IA'"
+        email = html_lib.escape(str(sesion.get("email", "tu cuenta")))
+        tiene_key = "✅ propia del cliente" if sesion.get("gemini_key") else "❌ falta configurarla"
+        carpeta_nombre = (
+            sesion.get("carpeta_raiz_nombre_manual") or "Carpeta del cliente"
+            if sesion.get("carpeta_raiz_id_manual")
+            else "Proyecto_IA (automática)"
+        )
+        carpeta_txt = html_lib.escape(str(carpeta_nombre))
         return (
             f"<div style='padding:12px;border-radius:8px;background:#eafaf1;'>"
             f"✅ Conectado a Google Drive como <b>{email}</b> &nbsp;|&nbsp; "
@@ -1959,11 +2055,24 @@ def cargar_estado_inicial(request: gr.Request):
 def guardar_api_key(api_key_input, request: gr.Request):
     sesion = _obtener_sesion(request)
     if not sesion:
-        return "❌ Primero conéctate con Google Drive.", _estado_login_html(request)
-    if not api_key_input or not api_key_input.strip():
-        return "❌ Ingresa una API key válida.", _estado_login_html(request)
-    _guardar_sesion(request.cookies.get("session_id"), gemini_key=api_key_input.strip())
-    return "✅ API Key guardada para tu sesión.", _estado_login_html(request)
+        return (
+            "❌ Primero conéctate con Google Drive.",
+            _estado_login_html(request),
+            gr.update(value=""),
+        )
+    clave = str(api_key_input or "").strip()
+    if not clave:
+        return (
+            "❌ Ingresa una clave válida.",
+            _estado_login_html(request),
+            gr.update(value=""),
+        )
+    _guardar_sesion(request.cookies.get("session_id"), gemini_key=clave)
+    return (
+        "✅ Clave guardada solo en esta sesión. El consumo se cobrará al proyecto de Google del cliente.",
+        _estado_login_html(request),
+        gr.update(value=""),
+    )
 
 
 def refrescar_categorias(request: gr.Request):
@@ -1979,20 +2088,62 @@ def guardar_carpeta_personalizada(texto_carpeta, request: gr.Request):
     session_id = request.cookies.get("session_id")
 
     if not folder_id:
-        _guardar_sesion(session_id, carpeta_raiz_id_manual=None)
-        return "↩️ Se usará la carpeta automática 'Proyecto_IA' en la raíz de tu Drive.", _estado_login_html(request)
+        _guardar_sesion(
+            session_id,
+            carpeta_raiz_id_manual=None,
+            carpeta_raiz_nombre_manual=None,
+        )
+        return (
+            "↩️ Se usará la carpeta automática 'Proyecto_IA' en la raíz de tu Drive.",
+            _estado_login_html(request),
+        )
 
+    anterior_id = sesion.get("carpeta_raiz_id_manual")
+    anterior_nombre = sesion.get("carpeta_raiz_nombre_manual")
     try:
         service = _get_drive_service(sesion)
-        info = service.files().get(fileId=folder_id, fields="id, name, mimeType").execute()
+        info = service.files().get(fileId=folder_id, fields="id,name,mimeType").execute()
         if info.get("mimeType") != "application/vnd.google-apps.folder":
-            return f"❌ Ese enlace/ID no es una carpeta (es de tipo: {info.get('mimeType')}).", _estado_login_html(request)
-        _guardar_sesion(session_id, carpeta_raiz_id_manual=folder_id)
-        return f"✅ Listo, ahora se usará tu carpeta '{info.get('name')}' para leer y guardar.", _estado_login_html(request)
-    except Exception as e:
+            return (
+                f"❌ Ese enlace/ID no es una carpeta (tipo: {info.get('mimeType')}).",
+                _estado_login_html(request),
+            )
+
+        mime_sheet = "application/vnd.google-apps.spreadsheet"
+        hoja_nativa = _buscar_archivo(
+            service, NOMBRE_GOOGLE_SHEET, folder_id, mime_type=mime_sheet
+        )
+        archivo_importable = _buscar_inventario_importable(service, folder_id)
+        if not hoja_nativa and not archivo_importable:
+            return (
+                "❌ La carpeta no contiene una hoja nativa 'inventario_completo' ni "
+                "inventario_completo.xlsx/.xls/.ods/.csv. No se cambió tu configuración.",
+                _estado_login_html(request),
+            )
+
+        _guardar_sesion(
+            session_id,
+            carpeta_raiz_id_manual=folder_id,
+            carpeta_raiz_nombre_manual=info.get("name") or "Carpeta del cliente",
+        )
+        _, carpeta_imagenes_id, spreadsheet_id, _ = _preparar_estructura(service, sesion)
+        filas = _validar_inventario_preparado(
+            _get_sheets_service(sesion), spreadsheet_id
+        )
         return (
-            f"❌ No pude acceder a esa carpeta. Revisa que el enlace/ID sea correcto y que la carpeta "
-            f"exista en tu Drive. Detalle: {e}",
+            f"✅ Carpeta validada: '{info.get('name')}'. Inventario: {filas} productos. "
+            f"Imágenes: carpeta lista ({carpeta_imagenes_id}).",
+            _estado_login_html(request),
+        )
+    except Exception as e:
+        _guardar_sesion(
+            session_id,
+            carpeta_raiz_id_manual=anterior_id,
+            carpeta_raiz_nombre_manual=anterior_nombre,
+        )
+        return (
+            "❌ No pude validar esa carpeta y conservé la configuración anterior. "
+            f"Detalle: {e}",
             _estado_login_html(request),
         )
 
@@ -2033,11 +2184,13 @@ with gr.Blocks() as demo:
         # ==================================
         with gr.Tab("⚙️ Configuración"):
             gr.Markdown(
-                "### 1. Conecta tu Google Drive\n"
-                "Usa el enlace de arriba (o el de abajo) para iniciar sesión con Google. "
-                "Todo lo que generes se guardará en la carpeta `Proyecto_IA` de **tu propio Drive**.\n\n"
-                "### 2. Guarda tu API Key de Gemini\n"
-                "Se usa solo durante tu sesión; no se comparte con otros usuarios ni se guarda en el código.",
+                "### 1. Conecta el Google Drive del cliente\n"
+                "Cada cuenta usa su propia carpeta. Si recibiste el paquete, súbelo completo "
+                "a Drive o usa directamente la carpeta compartida.\n\n"
+                "### 2. Configura la clave y facturación de Gemini\n"
+                "Crea la clave en [Google AI Studio](https://aistudio.google.com/apikey) y activa "
+                "la facturación/Paid tier en el proyecto del cliente cuando corresponda. La clave "
+                "se guarda solamente en la sesión del servidor; no se escribe en Drive ni GitHub.",
                 elem_id="tour-config-intro",
             )
             gr.HTML("<a href='/login'><b>🔐 Conectar / Reconectar con Google Drive</b></a>")
@@ -2051,17 +2204,18 @@ with gr.Blocks() as demo:
             btn_refrescar_cats = gr.Button("🔄 Actualizar categorías desde mi Drive", size="sm")
 
             gr.Markdown(
-                "### 3. (Opcional) Elige qué carpeta de tu Drive usar\n"
-                "Por defecto la app crea/usa una carpeta llamada `Proyecto_IA` en la raíz de tu Drive. "
-                "Si prefieres usar otra carpeta que ya tengas, ábrela en Google Drive, copia el enlace "
-                "de la barra de direcciones y pégalo aquí (también aceptamos solo el ID)."
+                "### 3. Selecciona y valida la carpeta del cliente\n"
+                "Pega el enlace de la carpeta que contiene una hoja nativa `inventario_completo` "
+                "o el archivo `inventario_completo.xlsx`. Si es XLSX/ODS/CSV, la app crea una hoja "
+                "nativa dentro de la misma carpeta y conserva el archivo original como respaldo. "
+                "La subcarpeta `imagenes_generadas` se usa siempre dentro de esa misma carpeta."
             )
             in_carpeta = gr.Textbox(
                 label="Enlace o ID de tu carpeta de Drive",
                 placeholder="https://drive.google.com/drive/folders/XXXXXXXXXXXXXXXX",
                 elem_id="tour-folder",
             )
-            btn_guardar_carpeta = gr.Button("📂 Usar esta carpeta")
+            btn_guardar_carpeta = gr.Button("📂 Validar y usar esta carpeta", variant="primary")
 
         # ==================================
         # PESTAÑA 1: INGRESO Y EDICIÓN
@@ -2218,7 +2372,11 @@ with gr.Blocks() as demo:
     # ==========================================
     demo.load(cargar_estado_inicial, inputs=None, outputs=[estado_login, in_cat, in_subcat])
 
-    btn_guardar_key.click(guardar_api_key, inputs=[in_api_key], outputs=[estado_config, estado_login])
+    btn_guardar_key.click(
+        guardar_api_key,
+        inputs=[in_api_key],
+        outputs=[estado_config, estado_login, in_api_key],
+    )
     btn_refrescar_cats.click(refrescar_categorias, inputs=None, outputs=[in_cat, in_subcat])
     btn_guardar_carpeta.click(guardar_carpeta_personalizada, inputs=[in_carpeta], outputs=[estado_config, estado_login])
 
