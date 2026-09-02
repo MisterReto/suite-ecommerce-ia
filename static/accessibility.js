@@ -33,7 +33,8 @@
       .rda-tool-link:focus-visible{outline:3px solid rgba(46,144,250,.38);outline-offset:2px}
       @media(max-width:720px){.rda-tool-nav{align-items:flex-start;flex-direction:column;gap:6px}.rda-tool-nav-links{width:100%}.rda-tool-nav-label{padding-left:3px}.rda-tool-link{min-height:44px}}
     `;
-    root.appendChild(style);
+    const styleHost = root === document ? document.head : root;
+    styleHost.appendChild(style);
   }
 
   function addToolNavigation(root) {
