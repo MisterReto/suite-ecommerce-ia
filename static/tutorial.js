@@ -321,6 +321,7 @@
         texto.textContent = paso.texto;
         progreso.style.width = `${((indiceActual + 1) / pasos.length) * 100}%`;
         btnAnterior.disabled = indiceActual === 0;
+        btnSiguiente.disabled = false;
         btnSiguiente.textContent = indiceActual === pasos.length - 1 ? "Terminar" : "Siguiente";
         tarjeta.classList.add("visible");
         actualizarPosicion();
