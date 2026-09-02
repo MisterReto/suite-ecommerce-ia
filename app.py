@@ -1968,8 +1968,11 @@ def detectar_padre(nombre_actual, marca_actual, request: gr.Request):
         if candidatos.empty:
             return "No detectado"
 
-        if marca_actual and 'marca' in df.columns:
-            mismos_marca = df[df['marca'].astype(str).str.strip().str.lower() == str(marca_actual).strip().lower()]
+        if marca_actual and 'marca' in candidatos.columns:
+            mismos_marca = candidatos[
+                candidatos['marca'].astype(str).str.strip().str.lower()
+                == str(marca_actual).strip().lower()
+            ]
             if not mismos_marca.empty:
                 candidatos = mismos_marca
 
