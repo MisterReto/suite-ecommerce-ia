@@ -1895,13 +1895,24 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
     yield mensaje_final, out_1, out_2, out_3, [], [], []
 
 
-def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, precio, cat, subcat, etiquetas,
+def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, atributo_nombre,
+                           atributo_valor, precio, cat, subcat, etiquetas,
                            desc_corta, desc_larga, request: gr.Request):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
         return error
     if not sku:
         return "❌ Error: No hay datos para guardar."
+    if tipo == "Variable":
+        padre = str(sku_padre or "").strip()
+        valor_atributo = str(atributo_valor or gramaje or "").strip()
+        if not padre or padre.casefold() == "no detectado":
+            return (
+                "❌ Una variación necesita el SKU de un producto padre que ya exista "
+                "como tipo variable en Lista completa."
+            )
+        if not valor_atributo:
+            return "❌ Captura el valor de la variación (por ejemplo: 360ml, Fresa o 5 piezas)."
     try:
         _, spreadsheet_id, _ = _cargar_df(sesion)
         lista_imagenes_str = f"{sku}_1_hd.jpg,{sku}_2_uso.jpg,{sku}_3_comercial.jpg"
@@ -1910,6 +1921,8 @@ def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, precio,
             'tipo': tipo,
             'sku': sku,
             'variante': gramaje,
+            'atributo_nombre': atributo_nombre or "Tamaño",
+            'atributo_valor': atributo_valor or gramaje,
             'nombre_producto': nombre,
             'descripcion_corta': desc_corta,
             'descripcion_larga': desc_larga,
@@ -1948,8 +1961,18 @@ def detectar_padre(nombre_actual, marca_actual, request: gr.Request):
             return "No detectado"
 
         candidatos = df
-        if marca_actual and 'marca' in df.columns:
-            mismos_marca = df[df['marca'].astype(str).str.strip().str.lower() == str(marca_actual).strip().lower()]
+        if 'tipo' in candidatos.columns:
+            candidatos = candidatos[
+                candidatos['tipo'].astype(str).str.strip().str.casefold() == 'variable'
+            ]
+        if candidatos.empty:
+            return "No detectado"
+
+        if marca_actual and 'marca' in candidatos.columns:
+            mismos_marca = candidatos[
+                candidatos['marca'].astype(str).str.strip().str.lower()
+                == str(marca_actual).strip().lower()
+            ]
             if not mismos_marca.empty:
                 candidatos = mismos_marca
 
@@ -2258,11 +2281,25 @@ with gr.Blocks() as demo:
                     with gr.Group():
                         in_tipo = gr.Radio(
                             ["Simple", "Variable"],
-                            label="Tipo de Producto",
+                            label="Tipo de registro (Variable = variación)",
                             value="Simple",
                             elem_id="tour-product-type",
                         )
-                        in_sku_padre = gr.Textbox(label="SKU Padre Detectado", visible=False, interactive=True)
+                        in_sku_padre = gr.Textbox(
+                            label="SKU del producto padre (obligatorio para variaciones)",
+                            visible=False,
+                            interactive=True,
+                        )
+                        with gr.Row():
+                            in_atributo_nombre = gr.Dropdown(
+                                ["Tamaño", "Sabor", "Versión", "Cantidad"],
+                                label="Atributo de la variación",
+                                value="Tamaño",
+                            )
+                            in_atributo_valor = gr.Textbox(
+                                label="Valor de la variación",
+                                placeholder="Ej. 360ml, Fresa o 5 piezas; si queda vacío se usa la medida",
+                            )
 
                     with gr.Group():
                         in_cat = gr.Dropdown(choices=CATEGORIAS_DEFECTO, label="Categoría (Estricta)")
@@ -2429,7 +2466,8 @@ with gr.Blocks() as demo:
 
     btn_guardar.click(
         guardar_producto_sheet,
-        inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje, in_precio,
+        inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje,
+                in_atributo_nombre, in_atributo_valor, in_precio,
                 in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga],
         outputs=[estado]
     )
