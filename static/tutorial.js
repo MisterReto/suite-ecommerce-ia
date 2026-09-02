@@ -9,74 +9,74 @@
             texto: "Este recorrido te enseñará el flujo completo: conectar tu cuenta, analizar un producto, revisar la información, generar fotografías y guardar el registro. Puedes salir cuando quieras y volver a abrirlo con el botón “Ver tutorial”."
         },
         {
-            tab: "Configuración",
+            tab: "Ajustes",
             selector: "#tour-config-intro",
             titulo: "1. Conecta tu Google Drive",
             texto: "Comienza conectando tu cuenta. La app usará tu propio Drive para leer categorías, guardar las imágenes y actualizar el inventario. El recuadro te indicará si la conexión está lista."
         },
         {
-            tab: "Configuración",
+            tab: "Ajustes",
             selector: "#tour-api-key",
             titulo: "2. Guarda tu API Key",
             texto: "Pega aquí tu API Key de Gemini y presiona “Guardar API Key”. Se mantiene únicamente durante tu sesión y permite realizar el análisis y la generación de imágenes."
         },
         {
-            tab: "Configuración",
+            tab: "Ajustes",
             selector: "#tour-folder",
             titulo: "3. Elige la carpeta (opcional)",
             texto: "Si no seleccionas una carpeta, se usará Proyecto_IA. También puedes pegar el enlace de otra carpeta de Drive para mantener todos los archivos en la ubicación que prefieras."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-upload-front",
             titulo: "4. Sube la fotografía del producto",
             texto: "Usa una foto frontal nítida y, si la tienes, agrega también la parte trasera. Procura que el empaque completo sea visible y que el texto pueda leerse."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-analyze",
             titulo: "5. Analiza el producto",
             texto: "Este botón identifica el producto y propone nombre, marca, medida, SKU, precio, categoría, etiquetas y descripciones SEO. Espera a que termine antes de continuar."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-product-name",
             titulo: "6. Revisa la información",
             texto: "La IA acelera la captura, pero tú mantienes el control. Revisa especialmente el nombre, la marca, la medida, el precio, el SKU, las categorías y las descripciones antes de guardar."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-product-type",
             titulo: "7. Elige Simple o Variable",
             texto: "Selecciona Simple cuando el producto no tenga otras presentaciones relacionadas. Usa Variable cuando comparta un producto padre con otros tamaños, gramajes o sabores."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-generate-photos",
             titulo: "8. Genera las fotografías comerciales",
             texto: "La app crea tres imágenes cuadradas: fondo blanco, lifestyle y comercial. Antes de generarlas, confirma que la foto original y la información del producto sean correctas."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-photo-feedback",
             titulo: "9. Corrige una imagen",
             texto: "Si la IA modifica el empaque, inventa un logo, cambia la escala o comete otro error, abre el panel de la imagen, selecciona el problema y presiona Rehacer. Las correcciones se acumulan por imagen."
         },
         {
-            tab: "Ingreso y Edición de Productos",
+            tab: "Nuevo producto",
             selector: "#tour-save-product",
             titulo: "10. Aprueba y guarda",
-            texto: "Cuando los datos y las imágenes estén correctos, guarda el producto. El registro se añadirá a Gabo nueva y la app mantendrá sincronizada la Lista Variable cuando corresponda."
+            texto: "Cuando los datos y las imágenes estén correctos, guarda el producto. El registro se añadirá a Lista completa y la app intentará crear o actualizar ese SKU en WooCommerce."
         },
         {
-            tab: "Variantes de Presentación",
+            tab: "Buscar variantes",
             selector: "#tour-lens-image",
             titulo: "11. Busca otras presentaciones",
             texto: "Esta pestaña funciona como una búsqueda visual: reutiliza la foto frontal o sube otra, busca tamaños o gramajes relacionados y aplica la recomendación de tipo al producto."
         },
         {
             titulo: "¡Recorrido terminado!",
-            texto: "Ya conoces el flujo principal. El tutorial solamente se inicia cuando presionas el botón “VER TUTORIAL GUIADO”, así que puedes repetirlo todas las veces que quieras."
+            texto: "Ya conoces el flujo principal. El tutorial solamente se inicia cuando presionas el botón “Ver guía de uso”, así que puedes repetirlo todas las veces que quieras."
         }
     ];
 
