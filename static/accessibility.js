@@ -42,9 +42,11 @@
 
     const items = [
       { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar y publicar un producto con IA' },
+      { href: '/inventory-sync', icon: '🔎', label: 'Sheets ↔ WooCommerce', help: 'Comprobar si la tabla de Google Sheets coincide con la tienda' },
       { href: '/inventory-manager', icon: '📦', label: 'Inventario', help: 'Consultar y ajustar existencias' },
+      { href: '/inventory-count', icon: '🧮', label: 'Conteo inicial', help: 'Registrar existencias físicas iniciales por bloques' },
       { href: '/woocommerce-image-preview', icon: '🖼️', label: 'Imágenes', help: 'Revisar imágenes de Drive y WordPress' },
-      { href: '/woocommerce-product-sync', icon: '🔄', label: 'WooCommerce', help: 'Sincronizar manualmente un SKU' },
+      { href: '/woocommerce-product-sync', icon: '🔄', label: 'Sincronizar SKU', help: 'Sincronizar manualmente un SKU' },
       { href: '/woocommerce-publish-preview', icon: '📊', label: 'Preview stock', help: 'Comparar stock antes de escribir' },
     ];
 
