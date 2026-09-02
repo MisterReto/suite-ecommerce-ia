@@ -47,8 +47,8 @@
         {
             tab: "Nuevo producto",
             selector: "#tour-product-type",
-            titulo: "7. Elige Simple o Variable",
-            texto: "Selecciona Simple cuando el producto no tenga otras presentaciones relacionadas. Usa Variable cuando comparta un producto padre con otros tamaños, gramajes o sabores."
+            titulo: "7. Elige Simple o Variación",
+            texto: "Selecciona Simple cuando el producto sea independiente. Selecciona Variable en la app cuando esta fila sea una variación; después confirma el SKU del producto padre y su atributo, por ejemplo Sabor: Fresa o Tamaño: 360ml."
         },
         {
             tab: "Nuevo producto",
@@ -163,12 +163,28 @@
         });
     };
 
-    const activarTab = (nombre) => {
-        if (!nombre) return;
+    const activarTab = async (nombre) => {
+        if (!nombre) return true;
         const buscado = normalizar(nombre);
-        const tabs = buscarElementos('[role="tab"]');
-        const tab = tabs.find((elemento) => normalizar(elemento.textContent).includes(buscado));
-        if (tab && tab.getAttribute("aria-selected") !== "true") tab.click();
+
+        // Gradio reemplaza nodos al cambiar de pestaña. Reintentamos sobre el
+        // nodo visible y esperamos a que la selección quede confirmada.
+        for (let intento = 0; intento < 20; intento += 1) {
+            const coincidencias = buscarElementos('[role="tab"]')
+                .filter((elemento) => normalizar(elemento.textContent).includes(buscado));
+            const tab = coincidencias.find((elemento) => elemento.getClientRects().length > 0)
+                || coincidencias[0];
+
+            if (tab) {
+                if (tab.getAttribute("aria-selected") === "true") return true;
+                tab.click();
+                await esperar(120);
+                if (tab.isConnected && tab.getAttribute("aria-selected") === "true") return true;
+            } else {
+                await esperar(120);
+            }
+        }
+        return false;
     };
 
     const ocultarSombras = () => {
@@ -278,11 +294,21 @@
 
         if (objetivoActual) objetivoActual.classList.remove("suite-tour-target");
         objetivoActual = null;
-        activarTab(paso.tab);
-        await esperar(paso.tab ? 260 : 30);
+        btnAnterior.disabled = true;
+        btnSiguiente.disabled = true;
+        await activarTab(paso.tab);
+        await esperar(paso.tab ? 100 : 30);
+        if (!activo) return;
 
         if (paso.selector) {
-            objetivoActual = buscarElemento(paso.selector);
+            for (let intento = 0; intento < 15; intento += 1) {
+                const candidato = buscarElemento(paso.selector);
+                if (candidato && rectanguloVisible(candidato)) {
+                    objetivoActual = candidato;
+                    break;
+                }
+                await esperar(100);
+            }
             if (objetivoActual) {
                 objetivoActual.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
                 await esperar(360);
