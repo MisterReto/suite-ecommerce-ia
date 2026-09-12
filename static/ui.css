@@ -317,10 +317,40 @@ body { color: var(--rda-text); }
   .rda-flow-badge { white-space: normal; }
   .rda-workflow { grid-template-columns: 1fr; }
   .gradio-container .row { flex-direction: column !important; }
-  .gradio-container .column { min-width: 100% !important; width: 100% !important; }
+  /* Gradio also calls columns .col and sets inline minimum widths. */
+  .gradio-container,
+  .gradio-container .row,
+  .gradio-container .column,
+  .gradio-container .col,
+  .gradio-container .row > *,
+  .gradio-container .block,
+  .gradio-container .form,
+  .gradio-container .group {
+    box-sizing: border-box;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  .gradio-container .column,
+  .gradio-container .col,
+  .gradio-container .row > * { width: 100% !important; flex: 1 1 auto !important; }
+  .gradio-container button { white-space: normal; overflow-wrap: anywhere; }
+  .gradio-container .prose,
+  .gradio-container .gradio-html { overflow-wrap: anywhere; }
+  .gradio-container input:not([type="checkbox"]):not([type="radio"]),
+  .gradio-container textarea,
+  .gradio-container select { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .gradio-container .tab-nav,
+  .gradio-container [role="tablist"] { position: static; box-sizing: border-box; }
+  .gradio-container [role="tab"] { flex-shrink: 0; }
   .gradio-container [role="tablist"] { width: 100%; }
-  #tour-launcher { margin-left: 0 !important; }
-  #tour-save-product { bottom: 8px; }
+  #tour-launcher {
+    position: static !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    margin: 0 0 12px !important;
+  }
+  #tour-save-product { position: static; }
 }
 
 @media (prefers-reduced-motion: reduce) {

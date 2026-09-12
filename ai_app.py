@@ -107,10 +107,10 @@ old_head = """TUTORIAL_HEAD = \"\"\"
 <script defer src=\"/static/tutorial.js?v=2\"></script>
 \"\"\""""
 new_head = """TUTORIAL_HEAD = \"\"\"
-<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=2\">
-<link rel=\"stylesheet\" href=\"/static/ui.css?v=1\">
+<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=3\">
+<link rel=\"stylesheet\" href=\"/static/ui.css?v=2\">
 <script defer src=\"/static/tutorial.js?v=5\"></script>
-<script defer src=\"/static/accessibility.js?v=3\"></script>
+<script defer src=\"/static/accessibility.js?v=4\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
@@ -136,11 +136,11 @@ _replace_once(old_tutorial_button, new_tutorial_button, "botón de ayuda")
 
 # La tarea principal abre por defecto; Configuración queda disponible como ajuste.
 _replace_once("    with gr.Tabs():", "    with gr.Tabs(selected=1):", "pestaña inicial")
-_replace_once('        with gr.Tab("⚙️ Configuración"):', '        with gr.Tab("⚙️ Ajustes"):', "nombre tab ajustes")
+_replace_once('        with gr.Tab("⚙️ Configuración"):', '        with gr.Tab("⚙️ Ajustes", id=0):', "nombre tab ajustes")
 
 old_product_start = '''        with gr.Tab("1. Ingreso y Edición de Productos"):
             estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)'''
-new_product_start = '''        with gr.Tab("＋ Nuevo producto"):
+new_product_start = '''        with gr.Tab("＋ Nuevo producto", id=1):
             gr.HTML("""<div class=\"rda-workflow\" aria-label=\"Pasos para publicar un producto\">\n              <div class=\"rda-step\"><span class=\"rda-step-num\">1</span><div><strong>Captura</strong><span>Fotos del producto</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">2</span><div><strong>Revisa</strong><span>Datos, precio y clasificación</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">3</span><div><strong>Genera</strong><span>Imágenes para e-commerce</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">4</span><div><strong>Publica</strong><span>Sheets + WooCommerce</span></div></div>\n            </div>""")
             estado = gr.Textbox(label="Estado del proceso", interactive=False, lines=3, elem_id="process-status")'''
 _replace_once(old_product_start, new_product_start, "inicio de nuevo producto")
@@ -150,7 +150,7 @@ _replace_once('                    gr.Markdown("### 2. Clasificación, Textos y 
 _replace_once('                    gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")', '                    gr.Markdown("### ✨ Imágenes para la tienda")', "título imágenes")
 _replace_once('                        "🔍 Analizar Producto (SEO + Info + Precio)",', '                        "✨ Analizar producto con IA",', "botón analizar")
 _replace_once('                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)",', '                "✅ Guardar y publicar producto",', "botón guardar")
-_replace_once('        with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):', '        with gr.Tab("🔎 Buscar variantes"):', "nombre tab variantes")
+_replace_once('        with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):', '        with gr.Tab("🔎 Buscar variantes", id=2):', "nombre tab variantes")
 
 
 # Ejecutamos app.py en un módulo independiente; no modificamos el archivo original.

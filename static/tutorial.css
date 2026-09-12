@@ -25,6 +25,7 @@ video { transform: none !important; }
     transition: all 180ms ease;
 }
 #suite-tour-card {
+    box-sizing: border-box;
     display: none;
     position: fixed;
     z-index: 10002;
@@ -147,6 +148,10 @@ video { transform: none !important; }
         bottom: 12px !important;
         width: auto !important;
         max-height: min(58vh, 520px);
+        max-height: min(58dvh, 520px);
+        bottom: max(12px, env(safe-area-inset-bottom)) !important;
+        overscroll-behavior: contain;
+        overflow-wrap: anywhere;
         padding: 20px;
     }
     #suite-tour-actions {
@@ -155,6 +160,12 @@ video { transform: none !important; }
     }
     #suite-tour-actions > div {
         justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+    #suite-tour-actions button,
+    #suite-tour-close {
+        min-height: 44px;
+        min-width: 44px;
     }
 }
 @media (prefers-reduced-motion: reduce) {
