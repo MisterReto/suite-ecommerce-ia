@@ -14,7 +14,7 @@
     if (root === document || root.querySelector('link[data-rda-ui-css]')) return;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/static/ui.css?v=1';
+    link.href = '/static/ui.css?v=2';
     link.dataset.rdaUiCss = 'true';
     root.appendChild(link);
   }
@@ -31,7 +31,8 @@
       .rda-tool-link:hover{background:#f2f4f7;color:#101828!important}
       .rda-tool-link.is-current{background:#eff4ff;border-color:#d1e0ff;color:#1849a9!important}
       .rda-tool-link:focus-visible{outline:3px solid rgba(46,144,250,.38);outline-offset:2px}
-      @media(max-width:720px){.rda-tool-nav{align-items:flex-start;flex-direction:column;gap:6px}.rda-tool-nav-links{width:100%}.rda-tool-nav-label{padding-left:3px}.rda-tool-link{min-height:44px}}
+      @media(max-width:720px){.rda-tool-nav{align-items:stretch;flex-direction:column;gap:6px;box-sizing:border-box;max-width:100%;overflow:visible}.rda-tool-nav-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;overflow:visible;box-sizing:border-box}.rda-tool-nav-label{padding-left:3px}.rda-tool-link{min-height:44px;min-width:0;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;padding:8px}.rda-tool-link>span:last-child{min-width:0}}
+      @media(max-width:359px){.rda-tool-nav-links{grid-template-columns:minmax(0,1fr)}}
     `;
     const styleHost = root === document ? document.head : root;
     styleHost.appendChild(style);
