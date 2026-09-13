@@ -109,6 +109,10 @@ def ensure_term(client: WooCommerceClient, endpoint: str, name: str, *, parent: 
             if _key(row.get("name")) == _key(name) and int(row.get("parent") or 0) == int(parent):
                 _remember_term(client, endpoint, row)
                 return int(row["id"])
+        raise ValueError(
+            f"La categoría '{name}' no existe bajo el padre indicado en WooCommerce. "
+            "Actualiza Lista completa antes de sincronizar; no se creará una categoría nueva."
+        )
 
     payload: dict[str, Any] = {"name": name}
     if endpoint == "products/categories":
