@@ -255,6 +255,36 @@ class WooCommerceClient:
                 _CATALOG_CACHE[cache_key] = (time.time(), index, duplicates)
         return index, duplicates
 
+    def find_entity_by_sku(self, sku: str, parent_sku: str = "") -> dict[str, Any] | None:
+        """Resolve one SKU without downloading every variation on a warm/cold request.
+
+        Older WooCommerce installations can omit variations from products?sku;
+        use the known parent first, with the full index only as compatibility fallback.
+        """
+        sku = str(sku).strip()
+        rows = self.request("GET", "products", params={"sku": sku, "per_page": 100}) or []
+        matches = [r for r in rows if str(r.get("sku") or "").strip() == sku]
+        if len(matches) > 1:
+            raise WooCommerceError(f"SKU duplicado en WooCommerce: {sku}")
+        if matches:
+            row = matches[0]
+            parent_id = int(row.get("parent_id") or 0)
+            if row.get("type") != "variation" or parent_id:
+                return self._slim(row, "variation" if parent_id else "product", parent_id or None)
+        if parent_sku and parent_sku != sku:
+            parent = self.find_product_by_sku(parent_sku)
+            if parent and parent.get("type") == "variable":
+                matches = [v for v in self.list_all_variations_catalog(int(parent["id"]))
+                           if str(v.get("sku") or "").strip() == sku]
+                if len(matches) > 1:
+                    raise WooCommerceError(f"SKU duplicado en WooCommerce: {sku}")
+                if matches:
+                    return self._slim(matches[0], "variation", int(parent["id"]))
+        index, duplicates = self.catalog_by_sku(include_variations=True)
+        if sku in duplicates:
+            raise WooCommerceError(f"SKU duplicado en WooCommerce: {sku}")
+        return index.get(sku)
+
     def find_product_by_sku(self, sku: str) -> dict[str, Any] | None:
         rows = self.request("GET", "products", params={"sku": sku, "per_page": 100})
         for row in rows or []:
