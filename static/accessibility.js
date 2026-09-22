@@ -14,7 +14,7 @@
     if (root === document || root.querySelector('link[data-rda-ui-css]')) return;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/static/ui.css?v=2';
+    link.href = '/suite-static/ui.css?v=3';
     link.dataset.rdaUiCss = 'true';
     root.appendChild(link);
   }

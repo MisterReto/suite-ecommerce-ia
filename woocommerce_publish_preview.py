@@ -21,40 +21,14 @@ def inspect_out_of_stock_visibility(client: WooCommerceClient) -> dict[str, Any]
         "warning": "No pude confirmar automáticamente la opción de ocultar productos agotados.",
     }
     try:
-        groups = client.list_setting_groups()
+        # This setting belongs to products; do not scan every settings group.
+        item = client.get_setting("products", "woocommerce_hide_out_of_stock_items")
     except Exception as exc:
         result["warning"] = f"No pude leer WooCommerce > Ajustes: {exc}"
         return result
 
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for group in groups or []:
-        gid = str(group.get("id") or "").strip()
-        if not gid:
-            continue
-        try:
-            settings = client.list_settings(gid)
-        except Exception:
-            continue
-        for item in settings or []:
-            haystack = " ".join(
-                str(item.get(k) or "") for k in ("id", "label", "description")
-            ).casefold()
-            if "out of stock" in haystack or "agotad" in haystack or "hide" in haystack and "stock" in haystack:
-                candidates.append((gid, item))
-
-    # Preferimos IDs conocidos/semánticamente claros, sin depender de uno solo.
-    preferred = None
-    for gid, item in candidates:
-        sid = str(item.get("id") or "").casefold()
-        if "hide_out_of_stock" in sid or ("hide" in sid and "stock" in sid):
-            preferred = (gid, item)
-            break
-    if preferred is None and candidates:
-        preferred = candidates[0]
-    if preferred is None:
+    if not item or "value" not in item:
         return result
-
-    gid, item = preferred
     raw = item.get("value")
     text = str(raw or "").strip().casefold()
     hide = text in {"yes", "true", "1", "on"}
@@ -96,7 +70,12 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
         product_id = None
         parent_id = None
 
-        if sku in duplicate_set:
+        if str(inv.get("tipo") or "").casefold() == "variable" and not inv.get("sku_padre"):
+            status = "blocked_variable_parent"
+            reason = "Portada: sin stock propio. La disponibilidad depende de sus variaciones."
+            stock = None
+            counts["blocked_variable_parent"] += 1
+        elif sku in duplicate_set:
             status = "duplicate"
             reason = "El SKU aparece más de una vez en WooCommerce."
             counts["duplicate"] += 1
@@ -115,7 +94,8 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
                 counts["ready_variation"] += 1
             elif wc_type == "variable":
                 status = "blocked_variable_parent"
-                reason = "Es un producto padre variable; el stock debe administrarse en sus variaciones."
+                reason = "Portada: la disponibilidad depende de sus variaciones."
+                stock = None
                 counts["blocked_variable_parent"] += 1
             else:
                 status = "ready_product"

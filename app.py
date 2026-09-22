@@ -14,6 +14,8 @@ import json
 import secrets
 import difflib
 import traceback
+import base64
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import gradio as gr
@@ -267,7 +269,7 @@ def _validar_sesion(request: gr.Request, requiere_api_key=True):
 # 1. RUTAS DE AUTENTICACIÓN (FastAPI + OAuth de Google)
 # ==========================================
 fastapi_app = FastAPI()
-fastapi_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+fastapi_app.mount("/suite-static", StaticFiles(directory=STATIC_DIR), name="suite-static")
 
 
 @fastapi_app.get("/login")
@@ -1242,7 +1244,7 @@ def generar_sku_logica(nombre, marca, gramaje):
 
 
 def comprimir_imagen(img_array, max_size=1024):
-    img = Image.fromarray(img_array)
+    img = Image.open(img_array) if isinstance(img_array, (str, os.PathLike)) else Image.fromarray(img_array)
     img.thumbnail((max_size, max_size))
     return img
 
@@ -1292,10 +1294,21 @@ def _extraer_imagen_bytes(response):
     for candidato in (getattr(response, "candidates", None) or []):
         contenido = getattr(candidato, "content", None)
         for part in (getattr(contenido, "parts", None) or []):
+            if getattr(part, "thought", False):
+                continue
             inline = getattr(part, "inline_data", None)
-            if inline and getattr(inline, "data", None):
-                return inline.data
+            if inline and getattr(inline, "data", None) and str(getattr(inline, "mime_type", "")).startswith("image/"):
+                data = inline.data
+                return base64.b64decode(data, validate=True) if isinstance(data, str) else data
     return None
+
+
+def _imagen_para_ia(path):
+    """Small inline reference: avoids an extra Files API upload per call."""
+    with open(path, "rb") as file:
+        data = file.read()
+    mime = "image/png" if data.startswith(b"\x89PNG") else "image/jpeg"
+    return types.Part.from_bytes(data=data, mime_type=mime)
 
 
 def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
@@ -1548,7 +1561,11 @@ def _validacion_local_imagen(ruta_imagen):
             img.verify()
         with Image.open(ruta_imagen) as img:
             ancho, alto = img.size
+            extrema = img.convert("RGB").getextrema()
+            transparent = "A" in img.getbands() and img.getchannel("A").getextrema()[1] == 0
         errores = []
+        if transparent or max(high - low for low, high in extrema) < 8:
+            errores.append("The output is blank or nearly uniform; the product is missing.")
         if ancho != alto:
             errores.append(f"Output is {ancho}x{alto}; it must be exactly square 1:1.")
         if min(ancho, alto) < 1024:
@@ -1561,7 +1578,7 @@ def _validacion_local_imagen(ruta_imagen):
 def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
     """Un segundo pase de visión actúa como control de calidad antes de subir a Drive."""
     try:
-        candidato = client.files.upload(file=ruta_generada)
+        candidato = _imagen_para_ia(ruta_generada)
         prompt_qa = (
             "You are a strict e-commerce image quality inspector. The first attached image(s) are the real product "
             "references; the last attached image is the generated candidate. Compare only facts visible in those "
@@ -1583,7 +1600,7 @@ def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
         datos = _extraer_json(respuesta.text)
         puntuacion = int(datos.get("puntuacion", 0) or 0)
         errores = [str(x).strip() for x in (datos.get("errores", []) or []) if str(x).strip()]
-        aprobada = bool(datos.get("aprobada")) and puntuacion >= PUNTUACION_MINIMA_QA and not errores
+        aprobada = datos.get("aprobada") is True and puntuacion >= PUNTUACION_MINIMA_QA and not errores
         return {
             "aprobada": aprobada,
             "puntuacion": puntuacion,
@@ -1593,6 +1610,7 @@ def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
     except Exception as e:
         return {
             "aprobada": False,
+            "qa_unavailable": True,
             "puntuacion": 0,
             "errores": [f"The automatic visual comparison failed and the image cannot be approved: {e}"],
             "resumen": "No se pudo completar el control automático de fidelidad.",
@@ -1608,7 +1626,7 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
 
     try:
         client = genai.Client(api_key=api_key)
-        archivos_ref = [client.files.upload(file=ruta) for ruta in rutas_ref]
+        archivos_ref = [_imagen_para_ia(ruta) for ruta in rutas_ref]
         contrato = _contrato_visual(slot)
         errores_automaticos = []
         ultimo_qa = {"puntuacion": 0, "errores": [], "resumen": ""}
@@ -1650,6 +1668,9 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
                 }
             else:
                 ultimo_qa = _validar_con_vision(client, archivos_ref, ruta_candidata, slot)
+            if ultimo_qa.get("qa_unavailable"):
+                os.remove(ruta_candidata)
+                return {"ruta": None, "intentos": intento, "resumen": "Falló la revisión de IA; no se gastaron más generaciones. Reintenta esta imagen."}
 
             if ultimo_qa.get("aprobada"):
                 # El modelo puede devolver PNG aunque el nombre final sea .jpg.
@@ -1688,8 +1709,7 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
             "errores": ultimo_qa.get("errores", []),
         }
     except Exception as e:
-        print(f"❌ Error al generar o validar imagen: {e}")
-        return None
+        return {"ruta": None, "intentos": 0, "resumen": f"Falló el servicio de imágenes ({type(e).__name__}). Revisa cuota, permisos del modelo y conexión."}
 
 
 def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Request):
@@ -1714,7 +1734,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
     img_1_pil = comprimir_imagen(imagen_1).convert("RGB")
     ruta_temp_1 = f"/tmp/{token_sesion}_temp_in_1.jpg"
     img_1_pil.save(ruta_temp_1, format="JPEG", quality=85)
-    archivos_ia.append(client.files.upload(file=ruta_temp_1))
+    archivos_ia.append(_imagen_para_ia(ruta_temp_1))
 
     ruta_base_frontal = f"/tmp/{token_sesion}_base_gen_frontal.jpg"
     img_1_pil.save(ruta_base_frontal, format="JPEG", quality=95)
@@ -1724,7 +1744,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         img_2_pil = comprimir_imagen(imagen_2).convert("RGB")
         ruta_temp_2 = f"/tmp/{token_sesion}_temp_in_2.jpg"
         img_2_pil.save(ruta_temp_2, format="JPEG", quality=85)
-        archivos_ia.append(client.files.upload(file=ruta_temp_2))
+        archivos_ia.append(_imagen_para_ia(ruta_temp_2))
         ruta_base_reverso = f"/tmp/{token_sesion}_base_gen_reverso.jpg"
         img_2_pil.save(ruta_base_reverso, format="JPEG", quality=95)
         rutas_base_memoria.append(ruta_base_reverso)
@@ -1763,13 +1783,15 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         subcat_final = lista_subcats[0]
 
     sku_gen = generar_sku_logica(nombre, marca, gramaje)
-    datos_precio = estimar_precio_producto(nombre, marca, gramaje, cat_final, api_key)
-    precio_sugerido = datos_precio.get("precio_sugerido", 0)
-
     vocabulario_etiquetas = _obtener_vocabulario_etiquetas(df_actual)
-    etiquetas_sugeridas = estimar_etiquetas_producto(
-        nombre, marca, cat_final, subcat_final, descripcion_breve, vocabulario_etiquetas, api_key
-    )
+    # Independent network requests; no shared Drive or Gemini client.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        price_task = pool.submit(estimar_precio_producto, nombre, marca, gramaje, cat_final, api_key)
+        tags_task = pool.submit(estimar_etiquetas_producto, nombre, marca, cat_final,
+                                subcat_final, descripcion_breve, vocabulario_etiquetas, api_key)
+        datos_precio = price_task.result()
+        etiquetas_sugeridas = tags_task.result()
+    precio_sugerido = datos_precio.get("precio_sugerido", 0)
     etiquetas_str = ", ".join(etiquetas_sugeridas)
 
     return [
@@ -1809,18 +1831,21 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
         slot=slot, correccion=correccion
     )
     if not resultado:
-        return None, historial_nuevo, "❌ La IA no devolvió imagen. Intenta de nuevo o ajusta el feedback."
+        return gr.update(), historial_nuevo, "❌ La IA no devolvió imagen. Intenta de nuevo o ajusta el feedback."
     if not resultado.get("ruta"):
         detalle = resultado.get("resumen") or "No conservó fielmente el producto."
         return (
-            None,
+            gr.update(),
             historial_nuevo,
             f"⚠️ La imagen NO se guardó: fue rechazada automáticamente después de "
             f"{resultado.get('intentos', MAX_INTENTOS_IMAGEN)} intentos. {detalle}",
         )
 
     ruta_aprobada = resultado["ruta"]
-    _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_aprobada)
+    try:
+        _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_aprobada)
+    except Exception:
+        return ruta_aprobada, historial_nuevo, f"⚠️ {nombre_archivo} generada, pero no se guardó en Drive. Descárgala antes de salir."
     mensaje = (
         f"✅ {nombre_archivo} aprobada ({resultado.get('puntuacion', 0)}/100) y guardada en Drive "
         f"después de {resultado.get('intentos', 1)} intento(s).\n{resumen}"
@@ -1867,32 +1892,22 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
         yield "❌ Extrae los textos primero", None, None, None, [], [], []
         return
 
-    yield "📸 Generando fondo blanco...", None, None, None, [], [], []
-    out_1, _, _ = rehacer_hd(ruta_base, sku, [], "", [], request)
-
-    yield "📸 Generando estilo de vida...", out_1, None, None, [], [], []
-    out_2, _, _ = rehacer_life(ruta_base, sku, nombre, marca, desc, [], "", [], request)
-
-    yield "📸 Generando comercial épica...", out_1, out_2, None, [], [], []
-    out_3, _, _ = rehacer_comercial(ruta_base, sku, nombre, marca, desc, [], "", [], request)
-
-    faltantes = [
-        nombre for nombre, salida in (
-            ("fondo blanco", out_1), ("uso", out_2), ("comercial", out_3)
-        ) if not salida
-    ]
-    if faltantes:
-        mensaje_final = (
-            "⚠️ Se guardaron únicamente las imágenes que superaron la revisión automática. "
-            f"Falta(n): {', '.join(faltantes)}. Usa Rehacer para volver a intentarlas; una imagen rechazada "
-            "no reemplaza un archivo existente en Drive."
-        )
-    else:
-        mensaje_final = (
-            "✅ Set completo: las tres imágenes superaron formato 1:1 y comparación visual contra la referencia, "
-            "y se guardaron en tu Google Drive."
-        )
-    yield mensaje_final, out_1, out_2, out_3, [], [], []
+    outputs = [gr.update(), gr.update(), gr.update()]
+    messages = []
+    yield "📸 Preparando las tres imágenes…", *outputs, [], [], []
+    # One prompt request for both scenes instead of repeating it per photo.
+    prompts = investigar_prompts(nombre, marca, desc, sesion["gemini_key"])
+    for index, (slot, prompt) in enumerate([
+        ("1_hd", PROMPT_HD), ("2_uso", prompts["lifestyle"]), ("3_comercial", prompts["comercial"])
+    ]):
+        yield "\n".join(messages + [f"📸 Generando imagen {index + 1}/3…"]), *outputs, [], [], []
+        try:
+            output, _, message = _rehacer_generico(slot, prompt, ruta_base, sku, [], "", [], sesion)
+        except Exception as exc:
+            output, message = gr.update(), f"❌ Imagen {index + 1}: {type(exc).__name__}. Reintenta solo esta imagen."
+        outputs[index] = output
+        messages.append(message)
+    yield "\n".join(messages), *outputs, [], [], []
 
 
 def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, atributo_nombre,
@@ -2070,8 +2085,15 @@ def _estado_login_html(request: gr.Request):
 
 def cargar_estado_inicial(request: gr.Request):
     html = _estado_login_html(request)
-    cats = obtener_categorias(request)
-    subcats = obtener_subcategorias(request)
+    cats, subcats = CATEGORIAS_DEFECTO, SUBCATEGORIAS_DEFECTO
+    session = _obtener_sesion(request)
+    if session:
+        try:
+            _, _, df = _cargar_df(session)
+            cats = df["categoria"].dropna().unique().tolist() or cats
+            subcats = df["subcategoria"].dropna().unique().tolist() or subcats
+        except Exception:
+            pass
     return html, gr.update(choices=cats), gr.update(choices=subcats)
 
 
@@ -2181,8 +2203,8 @@ def limpiar_feedback():
 # 6. INTERFAZ GRÁFICA
 # ==========================================
 TUTORIAL_HEAD = """
-<link rel="stylesheet" href="/static/tutorial.css?v=2">
-<script defer src="/static/tutorial.js?v=2"></script>
+<link rel="stylesheet" href="/suite-static/tutorial.css?v=2">
+<script defer src="/suite-static/tutorial.js?v=2"></script>
 """
 
 with gr.Blocks() as demo:
@@ -2201,7 +2223,8 @@ with gr.Blocks() as demo:
     )
     estado_login = gr.HTML(elem_id="tour-login-status")
 
-    with gr.Tabs():
+    btn_ajustes = gr.Button("⚙️ Ajustes · API key y Drive", elem_id="settings-shortcut")
+    with gr.Tabs() as main_tabs:
         # ==================================
         # PESTAÑA 0: CONFIGURACIÓN
         # ==================================
@@ -2251,11 +2274,11 @@ with gr.Blocks() as demo:
                     gr.Markdown("### 1. Imágenes y Análisis")
                     img1 = gr.Image(
                         label="Foto Frontal",
-                        type="numpy",
+                        type="filepath",
                         sources=["upload", "webcam", "clipboard"],
                         elem_id="tour-upload-front",
                     )
-                    img2 = gr.Image(label="Foto Reverso (Opcional)", type="numpy", sources=["upload", "webcam", "clipboard"])
+                    img2 = gr.Image(label="Foto Reverso (Opcional)", type="filepath", sources=["upload", "webcam", "clipboard"])
                     desc_input = gr.Textbox(label="Apuntes Extra", placeholder="Ej. Galletas coreanas edición limitada")
                     btn_extraer = gr.Button(
                         "🔍 Analizar Producto (SEO + Info + Precio)",
@@ -2332,7 +2355,7 @@ with gr.Blocks() as demo:
                     with gr.Row():
                         # ---------- Slot 1: Fondo blanco ----------
                         with gr.Column():
-                            out_img1 = gr.Image(label="Fondo Blanco")
+                            out_img1 = gr.Image(label="Fondo Blanco", type="filepath")
                             with gr.Accordion("🔧 ¿Qué salió mal? (Fondo Blanco)", open=False):
                                 err_1 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
                                 fb_1 = gr.Textbox(
@@ -2345,7 +2368,7 @@ with gr.Blocks() as demo:
 
                         # ---------- Slot 2: Lifestyle ----------
                         with gr.Column():
-                            out_img2 = gr.Image(label="Lifestyle")
+                            out_img2 = gr.Image(label="Lifestyle", type="filepath")
                             with gr.Accordion("🔧 ¿Qué salió mal? (Lifestyle)", open=False):
                                 err_2 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
                                 fb_2 = gr.Textbox(
@@ -2358,7 +2381,7 @@ with gr.Blocks() as demo:
 
                         # ---------- Slot 3: Comercial ----------
                         with gr.Column():
-                            out_img3 = gr.Image(label="Comercial")
+                            out_img3 = gr.Image(label="Comercial", type="filepath")
                             with gr.Accordion("🔧 ¿Qué salió mal? (Comercial)", open=False):
                                 err_3 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
                                 fb_3 = gr.Textbox(
@@ -2392,7 +2415,7 @@ with gr.Blocks() as demo:
                 with gr.Column(scale=1):
                     img_lens = gr.Image(
                         label="Foto del producto a investigar",
-                        type="numpy",
+                        type="filepath",
                         sources=["upload", "webcam", "clipboard"],
                         elem_id="tour-lens-image",
                     )
@@ -2407,12 +2430,14 @@ with gr.Blocks() as demo:
     # ==========================================
     # 7. CONEXIONES
     # ==========================================
-    demo.load(cargar_estado_inicial, inputs=None, outputs=[estado_login, in_cat, in_subcat])
+    btn_ajustes.click(lambda: gr.update(selected=0), outputs=main_tabs, queue=False)
+    demo.load(cargar_estado_inicial, inputs=None, outputs=[estado_login, in_cat, in_subcat], queue=False)
 
     btn_guardar_key.click(
         guardar_api_key,
         inputs=[in_api_key],
         outputs=[estado_config, estado_login, in_api_key],
+        queue=False,
     )
     btn_refrescar_cats.click(refrescar_categorias, inputs=None, outputs=[in_cat, in_subcat])
     btn_guardar_carpeta.click(guardar_carpeta_personalizada, inputs=[in_carpeta], outputs=[estado_config, estado_login])
@@ -2435,26 +2460,30 @@ with gr.Blocks() as demo:
     btn_generar_fotos.click(
         modulo_generar_todo,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta],
-        outputs=[estado, out_img1, out_img2, out_img3, hist_1, hist_2, hist_3]
+        outputs=[estado, out_img1, out_img2, out_img3, hist_1, hist_2, hist_3],
+        concurrency_id="image_generation", concurrency_limit=1,
     )
 
     # Re-generaciones con retroalimentación
     btn_rehacer_1.click(
         rehacer_hd,
         inputs=[memoria_ruta_base, in_sku, err_1, fb_1, hist_1],
-        outputs=[out_img1, hist_1, estado]
+        outputs=[out_img1, hist_1, estado],
+        concurrency_id="image_generation", concurrency_limit=1,
     ).then(limpiar_feedback, inputs=None, outputs=[err_1, fb_1])
 
     btn_rehacer_2.click(
         rehacer_life,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_2, fb_2, hist_2],
-        outputs=[out_img2, hist_2, estado]
+        outputs=[out_img2, hist_2, estado],
+        concurrency_id="image_generation", concurrency_limit=1,
     ).then(limpiar_feedback, inputs=None, outputs=[err_2, fb_2])
 
     btn_rehacer_3.click(
         rehacer_comercial,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_3, fb_3, hist_3],
-        outputs=[out_img3, hist_3, estado]
+        outputs=[out_img3, hist_3, estado],
+        concurrency_id="image_generation", concurrency_limit=1,
     ).then(limpiar_feedback, inputs=None, outputs=[err_3, fb_3])
 
     btn_limpiar_hist_1.click(lambda: ([], "🧹 Historial de correcciones (Fondo Blanco) reiniciado."),
@@ -2487,6 +2516,7 @@ with gr.Blocks() as demo:
 # ==========================================
 # 8. MONTAJE FINAL (FastAPI + Gradio)
 # ==========================================
+demo.queue(max_size=16, default_concurrency_limit=2)
 fastapi_app = gr.mount_gradio_app(
     fastapi_app,
     demo,

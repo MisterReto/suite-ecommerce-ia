@@ -38,9 +38,6 @@ def _full_sync(session, sku: str, include_images: bool = False) -> dict:
         if not entity:
             raise RuntimeError(f"SKU no encontrado en WooCommerce: {sku}")
 
-        if entity.get("type") == "variable":
-            raise ValueError("Este SKU es una portada variable. Sincroniza el SKU de una variación para actualizar su precio y existencias.")
-
         # Images are opt-in: text/stock updates do not need a Drive image scan
         # or WordPress media credentials and preserve existing store images.
         image_result = None

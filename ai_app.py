@@ -103,20 +103,20 @@ _replace_once(old_save_tail, new_save_tail, "publicación individual después de
 # 6) Capa UX / accesibilidad. Solo cambia presentación, no callbacks.
 # ---------------------------------------------------------------------------
 old_head = """TUTORIAL_HEAD = \"\"\"
-<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=2\">
-<script defer src=\"/static/tutorial.js?v=2\"></script>
+<link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=2\">
+<script defer src=\"/suite-static/tutorial.js?v=2\"></script>
 \"\"\""""
 new_head = """TUTORIAL_HEAD = \"\"\"
-<link rel=\"stylesheet\" href=\"/static/tutorial.css?v=3\">
-<link rel=\"stylesheet\" href=\"/static/ui.css?v=2\">
-<script defer src=\"/static/tutorial.js?v=5\"></script>
-<script defer src=\"/static/accessibility.js?v=4\"></script>
+<link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=3\">
+<link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=3\">
+<script defer src=\"/suite-static/tutorial.js?v=6\"></script>
+<script defer src=\"/suite-static/accessibility.js?v=5\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
 _replace_once(
     '    gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")',
-    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y publícalo sin cambiar de herramienta.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;✅ Publica</div>\n    </header>""", elem_id="tour-app-title")''',
+    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y guárdalo en Drive. WooCommerce está en modo de solo lectura.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;💾 Guarda</div>\n    </header>""", elem_id="tour-app-title")''',
     "encabezado principal",
 )
 
@@ -135,13 +135,13 @@ new_tutorial_button = '''    btn_tutorial = gr.Button(
 _replace_once(old_tutorial_button, new_tutorial_button, "botón de ayuda")
 
 # La tarea principal abre por defecto; Configuración queda disponible como ajuste.
-_replace_once("    with gr.Tabs():", "    with gr.Tabs(selected=1):", "pestaña inicial")
+_replace_once("    with gr.Tabs() as main_tabs:", "    with gr.Tabs(selected=1) as main_tabs:", "pestaña inicial")
 _replace_once('        with gr.Tab("⚙️ Configuración"):', '        with gr.Tab("⚙️ Ajustes", id=0):', "nombre tab ajustes")
 
 old_product_start = '''        with gr.Tab("1. Ingreso y Edición de Productos"):
             estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)'''
 new_product_start = '''        with gr.Tab("＋ Nuevo producto", id=1):
-            gr.HTML("""<div class=\"rda-workflow\" aria-label=\"Pasos para publicar un producto\">\n              <div class=\"rda-step\"><span class=\"rda-step-num\">1</span><div><strong>Captura</strong><span>Fotos del producto</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">2</span><div><strong>Revisa</strong><span>Datos, precio y clasificación</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">3</span><div><strong>Genera</strong><span>Imágenes para e-commerce</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">4</span><div><strong>Publica</strong><span>Sheets + WooCommerce</span></div></div>\n            </div>""")
+            gr.HTML("""<div class=\"rda-workflow\" aria-label=\"Pasos para publicar un producto\">\n              <div class=\"rda-step\"><span class=\"rda-step-num\">1</span><div><strong>Captura</strong><span>Fotos del producto</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">2</span><div><strong>Revisa</strong><span>Datos, precio y clasificación</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">3</span><div><strong>Genera</strong><span>Imágenes para e-commerce</span></div></div>\n              <div class=\"rda-step\"><span class=\"rda-step-num\">4</span><div><strong>Guarda</strong><span>Solo Google Drive</span></div></div>\n            </div>""")
             estado = gr.Textbox(label="Estado del proceso", interactive=False, lines=3, elem_id="process-status")'''
 _replace_once(old_product_start, new_product_start, "inicio de nuevo producto")
 
@@ -149,7 +149,7 @@ _replace_once('                    gr.Markdown("### 1. Imágenes y Análisis")',
 _replace_once('                    gr.Markdown("### 2. Clasificación, Textos y Precio")', '                    gr.Markdown("### ✏️ Información del producto")', "título información")
 _replace_once('                    gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")', '                    gr.Markdown("### ✨ Imágenes para la tienda")', "título imágenes")
 _replace_once('                        "🔍 Analizar Producto (SEO + Info + Precio)",', '                        "✨ Analizar producto con IA",', "botón analizar")
-_replace_once('                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)",', '                "✅ Guardar y publicar producto",', "botón guardar")
+_replace_once('                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)",', '                "💾 Guardar solo en Drive",', "botón guardar")
 _replace_once('        with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):', '        with gr.Tab("🔎 Buscar variantes", id=2):', "nombre tab variantes")
 
 
@@ -216,7 +216,7 @@ def _canonical_row(record):
         _clean(get("Marca", get("marca", ""))),
         _clean(get("descripcion_corta", "")),
         _clean(get("descripcion_larga", "")),
-        stock,
+        "" if kind == "variable" else stock,
         category_path,
         _clean(get("etiquetas", "")),
         _clean(get("Web link imagen", "")),
@@ -383,11 +383,6 @@ def _no_legacy_format(*args, **kwargs):
     return None
 
 
-def _auto_sync_after_save(session, sku):
-    from single_product_auto import sync_saved_sku
-    return sync_saved_sku(session, sku)
-
-
 legacy.NOMBRE_HOJA_INVENTARIO = MASTER_SHEET
 legacy.COLUMNAS_INVENTARIO = list(MASTER_COLUMNS)
 legacy._fila_formato_gabo = _canonical_row
@@ -396,6 +391,6 @@ legacy._leer_google_sheet = _read_master
 legacy._sincronizar_lista_variable = _no_variable_sync
 legacy._aplicar_formato_base = _no_legacy_format
 legacy._aplicar_formato_filas = _no_legacy_format
-legacy._AUTO_SYNC_AFTER_SAVE = _auto_sync_after_save
+legacy._AUTO_SYNC_AFTER_SAVE = None  # Demo: guardar solo en Drive; nunca publicar automáticamente.
 
 fastapi_app = legacy.fastapi_app
