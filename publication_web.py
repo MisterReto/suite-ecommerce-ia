@@ -6,9 +6,6 @@ en WooCommerce aunque WC_WRITE_ENABLED sea true.
 from __future__ import annotations
 
 import html
-import secrets
-import time
-from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from collections import defaultdict
 
@@ -17,7 +14,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount
 
 import inventory_web
-from inventory_operations import read_inventory
 from woocommerce_client import WooCommerceClient
 from woocommerce_publish_preview import build_stock_publish_preview
 
@@ -112,11 +108,8 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
         return HTMLResponse(f"<h2>Error</h2><pre>{html.escape(str(exc))}</pre>", status_code=500)
 
 
-# One catalogue scan at a time in the 512 MB instance. The page itself never
-# waits for WooCommerce; polling returns only state until the scan completes.
-_PREVIEW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stock-preview")
+# Run only on an explicit request. No detached jobs or browser polling.
 _PREVIEW_LOCK = Lock()
-_PREVIEW_JOBS = {}
 
 
 @fastapi_app.get("/woocommerce-publish-preview", response_class=HTMLResponse)
@@ -125,71 +118,32 @@ def woocommerce_publish_preview(request: Request):
         return HTMLResponse("<h2>Conecta Google Drive primero.</h2><a href='/'>Volver</a>", status_code=401)
     return HTMLResponse("""<!doctype html><html lang="es"><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Preview stock</title><style>body{font:16px system-ui;margin:20px;background:#f6f7f9}button{padding:12px}iframe{width:100%;height:85vh;border:0}</style>
+<title>Preview stock</title><style>body{font:16px system-ui;margin:20px;background:#f6f7f9;color:#172033}button{padding:12px}</style>
 </head><body><a href="/">← Suite</a><h1>Preview stock</h1>
-<p id="status" role="status">Preparando revisión; puedes seguir usando la Suite en otra pestaña.</p>
-<button id="retry" hidden onclick="location.reload()">Reintentar</button>
-<iframe id="report" title="Resultado de existencias" hidden></iframe><script>
-async function run(){
- const status=document.getElementById('status');
- try{
-  const start=await fetch('/stock-preview-start',{method:'POST'});
-  const job=await start.json();if(!start.ok)throw Error(job.error||'No se pudo iniciar.');
-  for(;;){
-   await new Promise(resolve=>setTimeout(resolve,2000));
-   const response=await fetch('/stock-preview-result?job='+encodeURIComponent(job.id));
-   const data=await response.json();if(!response.ok)throw Error(data.error||'La sesión terminó.');
-   if(data.state==='running'){status.textContent='Revisando WooCommerce…';continue;}
-   if(data.error)throw Error(data.error);
-   const frame=document.getElementById('report');frame.srcdoc=data.html;frame.hidden=false;
-   status.textContent='Revisión terminada. Solo lectura.';break;
-  }
- }catch(e){status.textContent='No se completó: '+e.message;document.getElementById('retry').hidden=false;}
-}
-run();</script></body></html>""")
+<p>La revisión se ejecuta solo al pulsar el botón. No modifica productos.</p>
+<form method="post" action="/woocommerce-publish-preview"
+onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='Revisando…';">
+<button type="submit">Revisar stock ahora</button></form></body></html>""")
 
 
-@fastapi_app.post("/stock-preview-start")
-def stock_preview_start(request: Request):
+@fastapi_app.post("/woocommerce-publish-preview", response_class=HTMLResponse)
+def run_stock_preview(request: Request):
     session = inventory_web._session(request)
     if not session:
-        return JSONResponse({"error": "Conecta Google Drive primero."}, status_code=401)
-    sid = request.cookies.get("session_id")
-    with _PREVIEW_LOCK:
-        now = time.monotonic()
-        for token, job in list(_PREVIEW_JOBS.items()):
-            if job["future"].done() and now - job["created"] > 180:
-                del _PREVIEW_JOBS[token]
-        for token, job in _PREVIEW_JOBS.items():
-            if not job["future"].done():
-                if job["sid"] == sid:
-                    return {"id": token}
-                return JSONResponse({"error": "Hay otra revisión en curso. Reintenta al terminar."}, status_code=429)
-        if len(_PREVIEW_JOBS) >= 8:
-            return JSONResponse({"error": "Espera unos minutos antes de repetir la revisión."}, status_code=429)
-        token = secrets.token_urlsafe(24)
-        _PREVIEW_JOBS[token] = {"sid": sid, "created": now, "future": _PREVIEW_EXECUTOR.submit(_render_preview, session)}
-    return {"id": token}
-
-
-@fastapi_app.get("/stock-preview-result")
-def stock_preview_result(request: Request, job: str):
-    if not inventory_web._session(request):
-        return JSONResponse({"error": "Sesión de Google requerida."}, status_code=401)
-    with _PREVIEW_LOCK:
-        entry = _PREVIEW_JOBS.get(job)
-        if not entry or entry["sid"] != request.cookies.get("session_id"):
-            return JSONResponse({"error": "La revisión expiró o el servidor reinició. Recarga."}, status_code=404)
-        future = entry["future"]
-    if not future.done():
-        return {"state": "running"}
+        return HTMLResponse("<h2>Conecta Google Drive primero.</h2><a href='/'>Volver</a>", status_code=401)
+    if not _PREVIEW_LOCK.acquire(blocking=False):
+        return HTMLResponse("<h2>Ya hay una revisión en curso.</h2><a href='/woocommerce-publish-preview'>Volver</a>", status_code=429)
     try:
-        response = future.result()
-        if response.status_code >= 400:
-            return {"state": "done", "error": "No se pudo completar la lectura de Drive/WooCommerce. Revisa la conexión y vuelve a intentar."}
-        return {"state": "done", "html": response.body.decode("utf-8")}
-    except Exception:
-        return {"state": "done", "error": "La revisión falló. Reintenta sin iniciar otras tareas pesadas."}
+        return _render_preview(session)
+    finally:
+        _PREVIEW_LOCK.release()
+
+
+# Old open tabs must not restart the removed background flow.
+@fastapi_app.post("/stock-preview-start")
+@fastapi_app.get("/stock-preview-result")
+def retired_stock_preview(request: Request):
+    return JSONResponse({"error": "La revisión en segundo plano está desactivada. Recarga Preview stock."}, status_code=410)
 
 
 _root_mounts = [r for r in fastapi_app.router.routes if isinstance(r, Mount) and getattr(r, "path", None) in {"", "/"}]
