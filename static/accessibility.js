@@ -1,6 +1,15 @@
 (() => {
   'use strict';
 
+  // Use light mode by default, independently of the device appearance.
+  // Keep an explicitly requested theme and preserve OAuth/query parameters.
+  const themeUrl = new URL(window.location.href);
+  if (!themeUrl.searchParams.has('__theme')) {
+    themeUrl.searchParams.set('__theme', 'light');
+    window.location.replace(themeUrl.href);
+    return;
+  }
+
   const once = new WeakSet();
 
   function roots() {
