@@ -287,6 +287,14 @@ def sync_complete_product(
             for pos, media_id in enumerate(assigned_images)
         ]
 
+    is_parent = wc_entity.get("type") == "variable"
+    if is_parent:
+        # Covers carry metadata only. Never impose their blank stock as zero
+        # or replace the prices/availability computed from their variations.
+        for field in ("regular_price", "sale_price", "stock_quantity", "stock_status", "backorders"):
+            payload.pop(field, None)
+        payload["manage_stock"] = False
+
     remote = wc_client.update_product(product_id, payload)
     if verify_get:
         remote = wc_client.get_product(product_id)
@@ -296,8 +304,10 @@ def sync_complete_product(
     verified = (
         _text(remote.get("sku")) == sku
         and _text(remote.get("name")) == _text(row.get("nombre_producto"))
-        and _money(remote.get("regular_price")) == _money(row.get("precio"))
-        and int(remote.get("stock_quantity") or 0) == expected_stock
+        and (remote.get("manage_stock") is False if is_parent else (
+            _money(remote.get("regular_price")) == _money(row.get("precio"))
+            and int(remote.get("stock_quantity") or 0) == expected_stock
+        ))
     )
     if assigned_images:
         verified = verified and remote_image_ids[:len(assigned_images)] == [int(x) for x in assigned_images]
