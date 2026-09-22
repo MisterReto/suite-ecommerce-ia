@@ -10,6 +10,7 @@ COPY ai_app.py .
 COPY product_web_ai.py .
 COPY single_product_auto.py .
 COPY server.py .
+COPY store_connection.py .
 COPY inventory_schema.py .
 COPY inventory_operations.py .
 COPY inventory_bulk.py .
@@ -36,5 +37,5 @@ ENV NUMEXPR_NUM_THREADS=1
 ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
-# Suite IA + publicación de un solo SKU al guardar. Sin workers/rutas de lotes.
+# Suite IA + Drive. La conexión a la tienda está aislada por defecto.
 CMD ["uvicorn", "product_web_ai:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
