@@ -157,7 +157,7 @@
             if (raiz === document || raiz.querySelector('link[data-suite-tutorial-css]')) return;
             const enlace = document.createElement("link");
             enlace.rel = "stylesheet";
-            enlace.href = "/static/tutorial.css?v=2";
+            enlace.href = "/suite-static/tutorial.css?v=3";
             enlace.dataset.suiteTutorialCss = "true";
             raiz.appendChild(enlace);
         });
