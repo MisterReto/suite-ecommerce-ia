@@ -6,10 +6,14 @@ en WooCommerce aunque WC_WRITE_ENABLED sea true.
 from __future__ import annotations
 
 import html
+import secrets
+import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from collections import defaultdict
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount
 
 import inventory_web
@@ -26,7 +30,7 @@ def _label(status: str) -> str:
         "ready_variation": "✅ Variación lista",
         "missing": "⚫ SKU faltante",
         "duplicate": "🔴 SKU duplicado",
-        "blocked_variable_parent": "🟠 Padre variable",
+        "blocked_variable_parent": "ℹ️ Stock en variaciones",
     }.get(status, status)
 
 
@@ -45,7 +49,7 @@ def _render(rows):
             f"<td>{html.escape(_label(row.get('status','')))}</td>"
             f"<td><code>{html.escape(str(row.get('sku','')))}</code></td>"
             f"<td>{html.escape(str(row.get('name','')))}</td>"
-            f"<td><b>{html.escape(str(row.get('stock_to_publish',0)))}</b></td>"
+            f"<td><b>{html.escape(str(row.get('stock_to_publish') if row.get('stock_to_publish') is not None else '—'))}</b></td>"
             f"<td>{html.escape(destination)}</td>"
             f"<td>{html.escape(str(row.get('reason','')))}</td>"
             "</tr>"
@@ -54,11 +58,9 @@ def _render(rows):
     return "".join(out)
 
 
-@fastapi_app.get("/woocommerce-publish-preview", response_class=HTMLResponse)
-def woocommerce_publish_preview(request: Request):
+def _render_preview(session):
     try:
-        session, spreadsheet_id, sheets = inventory_web._context(request)
-        inventory = read_inventory(sheets, spreadsheet_id)
+        _, inventory = inventory_web.integration_server._read_master_inventory(session)
         client = WooCommerceClient()
         payload = build_stock_publish_preview(inventory, client)
         summary = payload["summary"]
@@ -89,7 +91,7 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 <div class='metric'><b>{summary['total_inventory']}</b><span>SKU en la Suite</span></div>
 <div class='metric'><b>{summary['ready_product']}</b><span>Productos simples listos</span></div>
 <div class='metric'><b>{summary['ready_variation']}</b><span>Variaciones listas</span></div>
-<div class='metric'><b>{summary['blocked_variable_parent']}</b><span>Padres variables bloqueados</span></div>
+<div class='metric'><b>{summary['blocked_variable_parent']}</b><span>Portadas con stock en variaciones</span></div>
 <div class='metric'><b>{summary['missing']}</b><span>SKU faltantes</span></div>
 <div class='metric'><b>{summary['duplicate']}</b><span>SKU duplicados</span></div>
 </div>
@@ -97,7 +99,7 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
 <div class='card'>
 <details open><summary>✅ Productos simples listos ({summary['ready_product']})</summary>{_render(grouped['ready_product'])}</details>
 <details><summary>✅ Variaciones listas ({summary['ready_variation']})</summary>{_render(grouped['ready_variation'])}</details>
-<details><summary>🟠 Padres variables bloqueados ({summary['blocked_variable_parent']})</summary>{_render(grouped['blocked_variable_parent'])}</details>
+<details><summary>ℹ️ Portadas con stock en variaciones ({summary['blocked_variable_parent']})</summary>{_render(grouped['blocked_variable_parent'])}</details>
 <details><summary>⚫ SKU faltantes ({summary['missing']})</summary>{_render(grouped['missing'])}</details>
 <details><summary>🔴 SKU duplicados ({summary['duplicate']})</summary>{_render(grouped['duplicate'])}</details>
 </div>
@@ -108,6 +110,86 @@ body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;pad
         return HTMLResponse(f"<h2>{html.escape(str(exc))}</h2><a href='/'>Volver</a>", status_code=401)
     except Exception as exc:
         return HTMLResponse(f"<h2>Error</h2><pre>{html.escape(str(exc))}</pre>", status_code=500)
+
+
+# One catalogue scan at a time in the 512 MB instance. The page itself never
+# waits for WooCommerce; polling returns only state until the scan completes.
+_PREVIEW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stock-preview")
+_PREVIEW_LOCK = Lock()
+_PREVIEW_JOBS = {}
+
+
+@fastapi_app.get("/woocommerce-publish-preview", response_class=HTMLResponse)
+def woocommerce_publish_preview(request: Request):
+    if not inventory_web._session(request):
+        return HTMLResponse("<h2>Conecta Google Drive primero.</h2><a href='/'>Volver</a>", status_code=401)
+    return HTMLResponse("""<!doctype html><html lang="es"><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Preview stock</title><style>body{font:16px system-ui;margin:20px;background:#f6f7f9}button{padding:12px}iframe{width:100%;height:85vh;border:0}</style>
+</head><body><a href="/">← Suite</a><h1>Preview stock</h1>
+<p id="status" role="status">Preparando revisión; puedes seguir usando la Suite en otra pestaña.</p>
+<button id="retry" hidden onclick="location.reload()">Reintentar</button>
+<iframe id="report" title="Resultado de existencias" hidden></iframe><script>
+async function run(){
+ const status=document.getElementById('status');
+ try{
+  const start=await fetch('/stock-preview-start',{method:'POST'});
+  const job=await start.json();if(!start.ok)throw Error(job.error||'No se pudo iniciar.');
+  for(;;){
+   await new Promise(resolve=>setTimeout(resolve,2000));
+   const response=await fetch('/stock-preview-result?job='+encodeURIComponent(job.id));
+   const data=await response.json();if(!response.ok)throw Error(data.error||'La sesión terminó.');
+   if(data.state==='running'){status.textContent='Revisando WooCommerce…';continue;}
+   if(data.error)throw Error(data.error);
+   const frame=document.getElementById('report');frame.srcdoc=data.html;frame.hidden=false;
+   status.textContent='Revisión terminada. Solo lectura.';break;
+  }
+ }catch(e){status.textContent='No se completó: '+e.message;document.getElementById('retry').hidden=false;}
+}
+run();</script></body></html>""")
+
+
+@fastapi_app.post("/stock-preview-start")
+def stock_preview_start(request: Request):
+    session = inventory_web._session(request)
+    if not session:
+        return JSONResponse({"error": "Conecta Google Drive primero."}, status_code=401)
+    sid = request.cookies.get("session_id")
+    with _PREVIEW_LOCK:
+        now = time.monotonic()
+        for token, job in list(_PREVIEW_JOBS.items()):
+            if job["future"].done() and now - job["created"] > 180:
+                del _PREVIEW_JOBS[token]
+        for token, job in _PREVIEW_JOBS.items():
+            if not job["future"].done():
+                if job["sid"] == sid:
+                    return {"id": token}
+                return JSONResponse({"error": "Hay otra revisión en curso. Reintenta al terminar."}, status_code=429)
+        if len(_PREVIEW_JOBS) >= 8:
+            return JSONResponse({"error": "Espera unos minutos antes de repetir la revisión."}, status_code=429)
+        token = secrets.token_urlsafe(24)
+        _PREVIEW_JOBS[token] = {"sid": sid, "created": now, "future": _PREVIEW_EXECUTOR.submit(_render_preview, session)}
+    return {"id": token}
+
+
+@fastapi_app.get("/stock-preview-result")
+def stock_preview_result(request: Request, job: str):
+    if not inventory_web._session(request):
+        return JSONResponse({"error": "Sesión de Google requerida."}, status_code=401)
+    with _PREVIEW_LOCK:
+        entry = _PREVIEW_JOBS.get(job)
+        if not entry or entry["sid"] != request.cookies.get("session_id"):
+            return JSONResponse({"error": "La revisión expiró o el servidor reinició. Recarga."}, status_code=404)
+        future = entry["future"]
+    if not future.done():
+        return {"state": "running"}
+    try:
+        response = future.result()
+        if response.status_code >= 400:
+            return {"state": "done", "error": "No se pudo completar la lectura de Drive/WooCommerce. Revisa la conexión y vuelve a intentar."}
+        return {"state": "done", "html": response.body.decode("utf-8")}
+    except Exception:
+        return {"state": "done", "error": "La revisión falló. Reintenta sin iniciar otras tareas pesadas."}
 
 
 _root_mounts = [r for r in fastapi_app.router.routes if isinstance(r, Mount) and getattr(r, "path", None) in {"", "/"}]
