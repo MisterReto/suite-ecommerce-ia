@@ -17,6 +17,7 @@ import app as legacy_app
 from inventory_schema import MASTER_SHEET, normalize_product_row
 from woocommerce_client import WooCommerceClient, WooCommerceConfig, WooCommerceError
 from woocommerce_inventory import compare_product
+from store_connection import drive_only
 
 
 def _current_session(request: Request):
@@ -177,6 +178,25 @@ def _render_table(rows: list[dict[str, Any]]) -> str:
 
 
 fastapi_app = legacy_app.fastapi_app
+
+
+@fastapi_app.middleware("http")
+async def pause_store_tools(request: Request, call_next):
+    path = request.url.path.rstrip("/")
+    store_tool = path == "/inventory-sync" or path.startswith((
+        "/woocommerce-", "/wc-", "/wp-media-", "/product-sync-",
+        "/image-sync-", "/stock-preview-", "/batch-",
+    ))
+    if drive_only() and store_tool:
+        message = "Conexión con la tienda pausada. La app guarda únicamente en Google Drive."
+        if request.method == "GET" and (path == "/inventory-sync" or path.startswith("/woocommerce-")):
+            return HTMLResponse(
+                "<!doctype html><html lang='es'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Solo Drive</title><body style='font:18px system-ui;padding:24px;background:white;color:#172033'>"
+                f"<h1>Modo solo Drive</h1><p>{message}</p><a href='/'>Volver a la app</a></body></html>"
+            )
+        return JSONResponse({"error": message, "mode": "drive_only"}, status_code=503)
+    return await call_next(request)
 
 
 @fastapi_app.get("/wc-health")

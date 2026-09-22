@@ -12,6 +12,7 @@ from urllib.parse import urlparse, unquote
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from store_connection import require_store_connection
 
 
 class WordPressMediaError(RuntimeError):
@@ -54,7 +55,9 @@ class WordPressMediaClient:
     def _request(self, method: str, endpoint: str, *, params: dict[str, Any] | None = None,
                  body: bytes | None = None, content_type: str = "application/json",
                  extra_headers: dict[str, str] | None = None, require_write: bool = False) -> Any:
-        if require_write and not self.write_enabled:
+        require_store_connection(WordPressMediaError)
+        method = method.upper()
+        if (require_write or method not in {"GET", "HEAD", "OPTIONS"}) and not self.write_enabled:
             raise WordPressMediaError("Subida de medios deshabilitada. Define WP_MEDIA_WRITE_ENABLED=true después de validar el preview.")
         url = f"{self.base_url}/wp-json/wp/v2/{endpoint.lstrip('/')}"
         headers = {

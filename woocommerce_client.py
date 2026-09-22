@@ -12,6 +12,7 @@ from typing import Any, Iterator
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from store_connection import require_store_connection
 
 
 class WooCommerceError(RuntimeError):
@@ -90,6 +91,7 @@ class WooCommerceClient:
 
     def request(self, method: str, endpoint: str, *, params: dict[str, Any] | None = None,
                 payload: dict[str, Any] | None = None) -> Any:
+        require_store_connection(WooCommerceError)
         method = method.upper()
         if method not in {"GET", "POST", "PUT", "DELETE"}:
             raise ValueError(f"Método no soportado: {method}")
