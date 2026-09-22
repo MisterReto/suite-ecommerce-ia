@@ -342,7 +342,9 @@ body { color: var(--rda-text); }
   .gradio-container .tab-nav,
   .gradio-container [role="tablist"] { position: static; box-sizing: border-box; }
   .gradio-container [role="tab"] { flex-shrink: 0; }
-  .gradio-container [role="tablist"] { width: 100%; }
+  .gradio-container [role="tablist"] { width: 100%; flex-wrap: wrap; overflow: visible; }
+  .gradio-container [role="tab"] { white-space: normal; }
+  #settings-shortcut { width: 100%; min-height: 44px; white-space: normal; }
   #tour-launcher {
     position: static !important;
     width: 100% !important;
