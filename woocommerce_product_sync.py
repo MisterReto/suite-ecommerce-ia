@@ -10,7 +10,7 @@ import time
 from threading import Lock
 from typing import Any
 
-from inventory_schema import split_category_path
+from inventory_schema import split_category_path, is_variable_parent
 from woocommerce_client import WooCommerceClient, WooCommerceError
 
 _TERM_CACHE: dict[tuple[str, str], tuple[float, dict[str, dict[str, Any]]]] = {}
@@ -274,11 +274,12 @@ def sync_complete_product(
         }
 
     product_id = int(wc_entity["id"])
+    is_parent = is_variable_parent(row) or wc_entity.get("type") == "variable"
     payload: dict[str, Any] = {
         "name": _text(row.get("nombre_producto")),
         "description": _text(row.get("descripcion_larga")),
         "short_description": _text(row.get("descripcion_corta")),
-        **_pricing_and_stock(row),
+        **({"manage_stock": False} if is_parent else _pricing_and_stock(row)),
         **common_terms,
     }
     if assigned_images:
@@ -287,7 +288,6 @@ def sync_complete_product(
             for pos, media_id in enumerate(assigned_images)
         ]
 
-    is_parent = wc_entity.get("type") == "variable"
     if is_parent:
         # Covers carry metadata only. Never impose their blank stock as zero
         # or replace the prices/availability computed from their variations.
@@ -300,7 +300,7 @@ def sync_complete_product(
         remote = wc_client.get_product(product_id)
 
     remote_image_ids = [int(x.get("id")) for x in remote.get("images", []) if x.get("id")]
-    expected_stock = max(0, int(row.get("Existencias") or 0))
+    expected_stock = None if is_parent else max(0, int(row.get("Existencias") or 0))
     verified = (
         _text(remote.get("sku")) == sku
         and _text(remote.get("name")) == _text(row.get("nombre_producto"))

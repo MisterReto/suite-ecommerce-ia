@@ -108,15 +108,15 @@ old_head = """TUTORIAL_HEAD = \"\"\"
 \"\"\""""
 new_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=3\">
-<link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=4\">
+<link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=5\">
 <script defer src=\"/suite-static/tutorial.js?v=6\"></script>
-<script defer src=\"/suite-static/accessibility.js?v=6\"></script>
+<script defer src=\"/suite-static/accessibility.js?v=7\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
 _replace_once(
     '    gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")',
-    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y guárdalo en Drive. Publica en WooCommerce desde las herramientas de sincronización.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;💾 Guarda</div>\n    </header>""", elem_id="tour-app-title")''',
+    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\"><img src=\"/suite-static/rincon-logo.png\" alt=\"El Rincón de Asia\" width=\"56\" height=\"56\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite e-commerce</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y guárdalo en Drive. Publica en WooCommerce desde las herramientas de sincronización.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;💾 Guarda</div>\n    </header>""", elem_id="tour-app-title")''',
     "encabezado principal",
 )
 
@@ -191,7 +191,9 @@ def _canonical_row(record):
     kind = aliases.get(raw_kind, "variation" if parent else "simple")
     # La interfaz heredada llama "Variable" a una fila hija. Si trae SKU padre,
     # se guarda con el tipo real que WooCommerce espera: variation.
-    if kind == "variable" and parent:
+    if sku.upper().endswith("FULL"):
+        kind = "variable"
+    elif kind == "variable" and parent:
         kind = "variation"
     if kind != "variation":
         parent = ""
@@ -220,8 +222,8 @@ def _canonical_row(record):
         category_path,
         _clean(get("etiquetas", "")),
         _clean(get("Web link imagen", "")),
-        _clean(get("precio", 0)) or 0,
-        _clean(get("Precio descuento", 0)) or 0,
+        "" if kind == "variable" else (_clean(get("precio", 0)) or 0),
+        "" if kind == "variable" else (_clean(get("Precio descuento", 0)) or 0),
         _clean(get("imagenes", "")),
     ]
 

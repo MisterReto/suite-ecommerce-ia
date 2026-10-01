@@ -2208,7 +2208,7 @@ TUTORIAL_HEAD = """
 <script defer src="/suite-static/tutorial.js?v=2"></script>
 """
 
-with gr.Blocks() as demo:
+with gr.Blocks(title="Suite e-commerce") as demo:
     memoria_ruta_base = gr.State(None)
     # Historial de correcciones por cada slot de imagen
     hist_1 = gr.State([])
@@ -2527,6 +2527,7 @@ fastapi_app = gr.mount_gradio_app(
     fastapi_app,
     demo,
     path="/",
+    favicon_path=os.path.join(os.path.dirname(__file__), "static", "rincon-logo.png"),
     theme=gr.themes.Soft(),
     head=TUTORIAL_HEAD,
 )

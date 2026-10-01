@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 from PIL import Image, ImageDraw
+from inventory_schema import is_variable_parent
 
 ROOT = Path(__file__).parent
 
@@ -63,7 +64,7 @@ class Stability(unittest.TestCase):
 
     def test_parent_stock_is_information(self):
         scope = functions("woocommerce_publish_preview.py", {"build_stock_publish_preview"},
-                          {"Any": object, "WooCommerceClient": object, "inspect_out_of_stock_visibility": lambda c: {}})
+                          {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent, "inspect_out_of_stock_visibility": lambda c: {}})
         client = NS(catalog_by_sku=lambda **kw: ({}, {}))
         result = scope["build_stock_publish_preview"]([{"sku": "PARENT", "tipo": "variable", "sku_padre": "", "Existencias": ""}], client)
         self.assertIsNone(result["rows"][0]["stock_to_publish"])
@@ -72,7 +73,7 @@ class Stability(unittest.TestCase):
     def test_parent_payload_does_not_zero_children(self):
         scope = functions("woocommerce_product_sync.py",
             {"sync_complete_product", "_text", "_money", "_pricing_and_stock"},
-            {"Any": object, "WooCommerceClient": object,
+            {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent,
              "resolve_taxonomies": lambda c, r: {"category_ids": [], "tag_ids": [], "brand_ids": [], "warnings": []}})
         class Client:
             config = NS(write_enabled=True)

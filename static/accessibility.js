@@ -10,6 +10,22 @@
     return;
   }
 
+  document.title = 'Suite e-commerce';
+  const icon = document.querySelector('link[rel="icon"]') || document.createElement('link');
+  icon.rel = 'icon';
+  icon.href = '/suite-static/rincon-logo.png';
+  document.head.appendChild(icon);
+  let syncBase = '';
+  fetch('/service-health').then(r => r.json()).then(config => {
+    syncBase = config.sync_url || '';
+    document.querySelectorAll('.rda-tool-link').forEach(updateToolLink);
+    roots().forEach(root => root.querySelectorAll('.rda-tool-link').forEach(updateToolLink));
+  }).catch(() => {});
+  const remotePaths = new Set(['/inventory-sync', '/woocommerce-image-preview', '/woocommerce-product-sync', '/woocommerce-publish-preview']);
+  function updateToolLink(link) {
+    const path = new URL(link.href, window.location.href).pathname;
+    if (syncBase && remotePaths.has(path)) link.href = syncBase + path;
+  }
   const once = new WeakSet();
 
   function roots() {
@@ -23,7 +39,7 @@
     if (root === document || root.querySelector('link[data-rda-ui-css]')) return;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/suite-static/ui.css?v=4';
+    link.href = '/suite-static/ui.css?v=5';
     link.dataset.rdaUiCss = 'true';
     root.appendChild(link);
   }
@@ -77,6 +93,7 @@
       const link = document.createElement('a');
       link.className = 'rda-tool-link';
       link.href = item.href;
+      updateToolLink(link);
       link.title = item.help;
       link.innerHTML = `<span aria-hidden="true">${item.icon}</span><span>${item.label}</span>`;
       if (window.location.pathname === item.href) {

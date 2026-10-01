@@ -26,7 +26,7 @@ jobs:
       - name: Verificar aislamiento y delegación entre servicios
         run: |
           python -m unittest test_store_connection test_stability test_sync_changes -q
-          python -m unittest test_split_services -q
+          python -m unittest test_split_services test_parent_full -q
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com

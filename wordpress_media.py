@@ -58,7 +58,7 @@ class WordPressMediaClient:
                  extra_headers: dict[str, str] | None = None, require_write: bool = False) -> Any:
         require_store_connection(WordPressMediaError)
         method = method.upper()
-        if method not in {"GET", "HEAD", "OPTIONS"} and os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
+        if os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
             raise WordPressMediaError("La subida debe ejecutarse en el segundo servicio de Render.")
         if (require_write or method not in {"GET", "HEAD", "OPTIONS"}) and not self.write_enabled:
             raise WordPressMediaError("Subida de medios deshabilitada. Define WP_MEDIA_WRITE_ENABLED=true después de validar el preview.")

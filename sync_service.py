@@ -5,16 +5,19 @@ import secrets
 import sys
 import time
 import types
+import html
+from urllib.parse import urlencode, urlparse
 from threading import Lock
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from inventory_schema import MASTER_COLUMNS, MASTER_SHEET
-from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS, TOOL_PATHS, verify
+from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS, TOOL_PATHS, verify, signature
 
 runtime = types.ModuleType("app")
 runtime.fastapi_app = FastAPI(title="Suite WooCommerce tools")
@@ -50,6 +53,47 @@ import batch_web_v2
 app = FastAPI(title="Suite sync service")
 _NONCES = {}
 _NONCE_LOCK = Lock()
+
+app.mount("/suite-static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="suite-static")
+
+
+def main_url():
+    return os.getenv("MAIN_SERVICE_URL", "https://suite-ecommerce-ia.onrender.com").rstrip("/")
+
+
+@app.get("/session/start")
+async def start_session(ticket: str):
+    base = main_url()
+    if urlparse(base).scheme != "https":
+        return JSONResponse({"error": "Falta configurar el servicio principal."}, status_code=503)
+    body = json.dumps({"ticket": ticket}, separators=(",", ":")).encode()
+    ts, nonce = str(int(time.time())), secrets.token_urlsafe(24)
+    headers = {"x-suite-time": ts, "x-suite-nonce": nonce,
+        "x-suite-signature": signature(body, ts, nonce, os.getenv("SYNC_SERVICE_SHARED_KEY", ""))}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            result = await client.post(base + "/sync-handoff/redeem", content=body, headers=headers)
+        if result.status_code != 200:
+            return Response(result.content, status_code=result.status_code, media_type="application/json")
+        data = result.json()
+        context, path = data["context"], data["path"]
+        if path not in TOOL_PATHS or not context.get("access_token"):
+            raise ValueError()
+        now = time.time()
+        for old, session in list(runtime.SESSIONS.items()):
+            if session.get("expires_at", now + 1) < now:
+                runtime.SESSIONS.pop(old, None)
+        if len(runtime.SESSIONS) >= 500:
+            return JSONResponse({"error": "Servicio ocupado."}, status_code=503)
+        sid = secrets.token_urlsafe(32)
+        runtime.SESSIONS[sid] = {**context, "session_id": sid, "expires_at": now + 600}
+        query = data.get("query", "")
+        response = RedirectResponse(path + ("?" + query if query else ""), status_code=303,
+            headers={"cache-control": "no-store", "referrer-policy": "no-referrer"})
+        response.set_cookie("sync_session", sid, max_age=600, secure=True, httponly=True, samesite="lax")
+        return response
+    except Exception:
+        return JSONResponse({"error": "No pude abrir la sesión. Vuelve a la Suite y conecta Drive."}, status_code=502)
 
 
 @app.get("/health")
@@ -109,3 +153,49 @@ async def tools(request: Request):
     finally:
         STORE_CONTEXT.reset(scope_token)
         runtime.SESSIONS.pop(sid, None)
+
+
+@app.api_route("/{tool_path:path}", methods=["GET", "POST"])
+async def direct_tool(request: Request, tool_path: str):
+    path = "/" + tool_path.rstrip("/")
+    if path == "/":
+        return RedirectResponse(main_url(), status_code=303)
+    if path not in TOOL_PATHS:
+        return JSONResponse({"error": "Herramienta no disponible."}, status_code=404)
+    sid = request.cookies.get("sync_session")
+    session = runtime.SESSIONS.get(sid)
+    if not session or session.get("expires_at", 0) < time.time():
+        runtime.SESSIONS.pop(sid, None)
+        if request.method != "GET":
+            return JSONResponse({"error": "Sesión caducada. Vuelve a abrir la herramienta desde Suite e-commerce."}, status_code=401)
+        return RedirectResponse(main_url() + "/sync-launch?" + urlencode({"path": path, "query": request.url.query}), status_code=303)
+    # Browser POSTs must originate on this worker, never from another website.
+    if request.method == "POST":
+        origin = request.headers.get("origin")
+        if not origin or origin != str(request.base_url).rstrip("/"):
+            return JSONResponse({"error": "Origen no autorizado."}, status_code=403)
+    raw = await request.body()
+    if len(raw) > 1_000_000:
+        return JSONResponse({"error": "Solicitud demasiado grande."}, status_code=413)
+    token = STORE_CONTEXT.set({k: v for k, v in session.get("store", {}).items() if k in STORE_KEYS})
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=runtime.fastapi_app, raise_app_exceptions=False),
+            base_url="http://sync-local") as client:
+            result = await client.request(request.method, path + ("?" + request.url.query if request.url.query else ""),
+                content=raw, headers={"cookie": f"session_id={sid}",
+                    "content-type": request.headers.get("content-type", "application/json")})
+        content = result.content
+        content_type = result.headers.get("content-type", "application/json")
+        if "text/html" in content_type:
+            text = content.decode("utf-8")
+            import re
+            text = re.sub(r"<title>.*?</title>", "<title>Suite e-commerce</title>", text, flags=re.S)
+            text = text.replace("</head>", "<link rel='icon' href='/suite-static/rincon-logo.png'></head>")
+            text = text.replace("href='/'", f"href='{html.escape(main_url())}'").replace('href="/"', f'href="{html.escape(main_url())}"')
+            badge = "<div style='padding:10px 16px;background:#e8f5ee;border-radius:12px;font:14px system-ui'>Suite e-commerce · Ejecutando en el segundo servicio: <b>sincronización WooCommerce</b></div>"
+            text = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + badge, text, count=1)
+            content = text.encode("utf-8")
+        return Response(content, status_code=result.status_code, headers={"content-type": content_type,
+            "cache-control": "no-store", "x-suite-executor": "sync-service"})
+    finally:
+        STORE_CONTEXT.reset(token)
