@@ -18,6 +18,8 @@ from inventory_schema import MASTER_SHEET, normalize_product_row
 from woocommerce_client import WooCommerceClient, WooCommerceConfig, WooCommerceError
 from woocommerce_inventory import compare_product
 from store_connection import drive_only
+from sync_bridge_protocol import TOOL_PATHS
+from sync_gateway import forward_tool, worker_enabled
 
 
 def _current_session(request: Request):
@@ -196,6 +198,10 @@ async def pause_store_tools(request: Request, call_next):
                 f"<h1>Modo solo Drive</h1><p>{message}</p><a href='/'>Volver a la app</a></body></html>"
             )
         return JSONResponse({"error": message, "mode": "drive_only"}, status_code=503)
+    if worker_enabled() and store_tool:
+        if path not in TOOL_PATHS:
+            return JSONResponse({"error": "Herramienta no disponible."}, status_code=404)
+        return await forward_tool(request, legacy_app)
     return await call_next(request)
 
 

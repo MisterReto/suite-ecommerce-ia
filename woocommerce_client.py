@@ -13,6 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from store_connection import require_store_connection
+from sync_bridge_protocol import setting
 
 
 class WooCommerceError(RuntimeError):
@@ -39,15 +40,15 @@ class WooCommerceConfig:
 
     @classmethod
     def from_env(cls) -> "WooCommerceConfig":
-        base_url = os.getenv("WC_URL", "https://rincon.creandotusite.com").rstrip("/")
+        base_url = setting("WC_URL", "https://rincon.creandotusite.com").rstrip("/")
         requested_workers = int(os.getenv("WC_MAX_WORKERS", "3"))
         requested_metadata = int(os.getenv("WC_METADATA_WORKERS", "4"))
         requested_ttl = int(os.getenv("WC_CACHE_TTL", "120"))
         return cls(
             base_url=base_url,
-            consumer_key=os.getenv("WC_CONSUMER_KEY", "").strip(),
-            consumer_secret=os.getenv("WC_CONSUMER_SECRET", "").strip(),
-            write_enabled=os.getenv("WC_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            consumer_key=setting("WC_CONSUMER_KEY", "").strip(),
+            consumer_secret=setting("WC_CONSUMER_SECRET", "").strip(),
+            write_enabled=setting("WC_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
             timeout=max(10, int(os.getenv("WC_TIMEOUT", "45"))),
             max_workers=max(1, min(3, requested_workers)),
             metadata_workers=max(1, min(6, requested_metadata)),
@@ -93,6 +94,8 @@ class WooCommerceClient:
                 payload: dict[str, Any] | None = None) -> Any:
         require_store_connection(WooCommerceError)
         method = method.upper()
+        if method != "GET" and os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
+            raise WooCommerceError("La publicación debe ejecutarse en el segundo servicio de Render.")
         if method not in {"GET", "POST", "PUT", "DELETE"}:
             raise ValueError(f"Método no soportado: {method}")
         if method != "GET" and not self.config.write_enabled:

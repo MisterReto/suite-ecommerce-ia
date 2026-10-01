@@ -14,7 +14,7 @@ def request_method(filename, class_name, name):
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
     module = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), fn], type_ignores=[])
-    scope = {'require_store_connection': require_store_connection, 'WooCommerceError': RuntimeError, 'WordPressMediaError': RuntimeError}
+    scope = {'os': os, 'require_store_connection': require_store_connection, 'WooCommerceError': RuntimeError, 'WordPressMediaError': RuntimeError}
     exec(compile(ast.fix_missing_locations(module), filename, 'exec'), scope)
     return scope[name]
 

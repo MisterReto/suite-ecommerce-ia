@@ -11,6 +11,8 @@ COPY product_web_ai.py .
 COPY single_product_auto.py .
 COPY server.py .
 COPY store_connection.py .
+COPY sync_bridge_protocol.py sync_gateway.py sync_service.py service_entrypoint.py .
+COPY woocommerce_batch_sync.py woocommerce_catalog_light.py batch_web_v2.py .
 COPY inventory_schema.py .
 COPY inventory_operations.py .
 COPY inventory_bulk.py .
@@ -38,4 +40,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 7860
 
 # Suite IA + Drive. La conexión a la tienda está aislada por defecto.
-CMD ["uvicorn", "product_web_ai:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
+CMD ["uvicorn", "service_entrypoint:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]

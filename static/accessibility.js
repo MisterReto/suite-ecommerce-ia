@@ -23,7 +23,7 @@
     if (root === document || root.querySelector('link[data-rda-ui-css]')) return;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/suite-static/ui.css?v=3';
+    link.href = '/suite-static/ui.css?v=4';
     link.dataset.rdaUiCss = 'true';
     root.appendChild(link);
   }
@@ -207,7 +207,7 @@
     const text = document.querySelector('#suite-tour-text');
     if (!text) return;
     if (text.textContent.includes('Gabo nueva')) {
-      text.textContent = 'Cuando los datos y las imágenes estén correctos, guarda el producto. Se añadirá a Lista completa y la app intentará crear o actualizar únicamente ese SKU en WooCommerce.';
+      text.textContent = 'Cuando los datos y las imágenes estén correctos, guarda el producto. Se añadirá a Lista completa Luego puedes publicarlo desde la herramienta Sincronizar SKU.';
     }
     if (text.textContent.includes('VER TUTORIAL GUIADO')) {
       text.textContent = text.textContent.replace('VER TUTORIAL GUIADO', 'Ver guía de uso');
