@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import patch
 from PIL import Image, ImageDraw
 from inventory_schema import is_variable_parent
+from app_security import clean_html
 
 ROOT = Path(__file__).parent
 
@@ -73,7 +74,7 @@ class Stability(unittest.TestCase):
     def test_parent_payload_does_not_zero_children(self):
         scope = functions("woocommerce_product_sync.py",
             {"sync_complete_product", "_text", "_money", "_pricing_and_stock"},
-            {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent,
+            {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent, "clean_html": clean_html,
              "resolve_taxonomies": lambda c, r: {"category_ids": [], "tag_ids": [], "brand_ids": [], "warnings": []}})
         class Client:
             config = NS(write_enabled=True)

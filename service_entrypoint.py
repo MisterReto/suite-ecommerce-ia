@@ -20,3 +20,7 @@ def service_health():
 
 _mounts = [r for r in fastapi_app.routes if (isinstance(r, Mount) and r.path in {"", "/"}) or r.path == "/{tool_path:path}"]
 fastapi_app.router.routes[:] = [r for r in fastapi_app.routes if r not in _mounts] + _mounts
+
+from app_security import SecurityMiddleware
+import app as session_runtime
+fastapi_app.add_middleware(SecurityMiddleware, sessions=lambda: session_runtime.SESSIONS)

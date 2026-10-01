@@ -8,6 +8,7 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 os.environ.setdefault("OAUTHLIB_IGNORE_SCOPE_CHANGE", "1")
 
 import io
+import time
 import html as html_lib
 import re
 import json
@@ -20,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import gradio as gr
 from PIL import Image, ImageOps
+Image.MAX_IMAGE_PIXELS = 24_000_000
 
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.responses import RedirectResponse, PlainTextResponse
@@ -241,9 +243,16 @@ def _guardar_sesion(clave_sesion, **kwargs):
     if not clave_sesion:
         return
     if clave_sesion not in SESSIONS:
+        now = time.time()
+        for key, session in list(SESSIONS.items()):
+            if session.get("expires_at", now + 1) < now:
+                SESSIONS.pop(key, None)
+        if len(SESSIONS) >= 500:
+            raise RuntimeError("Servicio ocupado. Vuelve a conectar Drive en unos minutos.")
         SESSIONS[clave_sesion] = {}
     SESSIONS[clave_sesion].update(kwargs)
     SESSIONS[clave_sesion]["session_id"] = clave_sesion
+    SESSIONS[clave_sesion]["expires_at"] = time.time() + 8 * 3600
 
 
 def _obtener_sesion(request: gr.Request):
@@ -302,15 +311,18 @@ def auth_callback(request: FastAPIRequest):
     Claves para que NO truene en hostings con proxy (Render, HF Spaces...):
       - scopes=None  -> no se valida el orden/formato de los scopes que devuelve Google.
       - fetch_token(code=...) -> no se reconstruye la URL completa, así el esquema
-        http/https del proxy deja de importar y no exige validar el state cookie.
-      - El traceback se muestra en pantalla en vez de un "Internal Server Error" mudo.
+        http/https del proxy deja de importar; state se valida primero.
+      - Los errores no muestran tokens ni trazas internas.
     """
     try:
         params = dict(request.query_params)
+        expected_state = request.cookies.get("oauth_state", "")
+        if not expected_state or not secrets.compare_digest(expected_state, params.get("state", "")):
+            return PlainTextResponse("Acceso Google caducado o inválido. Vuelve a conectar Drive.", status_code=400)
 
         if "error" in params or "code" not in params:
             return PlainTextResponse(
-                f"Google devolvió una respuesta inesperada: {params}", status_code=400
+                "Google no completó el acceso. Vuelve a conectar Drive.", status_code=400
             )
 
         flow = Flow.from_client_config(
@@ -341,13 +353,14 @@ def auth_callback(request: FastAPIRequest):
         resp.set_cookie(
             "session_id", session_id,
             httponly=True, secure=True, samesite="lax", path="/",
-            max_age=60 * 60 * 24 * 30,
+            max_age=8 * 3600,
         )
         resp.delete_cookie("oauth_state", path="/")
+        resp.delete_cookie("oauth_code_verifier", path="/")
         return resp
 
     except Exception:
-        return PlainTextResponse(traceback.format_exc(), status_code=500)
+        return PlainTextResponse("No pude completar el acceso a Google. Vuelve a conectar Drive.", status_code=500)
 
 
 @fastapi_app.get("/logout")

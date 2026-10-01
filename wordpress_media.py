@@ -12,6 +12,7 @@ from urllib.parse import urlparse, unquote
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from app_security import validate_service_url
 from store_connection import require_store_connection
 from sync_bridge_protocol import setting
 
@@ -62,6 +63,7 @@ class WordPressMediaClient:
             raise WordPressMediaError("La subida debe ejecutarse en el segundo servicio de Render.")
         if (require_write or method not in {"GET", "HEAD", "OPTIONS"}) and not self.write_enabled:
             raise WordPressMediaError("Subida de medios deshabilitada. Define WP_MEDIA_WRITE_ENABLED=true después de validar el preview.")
+        validate_service_url(self.base_url)
         url = f"{self.base_url}/wp-json/wp/v2/{endpoint.lstrip('/')}"
         headers = {
             "Authorization": self._auth(),
@@ -74,10 +76,10 @@ class WordPressMediaClient:
             headers.update(extra_headers)
         try:
             response = self.session.request(
-                method.upper(), url, params=params, data=body, headers=headers,
+                method.upper(), url, allow_redirects=False, params=params, data=body, headers=headers,
                 timeout=(10, self.timeout),
             )
-            if response.status_code >= 400:
+            if response.status_code >= 300:
                 raise WordPressMediaError(f"WordPress HTTP {response.status_code}: {response.text[:600]}")
             return response.json() if response.content else None
         except requests.RequestException as exc:

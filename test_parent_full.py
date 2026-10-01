@@ -12,6 +12,8 @@ from inventory_schema import normalize_product_row, is_variable_parent
 from woocommerce_inventory import compare_product
 import sync_gateway
 import sync_service
+with patch.dict(os.environ, {"SUITE_SERVICE_ROLE": "sync"}):
+    import service_entrypoint
 
 
 class ParentTests(unittest.TestCase):
@@ -40,7 +42,6 @@ class ParentTests(unittest.TestCase):
 class DirectServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_precedes_worker_catchall(self):
         with patch.dict(os.environ, {"SUITE_SERVICE_ROLE": "sync"}):
-            import service_entrypoint
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=service_entrypoint.fastapi_app), base_url="https://worker.example") as client:
                 response = await client.get('/service-health')
                 self.assertEqual(response.status_code, 200)

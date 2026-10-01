@@ -39,7 +39,7 @@ def _read_master_inventory(session) -> tuple[str, list[dict[str, Any]]]:
     legacy_app._validar_inventario_preparado(sheets, spreadsheet_id)
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{MASTER_SHEET}'!A:N",
+        range=f"'{MASTER_SHEET}'!A:T",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute()
     values = result.get("values", [])
@@ -189,7 +189,7 @@ fastapi_app = legacy_app.fastapi_app
 @fastapi_app.middleware("http")
 async def pause_store_tools(request: Request, call_next):
     path = request.url.path.rstrip("/")
-    store_tool = path == "/inventory-sync" or path.startswith((
+    store_tool = path in TOOL_PATHS or path.startswith((
         "/woocommerce-", "/wc-", "/wp-media-", "/product-sync-",
         "/image-sync-", "/stock-preview-", "/batch-",
     ))

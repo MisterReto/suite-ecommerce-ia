@@ -110,7 +110,7 @@ new_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=3\">
 <link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=5\">
 <script defer src=\"/suite-static/tutorial.js?v=6\"></script>
-<script defer src=\"/suite-static/accessibility.js?v=7\"></script>
+<script defer src=\"/suite-static/accessibility.js?v=9\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
