@@ -94,7 +94,7 @@ class WooCommerceClient:
                 payload: dict[str, Any] | None = None) -> Any:
         require_store_connection(WooCommerceError)
         method = method.upper()
-        if method != "GET" and os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
+        if os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
             raise WooCommerceError("La publicación debe ejecutarse en el segundo servicio de Render.")
         if method not in {"GET", "POST", "PUT", "DELETE"}:
             raise ValueError(f"Método no soportado: {method}")

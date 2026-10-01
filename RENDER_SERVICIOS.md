@@ -1,37 +1,35 @@
-# Interfaz y sincronización en servicios separados
+# Suite e-commerce: servicios separados
 
-La app principal conserva sus URL y páginas. Las solicitudes de herramientas
-WooCommerce se delegan por HTTPS al segundo servicio. Inventario físico y
-generación IA siguen en el principal. Guardar un producto sigue escribiendo
-solo en Drive; la publicación es una operación explícita.
+La principal sirve captura, IA, ajustes y Google Drive. Los botones de WooCommerce
+abren directamente https://suite-ecommerce-ia-ai.onrender.com. Las antiguas URL
+del principal redirigen al segundo servicio y los POST locales quedan deshabilitados.
+Los clientes WooCommerce/WordPress también impiden llamadas desde el principal.
+Guardar un producto escribe solo en Drive; publicar requiere una acción explícita.
 
-## Principal: suite-ecommerce-ia
+## Variables del principal
 
-- `SUITE_SERVICE_ROLE=main`
-- `SUITE_DRIVE_ONLY=false`
-- `SYNC_SERVICE_URL=https://suite-ecommerce-ia-ai.onrender.com`
-- `SYNC_SERVICE_SHARED_KEY`: secreto aleatorio de 32 bytes o más.
-- `WC_WRITE_ENABLED=true`, `WP_MEDIA_WRITE_ENABLED=true`.
-- Conservar las credenciales OAuth, WooCommerce y WordPress actuales.
+- SUITE_SERVICE_ROLE=main
+- SUITE_DRIVE_ONLY=false
+- SYNC_SERVICE_URL=https://suite-ecommerce-ia-ai.onrender.com
+- SYNC_SERVICE_SHARED_KEY: clave compartida de al menos 32 bytes.
+- Mantener OAuth y credenciales actuales de WooCommerce/WordPress.
 
-## Segundo: suite-ecommerce-ia-ai
+## Variables del segundo servicio
 
-- `SUITE_SERVICE_ROLE=sync`
-- `SUITE_DRIVE_ONLY=false`
-- `SYNC_SERVICE_SHARED_KEY`: el mismo secreto del principal.
-- `WC_WRITE_ENABLED=true`, `WP_MEDIA_WRITE_ENABLED=true`.
-- `/health` informa `role=sync`. La única entrada de trabajo es
-  `/internal/tools`, autenticada con firma HMAC y protección contra replay.
+- SUITE_SERVICE_ROLE=sync
+- SUITE_DRIVE_ONLY=false
+- MAIN_SERVICE_URL=https://suite-ecommerce-ia.onrender.com
+- SYNC_SERVICE_SHARED_KEY: misma clave del principal.
+- WC_WRITE_ENABLED=true y WP_MEDIA_WRITE_ENABLED=true.
 
-Ambos usan el Dockerfile del repositorio. El segundo importa un runtime ligero;
-no carga Gradio, Gemini ni pandas. Las páginas y callbacks existentes se reutilizan.
-No hace falta un nuevo OAuth: el principal refresca su sesión y transmite solo
-el access token temporal y las carpetas elegidas. El segundo borra el contexto
-de Google después de cada solicitud. Refresh token, secreto OAuth y API key de
-Gemini nunca se transfieren. Las credenciales de tienda se transmiten por HTTPS
-entre los dos servicios, sin quedar en logs ni en el navegador.
-
-En Render Free el segundo servicio puede tardar en despertar. No se reintentan
-escrituras automáticamente. Después de un timeout, comprobar el SKU antes de
-repetir. La separación aísla memoria y CPU; la caché de Elementor se administra
-en WordPress y no la modifica esta configuración.
+La sesión de Google se conecta en el principal. El navegador recibe un ticket
+aleatorio, válido durante 120 segundos y de un solo uso. El segundo lo canjea
+por HTTPS con firma HMAC. No se exponen credenciales en enlaces ni HTML.
+El segundo guarda una sesión temporal de 10 minutos, con cookie Secure/HttpOnly.
+Al caducar, abrir de nuevo la herramienta desde la Suite renueva el acceso.
+Solo se transmite el access token temporal de Google, referencias de carpetas
+y credenciales de tienda; nunca refresh token, secreto OAuth ni API key de IA.
+El segundo no importa Gradio, Gemini ni pandas. /service-health identifica el
+servicio, versión desplegada y URL de sincronización; x-suite-executor identifica
+las respuestas ejecutadas por el segundo servicio. No se reintentan escrituras
+tras un timeout. Los SKU FULL son portadas variables sin precio ni stock propios.

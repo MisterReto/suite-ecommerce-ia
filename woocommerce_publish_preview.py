@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from woocommerce_client import WooCommerceClient
+from inventory_schema import is_variable_parent
 
 
 def inspect_out_of_stock_visibility(client: WooCommerceClient) -> dict[str, Any]:
@@ -62,7 +63,8 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
     duplicate_set = set(duplicate_skus.keys())
     for inv in inventory_rows:
         sku = str(inv.get("sku") or "").strip()
-        stock = int(inv.get("Existencias", 0) or 0)
+        parent = is_variable_parent(inv)
+        stock = None if parent else int(inv.get("Existencias", 0) or 0)
         wc = wc_index.get(sku)
         status = ""
         reason = ""
@@ -70,7 +72,7 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
         product_id = None
         parent_id = None
 
-        if str(inv.get("tipo") or "").casefold() == "variable" and not inv.get("sku_padre"):
+        if parent:
             status = "blocked_variable_parent"
             reason = "Portada: sin stock propio. La disponibilidad depende de sus variaciones."
             stock = None

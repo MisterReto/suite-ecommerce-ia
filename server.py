@@ -14,12 +14,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount
 
 import app as legacy_app
-from inventory_schema import MASTER_SHEET, normalize_product_row
+from inventory_schema import MASTER_SHEET, normalize_product_row, is_variable_parent
 from woocommerce_client import WooCommerceClient, WooCommerceConfig, WooCommerceError
 from woocommerce_inventory import compare_product
 from store_connection import drive_only
 from sync_bridge_protocol import TOOL_PATHS
-from sync_gateway import forward_tool, worker_enabled
+from sync_gateway import redirect_tool, worker_enabled, install_handoff_routes
+
+if worker_enabled():
+    install_handoff_routes(legacy_app.fastapi_app, legacy_app)
 
 
 def _current_session(request: Request):
@@ -83,7 +86,7 @@ def _connection_test() -> dict[str, Any]:
 
 
 def _stock_source_profile(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    values = [int(row.get("Existencias", 0) or 0) for row in rows]
+    values = [int(row.get("Existencias", 0) or 0) for row in rows if not is_variable_parent(row)]
     counts = Counter(values)
     unique_values = sorted(counts)
     all_same = bool(values) and len(unique_values) == 1
@@ -146,6 +149,7 @@ def _status_label(status: str) -> str:
         "stock_unmanaged": "🟠 Stock no administrado",
         "content_difference": "🔵 Solo nombre distinto",
         "missing_in_woocommerce": "⚫ Falta en WooCommerce",
+        "variable_parent": "ℹ️ Portada variable: sin stock ni precio propio",
     }.get(status, status)
 
 
@@ -167,11 +171,11 @@ def _render_table(rows: list[dict[str, Any]]) -> str:
             f"<td>{html.escape(str(row.get('name', '')))}</td>"
             f"<td>{html.escape(str(row.get('brand', '')))}</td>"
             f"<td>{html.escape(str(row.get('entity_type') or ''))}</td>"
-            f"<td>{html.escape(str(row.get('inventory_stock')))}</td>"
-            f"<td>{html.escape(str(row.get('woocommerce_stock')))}</td>"
+            f"<td>{html.escape(str(row.get('inventory_stock') if row.get('inventory_stock') is not None else '—'))}</td>"
+            f"<td>{html.escape(str(row.get('woocommerce_stock') if row.get('woocommerce_stock') is not None else '—'))}</td>"
             f"<td>{'Sí' if row.get('manages_stock') else 'No'}</td>"
-            f"<td>${html.escape(str(row.get('inventory_price')))}</td>"
-            f"<td>${html.escape(str(row.get('woocommerce_price')))}</td>"
+            f"<td>{('$' + html.escape(str(row['inventory_price']))) if row.get('inventory_price') is not None else '—'}</td>"
+            f"<td>{('$' + html.escape(str(row['woocommerce_price']))) if row.get('woocommerce_price') is not None else '—'}</td>"
             f"<td>{html.escape(', '.join(row.get('changes') or []))}</td>"
             "</tr>"
         )
@@ -201,7 +205,7 @@ async def pause_store_tools(request: Request, call_next):
     if worker_enabled() and store_tool:
         if path not in TOOL_PATHS:
             return JSONResponse({"error": "Herramienta no disponible."}, status_code=404)
-        return await forward_tool(request, legacy_app)
+        return redirect_tool(request)
     return await call_next(request)
 
 
@@ -290,6 +294,7 @@ def inventory_sync_dashboard(request: Request):
           <details><summary>⚫ Faltan en WooCommerce ({summary['missing_in_woocommerce']})</summary>{_render_table(by_status.get('missing_in_woocommerce', []))}</details>
           <details><summary>🔵 Solo cambia el nombre ({summary['content_difference']})</summary>{_render_table(by_status.get('content_difference', []))}</details>
           <details><summary>✅ En sincronía ({summary['in_sync']})</summary>{_render_table(by_status.get('in_sync', []))}</details>
+          <details><summary>ℹ️ Portadas variables ({summary.get('variable_parent', 0)})</summary>{_render_table(by_status.get('variable_parent', []))}</details>
         </div>
         <p><b>No hay botones de escritura en esta versión.</b> WC_WRITE_ENABLED debe permanecer en false.</p>
         </body></html>

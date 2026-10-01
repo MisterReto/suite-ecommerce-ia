@@ -10,7 +10,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-from inventory_schema import normalize_product_row
+from inventory_schema import normalize_product_row, is_variable_parent
 
 
 @dataclass(frozen=True)
@@ -20,11 +20,11 @@ class SyncPreview:
     product_id: int | None
     entity_type: str | None
     parent_product_id: int | None
-    inventory_stock: int
+    inventory_stock: int | None
     woocommerce_stock: int | None
     manages_stock: bool
     stock_status: str | None
-    inventory_price: float
+    inventory_price: float | None
     woocommerce_price: float | None
     name_matches: bool
     changes: tuple[str, ...]
@@ -92,6 +92,16 @@ def compare_product(inventory_row: Mapping[str, Any], wc_product: Mapping[str, A
 
     changes: list[str] = []
     notes: list[str] = []
+
+    if is_variable_parent(inv) or wc_product.get("type") == "variable":
+        return SyncPreview(
+            sku=sku, status="variable_parent", product_id=wc_product.get("id"),
+            entity_type="variable", parent_product_id=None, inventory_stock=None,
+            woocommerce_stock=None, manages_stock=manages_stock, stock_status=stock_status,
+            inventory_price=None, woocommerce_price=None, name_matches=name_matches,
+            changes=("manage_stock",) if manages_stock else (),
+            notes=("Portada: precio y stock se administran en sus variaciones.",),
+        )
 
     # stock_quantity=None NO es una diferencia numérica si WooCommerce no está
     # administrando stock para ese producto/variación. Se reporta por separado.

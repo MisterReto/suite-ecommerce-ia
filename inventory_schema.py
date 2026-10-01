@@ -15,6 +15,14 @@ MASTER_COLUMNS = (
 )
 
 
+def is_variable_parent(row: Mapping[str, Any]) -> bool:
+    sku = str(row.get("sku") or "").strip().upper()
+    return sku.endswith("FULL") or (
+        str(row.get("tipo") or "").strip().casefold() == "variable"
+        and not str(row.get("sku_padre") or "").strip()
+    )
+
+
 def split_category_path(value: Any) -> tuple[str, str]:
     text = str(value or "").strip()
     if not text:
@@ -50,7 +58,9 @@ def normalize_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
     kind = aliases.get(raw_kind, "variation" if out["sku_padre"] else "simple")
     # Compatibilidad con capturas antiguas: la interfaz llamaba "Variable" a
     # las filas hijas. Un SKU padre informado convierte ese registro en variación.
-    if kind == "variable" and out["sku_padre"]:
+    if is_variable_parent(row):
+        kind = "variable"
+    elif kind == "variable" and out["sku_padre"]:
         kind = "variation"
     out["tipo"] = kind
     if kind != "variation":
@@ -71,6 +81,8 @@ def normalize_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
         out["Precio descuento"] = float(out["Precio descuento"] or 0)
     except (TypeError, ValueError):
         out["Precio descuento"] = 0.0
+    if kind == "variable":
+        out["Existencias"] = out["precio"] = out["Precio descuento"] = ""
     return out
 
 
