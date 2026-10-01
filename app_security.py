@@ -99,6 +99,12 @@ class SecurityMiddleware:
             return await self.app(scope, receive, send)
         request = Request(scope)
         path, method = request.url.path, request.method
+        # Gradio 6 HTML templates compile with Function(). Keep evaluation
+        # disabled on the worker and non-UI responses; only the main UI needs it.
+        gradio_ui = os.getenv("SUITE_SERVICE_ROLE", "main") == "main" and path in {"/", "/index.html"}
+        policy = b"default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://huggingface.co; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+        if gradio_ui:
+            policy = policy.replace(b"script-src 'self'", b"script-src 'self' 'unsafe-eval'", 1)
         original_send = send
         async def secure_send(message):
             if message["type"] == "http.response.start":
@@ -107,7 +113,7 @@ class SecurityMiddleware:
                     (b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"SAMEORIGIN"),
                     (b"referrer-policy", b"no-referrer"), (b"strict-transport-security", b"max-age=31536000"),
                     (b"permissions-policy", b"camera=(self), microphone=(), geolocation=()"),
-                    (b"content-security-policy", b"default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://huggingface.co; worker-src 'self' blob:; frame-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"),
+                    (b"content-security-policy", policy),
                 ])
                 if request.cookies.get("sync_session") or request.cookies.get("session_id") or path in {"/internal/tools", "/sync-handoff/redeem"} or path.startswith(("/session/", "/auth/", "/sync-")):
                     headers.append((b"cache-control", b"no-store"))
