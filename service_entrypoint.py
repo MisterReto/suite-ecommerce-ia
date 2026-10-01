@@ -18,5 +18,5 @@ def service_health():
             "store_connected": os.getenv("SUITE_DRIVE_ONLY", "true").lower() == "false"}
 
 
-_mounts = [r for r in fastapi_app.routes if isinstance(r, Mount) and r.path in {"", "/"}]
+_mounts = [r for r in fastapi_app.routes if (isinstance(r, Mount) and r.path in {"", "/"}) or r.path == "/{tool_path:path}"]
 fastapi_app.router.routes[:] = [r for r in fastapi_app.routes if r not in _mounts] + _mounts
