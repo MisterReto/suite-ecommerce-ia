@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import gradio as gr
-from PIL import Image
+from PIL import Image, ImageOps
 
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.responses import RedirectResponse, PlainTextResponse
@@ -1245,6 +1245,7 @@ def generar_sku_logica(nombre, marca, gramaje):
 
 def comprimir_imagen(img_array, max_size=1024):
     img = Image.open(img_array) if isinstance(img_array, (str, os.PathLike)) else Image.fromarray(img_array)
+    img = ImageOps.exif_transpose(img)
     img.thumbnail((max_size, max_size))
     return img
 
@@ -2277,8 +2278,11 @@ with gr.Blocks() as demo:
                         type="filepath",
                         sources=["upload", "webcam", "clipboard"],
                         elem_id="tour-upload-front",
+                        format="jpeg",
+                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}),
                     )
-                    img2 = gr.Image(label="Foto Reverso (Opcional)", type="filepath", sources=["upload", "webcam", "clipboard"])
+                    img2 = gr.Image(label="Foto Reverso (Opcional)", type="filepath", sources=["upload", "webcam", "clipboard"], format="jpeg", elem_id="tour-upload-back",
+                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}))
                     desc_input = gr.Textbox(label="Apuntes Extra", placeholder="Ej. Galletas coreanas edición limitada")
                     btn_extraer = gr.Button(
                         "🔍 Analizar Producto (SEO + Info + Precio)",
@@ -2418,6 +2422,8 @@ with gr.Blocks() as demo:
                         type="filepath",
                         sources=["upload", "webcam", "clipboard"],
                         elem_id="tour-lens-image",
+                        format="jpeg",
+                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}),
                     )
                     btn_usar_foto_tab1 = gr.Button("📋 Usar foto de la Pestaña 1", size="sm")
                     btn_buscar_lens = gr.Button("🔍 Buscar Variantes con Google Lens (IA)", variant="primary")

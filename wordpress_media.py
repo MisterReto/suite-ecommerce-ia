@@ -13,6 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from store_connection import require_store_connection
+from sync_bridge_protocol import setting
 
 
 class WordPressMediaError(RuntimeError):
@@ -21,11 +22,11 @@ class WordPressMediaError(RuntimeError):
 
 class WordPressMediaClient:
     def __init__(self):
-        self.base_url = os.getenv("WP_URL", os.getenv("WC_URL", "https://rincon.creandotusite.com")).rstrip("/")
-        self.username = os.getenv("WP_USERNAME", "").strip()
-        self.app_password = os.getenv("WP_APP_PASSWORD", "").strip()
-        self.write_enabled = os.getenv("WP_MEDIA_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-        self.set_metadata = os.getenv("WP_MEDIA_METADATA_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.base_url = setting("WP_URL", setting("WC_URL", "https://rincon.creandotusite.com")).rstrip("/")
+        self.username = setting("WP_USERNAME", "").strip()
+        self.app_password = setting("WP_APP_PASSWORD", "").strip()
+        self.write_enabled = setting("WP_MEDIA_WRITE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.set_metadata = setting("WP_MEDIA_METADATA_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         self.timeout = max(10, int(os.getenv("WP_TIMEOUT", "60")))
         self.session = requests.Session()
         retry = Retry(
@@ -57,6 +58,8 @@ class WordPressMediaClient:
                  extra_headers: dict[str, str] | None = None, require_write: bool = False) -> Any:
         require_store_connection(WordPressMediaError)
         method = method.upper()
+        if method not in {"GET", "HEAD", "OPTIONS"} and os.getenv("SYNC_SERVICE_URL") and os.getenv("SUITE_SERVICE_ROLE", "main") != "sync":
+            raise WordPressMediaError("La subida debe ejecutarse en el segundo servicio de Render.")
         if (require_write or method not in {"GET", "HEAD", "OPTIONS"}) and not self.write_enabled:
             raise WordPressMediaError("Subida de medios deshabilitada. Define WP_MEDIA_WRITE_ENABLED=true después de validar el preview.")
         url = f"{self.base_url}/wp-json/wp/v2/{endpoint.lstrip('/')}"

@@ -345,6 +345,25 @@ body { color: var(--rda-text); }
   .gradio-container [role="tablist"] { width: 100%; flex-wrap: wrap; overflow: visible; }
   .gradio-container [role="tab"] { white-space: normal; }
   #settings-shortcut { width: 100%; min-height: 44px; white-space: normal; }
+  #tour-upload-front, #tour-upload-back, #tour-lens-image {
+    width: 100% !important;
+    min-width: 0 !important;
+    touch-action: manipulation;
+  }
+  #tour-upload-front img, #tour-upload-back img, #tour-lens-image img,
+  #tour-upload-front video, #tour-upload-back video, #tour-lens-image video {
+    max-width: 100% !important;
+    max-height: 55vh;
+    object-fit: contain;
+  }
+  #tour-upload-front button, #tour-upload-back button, #tour-lens-image button {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+  /* 16px avoids iOS zooming in when a field is focused. */
+  .gradio-container input, .gradio-container textarea, .gradio-container select {
+    font-size: 16px !important;
+  }
   #tour-launcher {
     position: static !important;
     width: 100% !important;

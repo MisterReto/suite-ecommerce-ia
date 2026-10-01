@@ -5,7 +5,7 @@ la presentación para:
 - no leer/escribir Gabo nueva;
 - guardar las 14 columnas canónicas y los atributos de variación en Lista completa;
 - dejar las listas y los CSV de WooCommerce como vistas calculadas del Sheet;
-- publicar automáticamente SOLO el SKU recién guardado (sin lotes);
+- guardar en Drive y ofrecer la publicación explícita desde las herramientas;
 - aplicar una interfaz limpia, responsive y accesible sin alterar la lógica IA.
 """
 from __future__ import annotations
@@ -108,15 +108,15 @@ old_head = """TUTORIAL_HEAD = \"\"\"
 \"\"\""""
 new_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=3\">
-<link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=3\">
+<link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=4\">
 <script defer src=\"/suite-static/tutorial.js?v=6\"></script>
-<script defer src=\"/suite-static/accessibility.js?v=5\"></script>
+<script defer src=\"/suite-static/accessibility.js?v=6\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
 _replace_once(
     '    gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")',
-    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y guárdalo en Drive. WooCommerce está en modo de solo lectura.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;💾 Guarda</div>\n    </header>""", elem_id="tour-app-title")''',
+    '''    gr.HTML("""<header class=\"rda-app-header\">\n      <div class=\"rda-app-brand\">\n        <p class=\"rda-app-eyebrow\">EL RINCÓN DE ASIA · CATÁLOGO</p>\n        <h1 class=\"rda-app-title\">Suite de productos con IA</h1>\n        <p class=\"rda-app-subtitle\">Captura un producto, revisa la información y guárdalo en Drive. Publica en WooCommerce desde las herramientas de sincronización.</p>\n      </div>\n      <div class=\"rda-flow-badge\" aria-label=\"Flujo principal: escanea, revisa y publica\">📷 Escanea&nbsp; → &nbsp;✏️ Revisa&nbsp; → &nbsp;💾 Guarda</div>\n    </header>""", elem_id="tour-app-title")''',
     "encabezado principal",
 )
 
@@ -391,6 +391,6 @@ legacy._leer_google_sheet = _read_master
 legacy._sincronizar_lista_variable = _no_variable_sync
 legacy._aplicar_formato_base = _no_legacy_format
 legacy._aplicar_formato_filas = _no_legacy_format
-legacy._AUTO_SYNC_AFTER_SAVE = None  # Demo: guardar solo en Drive; nunca publicar automáticamente.
+legacy._AUTO_SYNC_AFTER_SAVE = None  # La publicación explícita se delega al servicio de sincronización.
 
 fastapi_app = legacy.fastapi_app
