@@ -21,7 +21,7 @@ jobs:
           cache: pip
       - name: Instalar dependencias
         run: |
-          pip install --upgrade 'pip>=26.2' pip-audit
+          pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit
           pip install -r requirements.txt
       - name: Revisar dependencias vulnerables
         run: pip-audit --progress-spinner off
