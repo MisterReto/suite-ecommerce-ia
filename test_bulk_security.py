@@ -191,6 +191,14 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.build_app({"sid": {"email": "test"}})), base_url="https://suite.example", cookies={"session_id": "sid"}) as c:
                 self.assertEqual((await c.get("/probe")).headers["cache-control"], "no-store")
 
+    async def test_eval_compatibility_scoped_to_main_gradio_document(self):
+        with patch.dict(os.environ, {"RENDER_EXTERNAL_URL": "https://suite.example", "SUITE_SERVICE_ROLE": "main"}):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.build_app()), base_url="https://suite.example") as c:
+                self.assertIn("'unsafe-eval'", (await c.get("/")).headers["content-security-policy"])
+                self.assertNotIn("'unsafe-eval'", (await c.get("/probe")).headers["content-security-policy"])
+                with patch.dict(os.environ, {"SUITE_SERVICE_ROLE": "sync"}):
+                    self.assertNotIn("'unsafe-eval'", (await c.get("/")).headers["content-security-policy"])
+
     def test_rate_limiter_bounded_and_html_urls_safe(self):
         limiter = WindowLimiter(maximum=2)
         self.assertTrue(limiter.allow("a", 1))
