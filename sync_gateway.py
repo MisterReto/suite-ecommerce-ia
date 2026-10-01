@@ -86,6 +86,7 @@ def _worker_context(session, legacy):
     root, images, spreadsheet, _ = cached[2]
     return {
         "access_token": session["creds"]["token"],
+        "email": session.get("email", ""),
         "spreadsheet_id": spreadsheet, "images_folder_id": images,
         "root_folder_id": root,
         "store": {k: os.getenv(k, "") for k in STORE_KEYS if os.getenv(k)},

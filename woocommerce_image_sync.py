@@ -223,6 +223,8 @@ def _download_drive_file(drive_service, file_id: str) -> bytes:
     done = False
     while not done:
         _, done = downloader.next_chunk()
+        if buffer.tell() > 12_000_000:
+            raise ValueError("La imagen de Drive supera el límite de 12 MB.")
     return buffer.getvalue()
 
 

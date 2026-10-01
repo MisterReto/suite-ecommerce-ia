@@ -17,8 +17,10 @@ from inventory_operations import (
     ensure_movements_sheet,
     read_inventory,
     read_movements,
+    stock_integer,
+    serialized_stock_write,
 )
-from inventory_schema import MASTER_SHEET
+from inventory_schema import MASTER_SHEET, is_variable_parent
 
 
 def counted_initial_skus(sheets_service, spreadsheet_id: str) -> set[str]:
@@ -30,6 +32,7 @@ def counted_initial_skus(sheets_service, spreadsheet_id: str) -> set[str]:
     }
 
 
+@serialized_stock_write
 def register_initial_counts(
     sheets_service,
     spreadsheet_id: str,
@@ -39,6 +42,8 @@ def register_initial_counts(
     reference: str = "Conteo inicial masivo",
     reason: str = "Conteo físico inicial",
 ) -> dict[str, Any]:
+    if not isinstance(counts, list) or any(not isinstance(item, dict) for item in counts):
+        raise ValueError("Los conteos deben ser una lista de SKU y existencias.")
     if not counts:
         raise ValueError("No recibí ningún conteo para guardar.")
     if len(counts) > 500:
@@ -64,8 +69,11 @@ def register_initial_counts(
         if len(matches) > 1:
             errors.append(f"SKU duplicado en {MASTER_SHEET}: {sku}")
             continue
+        if is_variable_parent(matches[0]):
+            errors.append(f"{sku}: la portada FULL no administra stock.")
+            continue
         try:
-            stock = int(float(item.get("stock")))
+            stock = stock_integer(item.get("stock"))
         except (TypeError, ValueError):
             errors.append(f"Conteo inválido para {sku}")
             continue

@@ -7,8 +7,11 @@ No escribe en WooCommerce.
 from __future__ import annotations
 
 import html
+import asyncio
+from app_security import public_error
 import json
 import time
+from urllib.parse import quote
 from typing import Any
 
 from fastapi import Request
@@ -17,6 +20,7 @@ from starlette.routing import Mount
 
 import app as legacy_app
 import server as integration_server
+from inventory_schema import is_variable_parent
 from inventory_bulk import counted_initial_skus, register_initial_counts
 from inventory_operations import (
     MOVEMENT_TYPES,
@@ -61,14 +65,14 @@ def _render_inventory_rows(rows: list[dict[str, Any]]) -> str:
         name = html.escape(str(row.get("nombre_producto", "")))
         brand = html.escape(str(row.get("Marca", "")))
         category = html.escape(str(row.get("categorias", "")))
-        stock = int(row.get("Existencias", 0) or 0)
-        price = _money(row.get("precio", 0))
+        stock = "—" if is_variable_parent(row) else int(row.get("Existencias", 0) or 0)
+        price = "—" if is_variable_parent(row) else _money(row.get("precio", 0))
         out.append(
             "<tr>"
-            f"<td><button class='sku-btn' onclick='selectSku({json.dumps(str(row.get('sku', '')))})'>{sku}</button></td>"
+            f"<td><button class='sku-btn' onclick='selectSku({html.escape(json.dumps(str(row.get('sku', ''))), quote=True)})'>{sku}</button></td>"
             f"<td>{name}</td><td>{brand}</td><td>{category}</td>"
             f"<td class='num'><b>{stock}</b></td><td class='num'>{price}</td>"
-            f"<td><a href='/inventory-manager?sku={sku}'>Historial</a></td>"
+            f"<td><a href='/inventory-manager?sku={html.escape(quote(str(row.get('sku','')), safe=''))}'>Historial</a></td>"
             "</tr>"
         )
     return "".join(out)
@@ -170,7 +174,7 @@ async function saveMovement(){{
  const btn=document.getElementById('save-btn'); if(btn.disabled) return; btn.disabled=true; btn.textContent='Guardando...';
  const msg=document.getElementById('msg'); msg.innerHTML='';
  const payload={{sku:document.getElementById('m-sku').value,movement_type:document.getElementById('m-type').value,quantity:document.getElementById('m-qty').value,reason:document.getElementById('m-reason').value,reference:document.getElementById('m-ref').value}};
- try{{ const r=await fetch('/inventory-movement',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload)}}); const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error'); msg.innerHTML='<div class="notice">✅ '+data.message+'</div>'; setTimeout(()=>location.href='/inventory-manager?sku='+encodeURIComponent(payload.sku),700); }}catch(e){{ msg.innerHTML='<div class="notice error">❌ '+e.message+'</div>'; btn.disabled=false; btn.textContent='Guardar movimiento'; }}
+ try{{ const r=await fetch('/inventory-movement',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload)}}); const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error'); msg.textContent='✅ '+data.message; setTimeout(()=>location.href='/inventory-manager?sku='+encodeURIComponent(payload.sku),700); }}catch(e){{ msg.textContent='❌ '+e.message; btn.disabled=false; btn.textContent='Guardar movimiento'; }}
 }}
 </script></body></html>"""
         return HTMLResponse(body)
@@ -185,15 +189,15 @@ def inventory_count(request: Request, q: str = ""):
     try:
         session, spreadsheet_id, sheets = _context(request)
         rows = read_inventory(sheets, spreadsheet_id)
-        filtered = search_inventory(rows, q, limit=360)
+        filtered = search_inventory([r for r in rows if not is_variable_parent(r)], q, limit=360)
         counted = counted_initial_skus(sheets, spreadsheet_id)
-        pending = sum(1 for row in rows if str(row.get("sku", "")) not in counted)
+        pending = sum(1 for row in rows if not is_variable_parent(row) and str(row.get("sku", "")) not in counted)
         body = f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Conteo inicial</title>
 <style>body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;padding:24px}}.wrap{{max-width:1500px;margin:auto}}.card{{background:#fff;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.05)}}.toolbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}input{{padding:9px;border:1px solid #cfd4dc;border-radius:8px}}button,.btn{{border:0;border-radius:8px;background:#172033;color:#fff;padding:10px 14px;text-decoration:none;cursor:pointer}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #e6e8ec;text-align:left}}th{{background:#f2f4f7;position:sticky;top:0}}.table-wrap{{max-height:650px;overflow:auto}}.notice{{padding:12px;border-radius:8px;background:#eefbf3;border:1px solid #86d7a2}}.error{{background:#fff1f1;border-color:#f1a3a3}}code{{background:#eef0f3;padding:2px 5px;border-radius:4px}}</style></head><body><div class='wrap'>
 <h1>🧮 Conteo inicial masivo</h1><div class='card toolbar'><a class='btn' href='/inventory-manager'>← Inventario</a><b>{pending}</b> SKU pendientes de conteo inicial</div><div id='msg'></div>
 <div class='card'><p>Marca los SKU que quieras guardar y escribe el <b>stock físico final</b>. Puedes hacer el conteo por bloques; los ya contados aparecen como ✅.</p><form method='get' class='toolbar'><input name='q' value='{html.escape(q)}' placeholder='Filtrar por SKU, producto, marca o categoría' style='min-width:320px'><button>Filtrar</button><a class='btn' href='/inventory-count'>Limpiar</a></form><br><button id='bulk-btn' onclick='saveBulk()'>Guardar conteos seleccionados</button><br><br>
 <div class='table-wrap'><table><thead><tr><th></th><th>SKU</th><th>Producto</th><th>Marca</th><th>Stock actual</th><th>Conteo físico</th><th>Estado</th></tr></thead><tbody>{_render_bulk_rows(filtered, counted)}</tbody></table></div></div></div>
-<script>async function saveBulk(){{const btn=document.getElementById('bulk-btn');if(btn.disabled)return;const selected=[...document.querySelectorAll('.bulk-check:checked')];if(!selected.length){{alert('Selecciona al menos un SKU');return;}}const counts=selected.map(c=>{{const sku=c.dataset.sku;return {{sku:sku,stock:document.querySelector('.bulk-stock[data-sku="'+CSS.escape(sku)+'"]').value}};}});if(!confirm('Se guardarán '+counts.length+' conteos físicos. ¿Continuar?'))return;btn.disabled=true;btn.textContent='Guardando...';const msg=document.getElementById('msg');try{{const r=await fetch('/inventory-count-bulk',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{counts:counts}})}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');msg.innerHTML='<div class="notice">✅ '+d.message+'</div>';setTimeout(()=>location.reload(),800);}}catch(e){{msg.innerHTML='<div class="notice error">❌ '+e.message+'</div>';btn.disabled=false;btn.textContent='Guardar conteos seleccionados';}}}}</script></body></html>"""
+<script>async function saveBulk(){{const btn=document.getElementById('bulk-btn');if(btn.disabled)return;const selected=[...document.querySelectorAll('.bulk-check:checked')];if(!selected.length){{alert('Selecciona al menos un SKU');return;}}const counts=selected.map(c=>{{const sku=c.dataset.sku;return {{sku:sku,stock:document.querySelector('.bulk-stock[data-sku="'+CSS.escape(sku)+'"]').value}};}});if(!confirm('Se guardarán '+counts.length+' conteos físicos. ¿Continuar?'))return;btn.disabled=true;btn.textContent='Guardando...';const msg=document.getElementById('msg');try{{const r=await fetch('/inventory-count-bulk',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{counts:counts}})}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');msg.textContent='✅ '+d.message;setTimeout(()=>location.reload(),800);}}catch(e){{msg.textContent='❌ '+e.message;btn.disabled=false;btn.textContent='Guardar conteos seleccionados';}}}}</script></body></html>"""
         return HTMLResponse(body)
     except PermissionError as exc:
         return HTMLResponse(f"<h2>{html.escape(str(exc))}</h2><a href='/'>Volver</a>", status_code=401)
@@ -204,9 +208,11 @@ def inventory_count(request: Request, q: str = ""):
 @fastapi_app.post("/inventory-count-bulk")
 async def inventory_count_bulk(request: Request):
     try:
-        session, spreadsheet_id, sheets = _context(request)
         payload = await request.json()
-        result = register_initial_counts(
+        if not isinstance(payload, dict):
+            raise ValueError("La solicitud debe ser un objeto JSON.")
+        session, spreadsheet_id, sheets = await asyncio.to_thread(_context, request)
+        result = await asyncio.to_thread(register_initial_counts,
             sheets,
             spreadsheet_id,
             payload.get("counts", []),
@@ -214,28 +220,35 @@ async def inventory_count_bulk(request: Request):
         )
         return {"ok": True, "message": f"Se guardaron {result['updated']} conteos iniciales.", "result": result}
     except PermissionError as exc:
-        return JSONResponse(status_code=401, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=401, content={"ok": False, "error": public_error(exc)})
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=400, content={"ok": False, "error": public_error(exc)})
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=500, content={"ok": False, "error": public_error(exc)})
 
 
 @fastapi_app.post("/inventory-movement")
 async def inventory_movement(request: Request):
     try:
-        session, spreadsheet_id, sheets = _context(request)
         payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("La solicitud debe ser un objeto JSON.")
+        session, spreadsheet_id, sheets = await asyncio.to_thread(_context, request)
         fingerprint = "|".join([
-            str(session.get("email", "")), str(payload.get("sku", "")), str(payload.get("movement_type", "")),
+            spreadsheet_id, str(session.get("email", "")), str(payload.get("sku", "")), str(payload.get("movement_type", "")),
             str(payload.get("quantity", "")), str(payload.get("reason", "")), str(payload.get("reference", "")),
         ])
         now = time.monotonic()
         last = _RECENT_SUBMITS.get(fingerprint)
         if last is not None and now - last < 8:
             return JSONResponse(status_code=409, content={"ok": False, "error": "Movimiento duplicado bloqueado. Espera unos segundos antes de repetirlo."})
+        for key, stamp in list(_RECENT_SUBMITS.items()):
+            if now - stamp >= 8:
+                _RECENT_SUBMITS.pop(key, None)
+        if len(_RECENT_SUBMITS) >= 4096:
+            raise ValueError("Demasiados movimientos pendientes; espera unos segundos.")
         _RECENT_SUBMITS[fingerprint] = now
-        result = register_movement(
+        result = await asyncio.to_thread(register_movement,
             sheets,
             spreadsheet_id,
             sku=payload.get("sku", ""),
@@ -247,11 +260,11 @@ async def inventory_movement(request: Request):
         )
         return {"ok": True,"message": f"{result['sku']}: stock {result['old_stock']} → {result['new_stock']} ({result['movement_type']}).","movement": result}
     except PermissionError as exc:
-        return JSONResponse(status_code=401, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=401, content={"ok": False, "error": public_error(exc)})
     except ValueError as exc:
-        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=400, content={"ok": False, "error": public_error(exc)})
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=500, content={"ok": False, "error": public_error(exc)})
 
 
 _root_mounts = [r for r in fastapi_app.router.routes if isinstance(r, Mount) and getattr(r, "path", None) in {"", "/"}]

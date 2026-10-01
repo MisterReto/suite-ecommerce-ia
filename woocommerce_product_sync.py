@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import re
 import time
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
+from app_security import clean_html
 from inventory_schema import split_category_path, is_variable_parent
 from woocommerce_client import WooCommerceClient, WooCommerceError
 
 _TERM_CACHE: dict[tuple[str, str], tuple[float, dict[str, dict[str, Any]]]] = {}
-_TERM_LOCK = Lock()
+_TERM_LOCK = RLock()
 _TERM_TTL = 3600
 
 _PARENT_LOCK = Lock()
@@ -92,34 +93,37 @@ def _remember_term(client: WooCommerceClient, endpoint: str, row: dict[str, Any]
 
 
 def ensure_term(client: WooCommerceClient, endpoint: str, name: str, *, parent: int = 0) -> int:
-    name = _text(name)
-    if not name:
-        raise ValueError("Nombre de término vacío")
-    terms = _load_terms(client, endpoint)
-    existing = terms.get(_key(name))
-    if existing and (endpoint != "products/categories" or int(existing.get("parent") or 0) == int(parent)):
-        return int(existing["id"])
+    # Serialize cache misses and term creation across upload threads.
+    with _TERM_LOCK:
+        name = _text(name)
+        if not name:
+            raise ValueError("Nombre de término vacío")
+        terms = _load_terms(client, endpoint)
+        existing = terms.get(_key(name))
+        if existing and (endpoint != "products/categories" or int(existing.get("parent") or 0) == int(parent)):
+            return int(existing["id"])
 
-    if endpoint == "products/categories":
-        matches = client.request(
-            "GET", endpoint,
-            params={"search": name, "per_page": 100, "_fields": "id,name,parent"},
-        ) or []
-        for row in matches:
-            if _key(row.get("name")) == _key(name) and int(row.get("parent") or 0) == int(parent):
-                _remember_term(client, endpoint, row)
-                return int(row["id"])
-        raise ValueError(
-            f"La categoría '{name}' no existe bajo el padre indicado en WooCommerce. "
-            "Actualiza Lista completa antes de sincronizar; no se creará una categoría nueva."
-        )
+        if endpoint == "products/categories":
+            matches = client.request(
+                "GET", endpoint,
+                params={"search": name, "per_page": 100, "_fields": "id,name,parent"},
+            ) or []
+            for row in matches:
+                if _key(row.get("name")) == _key(name) and int(row.get("parent") or 0) == int(parent):
+                    _remember_term(client, endpoint, row)
+                    return int(row["id"])
+            raise ValueError(
+                f"La categoría '{name}' no existe bajo el padre indicado en WooCommerce. "
+                "Actualiza Lista completa antes de sincronizar; no se creará una categoría nueva."
+            )
 
-    payload: dict[str, Any] = {"name": name}
-    if endpoint == "products/categories":
-        payload["parent"] = int(parent)
-    created = client.request("POST", endpoint, payload=payload)
-    _remember_term(client, endpoint, created)
-    return int(created["id"])
+        payload: dict[str, Any] = {"name": name}
+        if endpoint == "products/categories":
+            payload["parent"] = int(parent)
+        created = client.request("POST", endpoint, payload=payload)
+        _remember_term(client, endpoint, created)
+        return int(created["id"])
+
 
 
 def resolve_taxonomies(client: WooCommerceClient, row: dict[str, Any]) -> dict[str, Any]:
@@ -183,6 +187,7 @@ def sync_complete_product(
     wc_entity: dict[str, Any],
     image_result: dict[str, Any] | None = None,
     verify_get: bool = True,
+    include_stock: bool = True,
 ) -> dict[str, Any]:
     """Actualiza un SKU. En lotes, verify_get=False evita un GET redundante."""
     if not wc_client.config.write_enabled:
@@ -227,9 +232,12 @@ def sync_complete_product(
                 remote_parent = cached_parent
 
         variation_payload = _pricing_and_stock(row)
+        if not include_stock:
+            for field in ("manage_stock", "stock_quantity", "stock_status", "backorders"):
+                variation_payload.pop(field, None)
         short = _text(row.get("descripcion_corta"))
         if short:
-            variation_payload["description"] = short
+            variation_payload["description"] = clean_html(short)
         if assigned_images:
             variation_payload["image"] = {"id": int(assigned_images[0])}
 
@@ -250,7 +258,7 @@ def sync_complete_product(
         verified = (
             _text(remote.get("sku")) == sku
             and _money(remote.get("regular_price")) == _money(row.get("precio"))
-            and int(remote.get("stock_quantity") or 0) == max(0, int(row.get("Existencias") or 0))
+            and (not include_stock or int(remote.get("stock_quantity") or 0) == max(0, int(row.get("Existencias") or 0)))
         )
         if assigned_images:
             verified = verified and int((remote.get("image") or {}).get("id") or 0) == int(assigned_images[0])
@@ -277,11 +285,14 @@ def sync_complete_product(
     is_parent = is_variable_parent(row) or wc_entity.get("type") == "variable"
     payload: dict[str, Any] = {
         "name": _text(row.get("nombre_producto")),
-        "description": _text(row.get("descripcion_larga")),
-        "short_description": _text(row.get("descripcion_corta")),
+        "description": clean_html(row.get("descripcion_larga")),
+        "short_description": clean_html(row.get("descripcion_corta")),
         **({"manage_stock": False} if is_parent else _pricing_and_stock(row)),
         **common_terms,
     }
+    if not is_parent and not include_stock:
+        for field in ("manage_stock", "stock_quantity", "stock_status", "backorders"):
+            payload.pop(field, None)
     if assigned_images:
         payload["images"] = [
             {"id": int(media_id), "position": pos}
@@ -306,7 +317,7 @@ def sync_complete_product(
         and _text(remote.get("name")) == _text(row.get("nombre_producto"))
         and (remote.get("manage_stock") is False if is_parent else (
             _money(remote.get("regular_price")) == _money(row.get("precio"))
-            and int(remote.get("stock_quantity") or 0) == expected_stock
+            and (not include_stock or int(remote.get("stock_quantity") or 0) == expected_stock)
         ))
     )
     if assigned_images:

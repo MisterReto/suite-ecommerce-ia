@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
+from decimal import Decimal, InvalidOperation
+from functools import wraps
+from threading import RLock
 import unicodedata
 import uuid
 from typing import Any
 
-from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, normalize_product_row
+from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, normalize_product_row, is_variable_parent
 
 MOVEMENTS_SHEET = "Movimientos Inventario"
 MOVEMENT_COLUMNS = (
@@ -37,6 +40,31 @@ MOVEMENT_TYPES = (
     "Devolución",
     "Ajuste",
 )
+
+
+# One Render worker serializes read/modify/write to prevent lost stock updates.
+# External spreadsheet editors must coordinate; Sheets has no row transaction.
+_STOCK_WRITE_LOCK = RLock()
+
+
+def serialized_stock_write(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _STOCK_WRITE_LOCK:
+            return fn(*args, **kwargs)
+    return locked
+
+
+def stock_integer(value):
+    try:
+        if isinstance(value, bool):
+            raise ValueError()
+        number = Decimal(str(value))
+        if not number.is_finite() or number != number.to_integral_value() or not 0 <= number <= 1_000_000_000:
+            raise ValueError()
+        return int(number)
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("La cantidad debe ser un entero entre 0 y 1 000 000 000.")
 
 
 def _clean_text(value: Any) -> str:
@@ -181,6 +209,7 @@ def inventory_table(rows: list[dict[str, Any]]) -> list[list[Any]]:
 
 
 def inventory_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [r for r in rows if not is_variable_parent(r)]
     units = sum(max(0, int(row.get("Existencias", 0) or 0)) for row in rows)
     retail_value = sum(
         max(0, int(row.get("Existencias", 0) or 0)) * float(row.get("precio", 0) or 0)
@@ -246,6 +275,7 @@ def movements_table(rows: list[dict[str, Any]]) -> list[list[Any]]:
     ]
 
 
+@serialized_stock_write
 def register_movement(
     sheets_service,
     spreadsheet_id: str,
@@ -259,10 +289,7 @@ def register_movement(
 ) -> dict[str, Any]:
     if movement_type not in MOVEMENT_TYPES:
         raise ValueError("Tipo de movimiento inválido.")
-    try:
-        qty = int(float(quantity))
-    except (TypeError, ValueError):
-        raise ValueError("La cantidad debe ser un número entero.")
+    qty = stock_integer(quantity)
 
     if movement_type in {"Inventario inicial", "Ajuste"}:
         if qty < 0:
@@ -272,6 +299,8 @@ def register_movement(
 
     rows = read_inventory(sheets_service, spreadsheet_id)
     product = _find_unique_sku(rows, sku)
+    if is_variable_parent(product):
+        raise ValueError("Las portadas FULL no administran stock; registra el movimiento en la variación.")
     old_stock = int(product.get("Existencias", 0) or 0)
 
     if movement_type in {"Inventario inicial", "Ajuste"}:
@@ -284,6 +313,8 @@ def register_movement(
         new_stock = old_stock - qty
         signed_quantity = -qty
 
+    if new_stock > 1_000_000_000:
+        raise ValueError("El stock final supera el máximo permitido.")
     if new_stock < 0:
         raise ValueError(
             f"Movimiento rechazado: stock actual {old_stock}; no puedes dejar el SKU en {new_stock}."

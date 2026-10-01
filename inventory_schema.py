@@ -42,6 +42,7 @@ def join_category_path(parent: Any, child: Any) -> str:
 def normalize_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
     """Devuelve nombres canónicos sin alterar el contenido comercial del producto."""
     out = {key: row.get(key, "") for key in MASTER_COLUMNS}
+    out.update({key: row.get(key, "") for key in ("atributo_nombre", "atributo_valor")})
     out["sku"] = str(out["sku"] or "").strip()
     out["sku_padre"] = str(out["sku_padre"] or "").strip()
     out["Marca"] = str(out["Marca"] or row.get("marca", "") or "").strip()

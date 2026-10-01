@@ -14,6 +14,7 @@ BATCH_SHEET = "WooCommerce Batch Sync"
 BATCH_COLUMNS = (
     "batch_id", "created_at", "position", "sku", "status", "message",
     "started_at", "finished_at", "permalink",
+    "include_images", "include_stock", "workers",
 )
 
 _READY_LOCK = Lock()
@@ -52,13 +53,13 @@ def ensure_batch_sheet(sheets_service, spreadsheet_id: str) -> int:
 
     current = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{BATCH_SHEET}'!A1:I1",
+        range=f"'{BATCH_SHEET}'!A1:L1",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute().get("values", [])
     if not current or list(current[0]) != list(BATCH_COLUMNS):
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"'{BATCH_SHEET}'!A1:I1",
+            range=f"'{BATCH_SHEET}'!A1:L1",
             valueInputOption="RAW",
             body={"values": [list(BATCH_COLUMNS)]},
         ).execute()
@@ -72,7 +73,7 @@ def _all_rows(sheets_service, spreadsheet_id: str) -> list[dict[str, Any]]:
     ensure_batch_sheet(sheets_service, spreadsheet_id)
     values = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{BATCH_SHEET}'!A:I",
+        range=f"'{BATCH_SHEET}'!A:L",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute().get("values", [])
     if len(values) < 2:
@@ -107,7 +108,7 @@ def processed_skus(sheets_service, spreadsheet_id: str) -> set[str]:
     }
 
 
-def create_batch(sheets_service, spreadsheet_id: str, skus: list[str]) -> str:
+def create_batch(sheets_service, spreadsheet_id: str, skus: list[str], *, include_images=True, include_stock=False, workers=2) -> str:
     ensure_batch_sheet(sheets_service, spreadsheet_id)
     clean = []
     seen = set()
@@ -122,12 +123,12 @@ def create_batch(sheets_service, spreadsheet_id: str, skus: list[str]) -> str:
     batch_id = f"BATCH-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:5].upper()}"
     created = _now()
     rows = [
-        [batch_id, created, pos, sku, "pending", "", "", "", ""]
+        [batch_id, created, pos, sku, "pending", "", "", "", "", bool(include_images), bool(include_stock), workers]
         for pos, sku in enumerate(clean, start=1)
     ]
     sheets_service.spreadsheets().values().append(
         spreadsheetId=spreadsheet_id,
-        range=f"'{BATCH_SHEET}'!A:I",
+        range=f"'{BATCH_SHEET}'!A:L",
         valueInputOption="RAW",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},

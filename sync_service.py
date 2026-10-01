@@ -49,6 +49,7 @@ sys.modules["app"] = runtime
 # Reuse the existing pages and callbacks. Only the runtime is lightweight.
 import product_web
 import batch_web_v2
+import inventory_hub
 
 app = FastAPI(title="Suite sync service")
 _NONCES = {}

@@ -21,7 +21,7 @@
     document.querySelectorAll('.rda-tool-link').forEach(updateToolLink);
     roots().forEach(root => root.querySelectorAll('.rda-tool-link').forEach(updateToolLink));
   }).catch(() => {});
-  const remotePaths = new Set(['/inventory-sync', '/woocommerce-image-preview', '/woocommerce-product-sync', '/woocommerce-publish-preview']);
+  const remotePaths = new Set(['/inventory-sync', '/inventory-hub', '/woocommerce-batch-sync', '/woocommerce-image-preview', '/woocommerce-product-sync', '/woocommerce-publish-preview']);
   function updateToolLink(link) {
     const path = new URL(link.href, window.location.href).pathname;
     if (syncBase && remotePaths.has(path)) link.href = syncBase + path;
@@ -49,15 +49,18 @@
     const style = document.createElement('style');
     style.dataset.rdaToolNavCss = 'true';
     style.textContent = `
-      .rda-tool-nav{display:flex;align-items:center;gap:12px;margin:0 0 14px;padding:9px 11px;background:#fff;border:1px solid #e4e7ec;border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 4px 14px rgba(16,24,40,.05);overflow:hidden}
-      .rda-tool-nav-label{flex:0 0 auto;color:#667085;font-size:.76rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:0 4px}
-      .rda-tool-nav-links{display:flex;gap:5px;min-width:0;overflow-x:auto;scrollbar-width:thin;padding:1px}
-      .rda-tool-link{display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:40px;padding:8px 11px;border-radius:9px;color:#344054!important;text-decoration:none!important;font-size:.88rem;font-weight:700;white-space:nowrap;border:1px solid transparent;transition:background-color .12s ease,border-color .12s ease,color .12s ease}
+      .rda-tool-nav{max-width:100%;margin:0 0 14px;background:#fff;border:1px solid #e4e7ec;border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04);overflow:hidden}
+      .rda-tool-nav-label{display:flex;align-items:center;gap:8px;min-height:44px;box-sizing:border-box;padding:12px 16px;color:#344054;font-size:1rem;font-weight:800;cursor:pointer;list-style:none}
+      .rda-tool-nav-label::-webkit-details-marker{display:none}
+      .rda-tool-nav-label::after{content:'▾';margin-left:auto;transition:transform .15s}
+      .rda-tool-nav[open]>.rda-tool-nav-label::after{transform:rotate(180deg)}
+      .rda-tool-nav-label:hover{background:#f2f4f7}
+      .rda-tool-nav-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px;padding:8px;border-top:1px solid #e4e7ec}
+      .rda-tool-link{display:flex;align-items:center;gap:8px;min-height:44px;box-sizing:border-box;padding:10px 12px;border-radius:9px;color:#344054!important;text-decoration:none!important;font-size:.9rem;font-weight:700;border:1px solid transparent;overflow-wrap:anywhere}
       .rda-tool-link:hover{background:#f2f4f7;color:#101828!important}
       .rda-tool-link.is-current{background:#eff4ff;border-color:#d1e0ff;color:#1849a9!important}
-      .rda-tool-link:focus-visible{outline:3px solid rgba(46,144,250,.38);outline-offset:2px}
-      @media(max-width:720px){.rda-tool-nav{align-items:stretch;flex-direction:column;gap:6px;box-sizing:border-box;max-width:100%;overflow:visible}.rda-tool-nav-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;overflow:visible;box-sizing:border-box}.rda-tool-nav-label{padding-left:3px}.rda-tool-link{min-height:44px;min-width:0;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;padding:8px}.rda-tool-link>span:last-child{min-width:0}}
-      @media(max-width:359px){.rda-tool-nav-links{grid-template-columns:minmax(0,1fr)}}
+      .rda-tool-link:focus-visible,.rda-tool-nav-label:focus-visible{outline:3px solid rgba(46,144,250,.38);outline-offset:-3px}
+      @media(max-width:480px){.rda-tool-nav-links{grid-template-columns:minmax(0,1fr)}.rda-tool-link>span:last-child{min-width:0}}
     `;
     const styleHost = root === document ? document.head : root;
     styleHost.appendChild(style);
@@ -68,22 +71,21 @@
     if (!host || root.querySelector('.rda-tool-nav')) return;
 
     const items = [
-      { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar y publicar un producto con IA' },
+      { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar un producto con IA y guardarlo en Drive' },
       { href: '/inventory-sync', icon: '🔎', label: 'Sheets ↔ WooCommerce', help: 'Comprobar si la tabla de Google Sheets coincide con la tienda' },
-      { href: '/inventory-manager', icon: '📦', label: 'Inventario', help: 'Consultar y ajustar existencias' },
-      { href: '/inventory-count', icon: '🧮', label: 'Conteo inicial', help: 'Registrar existencias físicas iniciales por bloques' },
+      { href: '/inventory-hub', icon: '📦', label: 'Inventario y stock', help: 'Inventario, conteo inicial y preview en una herramienta' },
+      { href: '/woocommerce-batch-sync', icon: '🚚', label: 'Subida masiva', help: 'Crear o actualizar productos en paralelo con progreso recuperable' },
       { href: '/woocommerce-image-preview', icon: '🖼️', label: 'Imágenes', help: 'Revisar imágenes de Drive y WordPress' },
       { href: '/woocommerce-product-sync', icon: '🔄', label: 'Sincronizar SKU', help: 'Sincronizar manualmente un SKU' },
-      { href: '/woocommerce-publish-preview', icon: '📊', label: 'Preview stock', help: 'Comparar stock antes de escribir' },
     ];
 
-    const nav = document.createElement('nav');
+    const nav = document.createElement('details');
     nav.className = 'rda-tool-nav';
     nav.setAttribute('aria-label', 'Herramientas de catálogo');
 
-    const heading = document.createElement('span');
+    const heading = document.createElement('summary');
     heading.className = 'rda-tool-nav-label';
-    heading.textContent = 'Herramientas';
+    heading.textContent = '🧰 Herramientas';
     nav.appendChild(heading);
 
     const links = document.createElement('div');
@@ -103,7 +105,19 @@
       links.appendChild(link);
     });
 
+    links.setAttribute('role', 'navigation');
+    links.setAttribute('aria-label', 'Herramientas de catálogo');
     nav.appendChild(links);
+    nav.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && nav.open) {
+        event.preventDefault();
+        nav.open = false;
+        heading.focus();
+      }
+    });
+    document.addEventListener('click', (event) => {
+      if (nav.open && !event.composedPath().includes(nav)) nav.open = false;
+    });
     host.insertAdjacentElement('afterend', nav);
   }
 

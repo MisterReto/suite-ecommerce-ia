@@ -12,6 +12,7 @@ from typing import Any, Iterator
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from app_security import validate_service_url
 from store_connection import require_store_connection
 from sync_bridge_protocol import setting
 
@@ -103,6 +104,7 @@ class WooCommerceClient:
                 "Escrituras WooCommerce deshabilitadas. Define WC_WRITE_ENABLED=true solo después de validar el preview."
             )
 
+        validate_service_url(self.config.base_url)
         url = f"{self.config.base_url}/wp-json/wc/v3/{endpoint.lstrip('/')}"
         headers = {
             "Authorization": self._auth_header(),
@@ -115,12 +117,13 @@ class WooCommerceClient:
             response = self.session.request(
                 method,
                 url,
+                allow_redirects=False,
                 params=params,
                 json=payload,
                 headers=headers,
                 timeout=(10, self.config.timeout),
             )
-            if response.status_code >= 400:
+            if response.status_code >= 300:
                 raise WooCommerceError(
                     f"WooCommerce HTTP {response.status_code}: {response.text[:500]}"
                 )
