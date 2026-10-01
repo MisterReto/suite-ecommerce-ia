@@ -1,6 +1,8 @@
 """HTTP defenses shared by both public services; never records request bodies."""
 from collections import OrderedDict, deque
 import html
+import io
+from PIL import Image
 import ipaddress
 import os
 import time
@@ -32,6 +34,25 @@ def validate_service_url(url):
     if address and not address.is_global:
         raise ValueError("No se permiten direcciones privadas ni locales.")
     return url
+
+
+
+def checked_image_type(filename, data):
+    if not filename or any(c in filename for c in '\r\n"\\/'):
+        raise ValueError("Nombre de imagen inválido.")
+    if len(data) > 12_000_000:
+        raise ValueError("La imagen supera el límite de 12 MB.")
+    if filename.rsplit(".", 1)[-1].casefold() not in {"jpg", "jpeg", "png", "webp", "gif", "avif"}:
+        raise ValueError("Solo se permiten imágenes JPG, PNG, WebP, GIF o AVIF.")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif"}.get(image.format)
+            if not mime or image.width * image.height > 24_000_000:
+                raise ValueError("Formato o dimensiones de imagen no permitidos.")
+            image.verify()
+        return mime
+    except Exception as exc:
+        raise ValueError("La imagen no es válida o supera las dimensiones permitidas.") from exc
 
 
 def public_error(exc):

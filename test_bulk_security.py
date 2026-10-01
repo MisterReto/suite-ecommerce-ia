@@ -3,6 +3,7 @@ import ast
 import asyncio
 import copy
 import json
+import io
 import os
 import secrets
 import threading
@@ -14,7 +15,8 @@ from unittest.mock import patch, Mock
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-from app_security import SecurityMiddleware, WindowLimiter, clean_html, validate_service_url
+from app_security import SecurityMiddleware, WindowLimiter, clean_html, validate_service_url, checked_image_type
+from PIL import Image
 from bulk_product_upload import ensure_entity, next_wave, plan_skus, publish_created, run_wave
 from inventory_operations import inventory_summary, register_movement, stock_integer
 from inventory_bulk import register_initial_counts
@@ -216,6 +218,27 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             result = scope["auth_callback"](NS(query_params={"state": state, "code": "unused"}, cookies={"oauth_state": cookie}))
             self.assertEqual(result.status_code, 400)
         flow.from_client_config.assert_not_called()
+
+    def test_image_content_and_header_injection_rejected(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (2, 2), "red").save(buffer, "PNG")
+        self.assertEqual(checked_image_type("product.png", buffer.getvalue()), "image/png")
+        for filename, data in [("x.php", buffer.getvalue()), ("x.svg", b"<svg onload='steal()'/>"),
+            ('x.png\r\nInjected: header', buffer.getvalue()), ("fake.jpg", b"executable"), ("large.png", b"x" * 12_000_001)]:
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                checked_image_type(filename, data)
+
+    def test_drive_download_stops_when_size_limit_crossed(self):
+        from woocommerce_image_sync import _download_drive_file
+        class Download:
+            def __init__(self, buffer, request, chunksize):
+                self.buffer = buffer
+            def next_chunk(self):
+                self.buffer.write(b"x" * 1_000_000)
+                return None, False
+        with patch("woocommerce_image_sync.MediaIoBaseDownload", Download):
+            with self.assertRaisesRegex(ValueError, "12 MB"):
+                _download_drive_file(Mock(), "fake-file")
 
 
 class ToolIntegrationTests(unittest.TestCase):

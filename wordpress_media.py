@@ -12,7 +12,7 @@ from urllib.parse import urlparse, unquote
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from app_security import validate_service_url
+from app_security import validate_service_url, checked_image_type
 from store_connection import require_store_connection
 from sync_bridge_protocol import setting
 
@@ -131,7 +131,7 @@ class WordPressMediaClient:
                      alt_text: str = "", title: str = "") -> dict[str, Any]:
         if not filename:
             raise ValueError("Filename vacío.")
-        mime_type = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        mime_type = checked_image_type(filename, data)
         uploaded = self._request(
             "POST", "media",
             params={"_fields": "id,source_url"},
