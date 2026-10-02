@@ -1,5 +1,6 @@
 """Single inventory UI and manual read-only review; no live API calls."""
 import unittest
+import os
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
 from threading import Lock
@@ -76,6 +77,13 @@ class InventoryPage(unittest.TestCase):
         self.assertIn('/inventory-review',TOOL_PATHS)
 
 class LegacyLinks(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.env = patch.dict(os.environ, {'SUITE_DRIVE_ONLY':'false', 'SUITE_SERVICE_ROLE':'sync', 'SYNC_SERVICE_URL':''})
+        self.env.start()
+
+    async def asyncTearDown(self):
+        self.env.stop()
+
     async def test_old_pages_redirect_on_worker_and_keep_query(self):
         sid='unified-test-session'
         import time
