@@ -72,11 +72,9 @@
 
     const items = [
       { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar un producto con IA y guardarlo en Drive' },
-      { href: '/inventory-sync', icon: '🔎', label: 'Sheets ↔ WooCommerce', help: 'Comprobar si la tabla de Google Sheets coincide con la tienda' },
-      { href: '/inventory-hub', icon: '📦', label: 'Inventario y stock', help: 'Inventario, conteo inicial y preview en una herramienta' },
+      { href: '/inventory-hub', icon: '📦', label: 'Inventario', help: 'Catálogo, movimientos, conteo físico y revisión de WooCommerce en una sola página' },
       { href: '/woocommerce-batch-sync', icon: '🚚', label: 'Subida masiva', help: 'Crear o actualizar productos en paralelo con progreso recuperable' },
       { href: '/woocommerce-image-preview', icon: '🖼️', label: 'Imágenes', help: 'Revisar imágenes de Drive y WordPress' },
-      { href: '/woocommerce-product-sync', icon: '🔄', label: 'Sincronizar SKU', help: 'Sincronizar manualmente un SKU' },
     ];
 
     const nav = document.createElement('details');

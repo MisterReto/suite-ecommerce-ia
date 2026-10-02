@@ -378,4 +378,5 @@ def register_movement(
         "quantity": signed_quantity,
         "old_stock": old_stock,
         "new_stock": new_stock,
+        "unit_price": product.get("precio", 0),
     }

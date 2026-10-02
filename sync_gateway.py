@@ -129,6 +129,7 @@ async def forward_tool(request, legacy):
         return Response(result.content, status_code=result.status_code, headers={
             "content-type": result.headers.get("content-type", "application/json"),
             "cache-control": "no-store", "x-suite-executor": "sync-service",
+            **({"location": result.headers["location"]} if "location" in result.headers else {}),
         })
     except httpx.TimeoutException:
         return JSONResponse({"error": "El segundo servicio tardó demasiado. Verifica el SKU antes de repetir la operación."}, status_code=504)
