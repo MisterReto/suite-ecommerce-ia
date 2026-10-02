@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade "pip>=26.2" "setuptools>=83" && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py gemini_gateway.py oauth_guard.py .
 COPY ai_app.py .
 COPY product_web_ai.py .
 COPY single_product_auto.py .
@@ -42,3 +42,4 @@ EXPOSE 7860
 
 # Suite IA + Drive. La conexión a la tienda está aislada por defecto.
 CMD ["uvicorn", "service_entrypoint:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--no-access-log", "--workers", "1"]
+
