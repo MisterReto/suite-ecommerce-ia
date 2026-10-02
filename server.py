@@ -9,7 +9,8 @@ from __future__ import annotations
 import html
 from typing import Any
 
-from fastapi import Request
+from fastapi import Request, Query
+from app_security import email_allowed
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount
 
@@ -20,10 +21,10 @@ from woocommerce_inventory import compare_product
 
 
 def _current_session(request: Request):
-    session_id = request.cookies.get("session_id")
-    if not session_id:
+    session = legacy_app._obtener_sesion(request)
+    if not session or not email_allowed(session.get("email", ""), "WC_ALLOWED_EMAILS", default=False):
         return None
-    return legacy_app.SESSIONS.get(session_id)
+    return session
 
 
 def _read_master_inventory(session) -> tuple[str, list[dict[str, Any]]]:
@@ -141,19 +142,21 @@ fastapi_app = legacy_app.fastapi_app
 
 
 @fastapi_app.get("/wc-health")
-def wc_health():
+def wc_health(request: Request):
     """Comprueba credenciales/API. No modifica WooCommerce."""
+    if not _current_session(request):
+        return JSONResponse(status_code=403, content={"ok": False, "error": "Acceso no autorizado"})
     try:
         return _connection_test()
     except Exception as exc:
         return JSONResponse(
             status_code=502,
-            content={"ok": False, "error": str(exc), **_wc_config_status()},
+            content={"ok": False, "error": "No se pudo completar la consulta WooCommerce", **_wc_config_status()},
         )
 
 
 @fastapi_app.get("/wc-preview")
-def wc_preview(request: Request, limit: int = 50):
+def wc_preview(request: Request, limit: int = Query(default=50, ge=1, le=200)):
     """Compara inventario con WooCommerce por SKU, incluyendo variaciones."""
     session = _current_session(request)
     if not session:
@@ -167,14 +170,16 @@ def wc_preview(request: Request, limit: int = 50):
         payload["ok"] = True
         return payload
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        return JSONResponse(status_code=500, content={"ok": False, "error": "No se pudo completar la consulta WooCommerce"})
 
 
 @fastapi_app.get("/inventory-sync", response_class=HTMLResponse)
 def inventory_sync_dashboard(request: Request):
     """Panel humano de diagnóstico; todo permanece en solo lectura."""
-    cfg = _wc_config_status()
     session = _current_session(request)
+    if not session:
+        return HTMLResponse("Acceso no autorizado", status_code=403)
+    cfg = _wc_config_status()
     login_state = "✅ Google Drive conectado" if session else "⚠️ Inicia sesión con Google Drive primero"
     write_state = (
         "🔴 Escrituras habilitadas"
@@ -208,7 +213,7 @@ def inventory_sync_dashboard(request: Request):
         <a class="btn" href="/wc-health" target="_blank">1. Probar conexión WooCommerce</a>
         <a class="btn" href="/wc-preview?limit=20" target="_blank">2. Comparar 20 SKU</a>
         <a class="btn" href="/wc-preview?limit=50" target="_blank">Comparar 50 SKU</a>
-        <a class="btn" href="/wc-preview?limit=0" target="_blank">Comparar TODO</a>
+        <a class="btn" href="/wc-preview?limit=200" target="_blank">Comparar 200 SKU</a>
       </div>
       <div class="card">
         <h2>Siguiente fase</h2>
@@ -227,9 +232,10 @@ def inventory_sync_dashboard(request: Request):
 _root_gradio_mounts = [
     route
     for route in fastapi_app.router.routes
-    if isinstance(route, Mount) and getattr(route, "path", None) == "/"
+    if isinstance(route, Mount) and getattr(route, "path", None) in {"", "/"}
 ]
 if _root_gradio_mounts:
     fastapi_app.router.routes[:] = [
         route for route in fastapi_app.router.routes if route not in _root_gradio_mounts
     ] + _root_gradio_mounts
+

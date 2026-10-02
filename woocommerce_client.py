@@ -11,8 +11,13 @@ import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise WooCommerceError("WooCommerce redirigió la petición; configura la URL HTTPS final")
 
 
 class WooCommerceError(RuntimeError):
@@ -65,6 +70,11 @@ class WooCommerceClient:
                 "Escrituras WooCommerce deshabilitadas. Define WC_WRITE_ENABLED=true solo después de validar el preview."
             )
 
+        parsed = urlsplit(self.config.base_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise WooCommerceError("WC_URL debe ser una URL HTTPS sin credenciales, query ni fragmento")
+        if ".." in endpoint or ":" in endpoint or "?" in endpoint or "#" in endpoint:
+            raise WooCommerceError("Endpoint inválido")
         url = f"{self.config.base_url}/wp-json/wc/v3/{endpoint.lstrip('/')}"
         if params:
             url += "?" + urlencode(params, doseq=True)
@@ -81,14 +91,13 @@ class WooCommerceClient:
             },
         )
         try:
-            with urlopen(req, timeout=self.config.timeout) as response:
+            with build_opener(NoRedirect()).open(req, timeout=self.config.timeout) as response:
                 data = response.read().decode("utf-8")
                 return json.loads(data) if data else None
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise WooCommerceError(f"WooCommerce HTTP {exc.code}: {detail[:500]}") from exc
+            raise WooCommerceError(f"WooCommerce HTTP {exc.code}") from None
         except URLError as exc:
-            raise WooCommerceError(f"No se pudo conectar con WooCommerce: {exc.reason}") from exc
+            raise WooCommerceError("No se pudo conectar con WooCommerce") from None
 
     def list_products(self, *, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
         return self.request("GET", "products", params={"page": page, "per_page": per_page}) or []
@@ -152,3 +161,4 @@ class WooCommerceClient:
             f"products/{product_id}",
             payload={"manage_stock": True, "stock_quantity": int(stock_quantity)},
         )
+
