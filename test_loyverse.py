@@ -130,3 +130,77 @@ class Workflow(unittest.TestCase):
         self.assertNotIn('loyverse_token', self.value)
         self.value['expires_at'] = 0
         with self.assertRaises(PermissionError): self.web.operate(self.request, 'preview', {})
+
+
+class CatalogCreation(unittest.TestCase):
+    def plan(self, rows, items=None):
+        from loyverse_sync import plan_catalog
+        return plan_catalog(rows, items or [], [], 's', [{'id':'s'}, {'id':'other'}])
+
+    def row(self, **kw):
+        return dict({'sku':'NEW', 'tipo':'simple', 'nombre_producto':'Nuevo ramen', 'precio':25,
+                     'Existencias':8, 'codigo_barras':'0123456789012'}, **kw)
+
+    def test_missing_simple_is_selectable_and_zero_stock_is_explicit(self):
+        p=self.plan([self.row()])[0]
+        self.assertTrue(p['eligible'])
+        self.assertEqual(p['action'],'create')
+        self.assertEqual(p['drive'],8)
+        self.assertNotIn('stock_after',str(p['payload']))
+        v=p['payload']['variants'][0]
+        self.assertEqual(v['default_price'],25)
+        self.assertEqual(v['barcode'],'0123456789012')
+        self.assertEqual({s['store_id']:s['available_for_sale'] for s in v['stores']},{'s':True,'other':False})
+
+    def test_family_created_as_one_item_with_two_variants(self):
+        rows=[self.row(sku='PFULL',tipo='variable',precio='',codigo_barras=''),
+              self.row(sku='A',sku_padre='PFULL',tipo='variation',atributo_nombre='Sabor',atributo_valor='Uva'),
+              self.row(sku='B',sku_padre='PFULL',tipo='variation',atributo_nombre='Sabor',atributo_valor='Fresa',codigo_barras='')]
+        p=self.plan(rows)
+        self.assertEqual(len(p),1)
+        self.assertTrue(p[0]['eligible'])
+        self.assertEqual(p[0]['sku'],'PFULL')
+        self.assertEqual([v['option1_value'] for v in p[0]['payload']['variants']],['Uva','Fresa'])
+
+    def test_conflicts_and_bad_prices_block_creation(self):
+        for row in [self.row(precio=''),self.row(precio='nan'),self.row(codigo_barras=123456789012),self.row(tipo='variation')]:
+            self.assertFalse(self.plan([row])[0]['eligible'])
+        self.assertFalse(self.plan([self.row()], [{'item_name':'Nuevo ramen','variants':[]}])[0]['eligible'])
+        self.assertTrue(all(not p['eligible'] for p in self.plan([self.row(),self.row(sku='B')])))
+
+    def test_missing_parent_blocks_orphan(self):
+        p=self.plan([self.row(sku_padre='ABSENT',tipo='variation')])[0]
+        self.assertFalse(p['eligible'])
+        self.assertIn('padre',p['status'])
+
+    def test_existing_family_not_recreated(self):
+        rows=[self.row(sku='PFULL',tipo='variable',precio='',codigo_barras=''),
+              self.row(sku='A',sku_padre='PFULL',tipo='variation',atributo_valor='Uva'),
+              self.row(sku='B',sku_padre='PFULL',tipo='variation',atributo_valor='Fresa',codigo_barras='')]
+        items=[{'item_name':'Old','track_stock':True,'variants':[{'sku':'A','variant_id':'v'}]}]
+        result=self.plan(rows,items)
+        self.assertTrue(all(not p['eligible'] for p in result))
+
+
+class CreationWorkflow(Workflow):
+    def test_creation_is_confirmed_without_stock_write_and_not_replayed(self):
+        row=CatalogCreation().plan([CatalogCreation().row()])[0]
+        self.value['loyverse_preview']['rows']=[row]
+        api=Mock()
+        api.create_item.return_value={'id':'item','variants':[{'sku':'NEW','variant_id':'v'}]}
+        with patch.object(self.web,'compare',return_value=[row]),patch.object(self.web,'client',return_value=api):
+            result=self.web.operate(self.request,'apply',{'id':'p','skus':['NEW']})
+            self.assertEqual(result['created'],['NEW'])
+            api.set_stock.assert_not_called()
+            with self.assertRaises(ValueError):self.web.operate(self.request,'apply',{'id':'p','skus':['NEW']})
+            api.create_item.assert_called_once()
+
+    def test_uncertain_creation_is_not_retried(self):
+        row=CatalogCreation().plan([CatalogCreation().row()])[0]
+        self.value['loyverse_preview']['rows']=[row]
+        api=Mock();api.create_item.side_effect=LoyverseError('timeout')
+        with patch.object(self.web,'compare',return_value=[row]),patch.object(self.web,'client',return_value=api):
+            result=self.web.operate(self.request,'apply',{'id':'p','skus':['NEW']})
+            self.assertEqual(result['uncertain'],'NEW')
+            self.assertEqual(result['created'],[])
+            api.create_item.assert_called_once()
