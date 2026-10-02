@@ -34,6 +34,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBaseUpload
 
 from google import genai
+from gemini_gateway import GeminiClient, text_config
+from pathlib import Path
+from oauth_guard import issue_oauth, consume_oauth, email_allowed
 from google.genai import types
 
 # ==========================================
@@ -41,7 +44,7 @@ from google.genai import types
 # ==========================================
 MODELO_TEXTO = os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 MODELO_IMAGEN = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
-MAX_INTENTOS_IMAGEN = 3
+MAX_INTENTOS_IMAGEN = max(1, min(3, int(os.getenv("GEMINI_IMAGE_ATTEMPTS", "1"))))
 PUNTUACION_MINIMA_QA = 90
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -176,7 +179,8 @@ def _construir_correccion(errores_seleccionados, texto_libre, historial):
 
     Devuelve (bloque_prompt, historial_actualizado, resumen_legible).
     """
-    historial = list(historial or [])
+    historial = [str(x)[:500] for x in (historial or [])][-8:]
+    texto_libre = str(texto_libre or "")[:600]
     nuevas = []
 
     for etiqueta in (errores_seleccionados or []):
@@ -196,6 +200,7 @@ def _construir_correccion(errores_seleccionados, texto_libre, historial):
         if instruccion not in historial:
             historial.append(instruccion)
 
+    historial = historial[-8:]
     if not historial:
         return "", historial, "Primer intento (sin correcciones previas)."
 
@@ -261,7 +266,11 @@ def _obtener_sesion(request: gr.Request):
     session_id = request.cookies.get("session_id")
     if not session_id or session_id not in SESSIONS:
         return None
-    return SESSIONS[session_id]
+    session = SESSIONS[session_id]
+    if session.get("expires_at", 0) <= time.time():
+        SESSIONS.pop(session_id, None)
+        return None
+    return session
 
 
 def _validar_sesion(request: gr.Request, requiere_api_key=True):
@@ -283,13 +292,13 @@ fastapi_app.mount("/suite-static", StaticFiles(directory=STATIC_DIR), name="suit
 
 @fastapi_app.get("/login")
 def login():
-    flow = Flow.from_client_config(CLIENT_CONFIG, scopes=DRIVE_SCOPES, redirect_uri=GOOGLE_REDIRECT_URI)
+    flow = Flow.from_client_config(CLIENT_CONFIG, scopes=DRIVE_SCOPES, redirect_uri=GOOGLE_REDIRECT_URI, autogenerate_code_verifier=True)
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        autogenerate_code_verifier=False,
     )
+    issue_oauth(state, flow.code_verifier)
     resp = RedirectResponse(auth_url)
     resp.set_cookie(
         "oauth_state", state,
@@ -331,15 +340,15 @@ def auth_callback(request: FastAPIRequest):
             redirect_uri=GOOGLE_REDIRECT_URI,
             state=request.cookies.get("oauth_state"),
         )
-        flow.code_verifier = request.cookies.get("oauth_code_verifier")
+        flow.code_verifier = consume_oauth(expected_state, params.get("state", ""))
         flow.fetch_token(code=params["code"])
         creds = flow.credentials
 
-        try:
-            info_usuario = build("oauth2", "v2", credentials=creds).userinfo().get().execute()
-            email = info_usuario.get("email", "Usuario de Drive")
-        except Exception:
-            email = "Usuario de Drive"
+        info_usuario = build("oauth2", "v2", credentials=creds).userinfo().get().execute()
+        email = info_usuario.get("email", "")
+        if not email or info_usuario.get("verified_email") is not True or not email_allowed(email):
+            return PlainTextResponse("Cuenta no autorizada", status_code=403)
+        SESSIONS.pop(request.cookies.get("session_id"), None)
 
         session_id = _nueva_session_id()
         _guardar_sesion(
@@ -1340,15 +1349,15 @@ def estimar_precio_producto(nombre, marca, gramaje, categoria, api_key):
         f"'precio_sugerido' (número en MXN, con margen razonable de reventa), 'moneda' ('MXN')."
     )
     try:
-        client = genai.Client(api_key=api_key)
+        client = GeminiClient(api_key=api_key)
         response = client.models.generate_content(
             model=MODELO_TEXTO,
             contents=prompt,
-            config=types.GenerateContentConfig(tools=[{"google_search": {}}])
+            config=text_config(1536, search=True, model=MODELO_TEXTO)
         )
         return _extraer_json(response.text)
     except Exception as e:
-        print(f"⚠️ No se pudo estimar el precio automáticamente: {e}")
+        print(f"⚠️ No se pudo estimar el precio automáticamente: {type(e).__name__}")
         return {"precio_min": 0, "precio_max": 0, "precio_sugerido": 0, "moneda": "MXN"}
 
 
@@ -1366,12 +1375,20 @@ def _obtener_vocabulario_etiquetas(df):
     return vistas
 
 
+def _vocabulario_relevante(vocabulario, contexto, limite=80):
+    palabras = set(re.findall(r"\w+", contexto.lower()))
+    valores = list(dict.fromkeys(str(v).strip() for v in vocabulario if str(v).strip() and len(str(v)) <= 80))
+    return sorted(valores, key=lambda v: (-len(palabras & set(re.findall(r"\w+", v.lower()))), v.lower()))[:limite]
+
 def estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripcion, vocabulario, api_key):
     """Si ya existen etiquetas en el catálogo, la IA SOLO puede elegir entre esas
     (nada de inventar nuevas). Si el catálogo todavía no tiene ninguna, la IA
     propone unas pocas para empezar a construir el vocabulario."""
     if not nombre:
         return []
+    nombre, marca, categoria, subcategoria = [str(x or "")[:180] for x in (nombre, marca, categoria, subcategoria)]
+    descripcion = str(descripcion or "")[:1000]
+    vocabulario = _vocabulario_relevante(vocabulario, " ".join([nombre, marca, categoria, subcategoria, descripcion]))
     if vocabulario:
         instruccion = (
             f"Debes elegir ÚNICAMENTE etiquetas de esta lista que YA EXISTE en el catálogo, escogiendo "
@@ -1382,7 +1399,7 @@ def estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripci
     else:
         instruccion = (
             "Todavía no hay etiquetas en el catálogo. Sugiere entre 2 y 5 etiquetas cortas y reutilizables "
-            "(en español, minúsculas, sin acentos raros, ej. 'picante', 'sin gluten', 'edición limitada') "
+            "(en español; sin alegaciones dietéticas, de salud o certificaciones no verificadas) "
             "que describan bien este producto y sirvan para clasificar productos parecidos en el futuro."
         )
     prompt = (
@@ -1392,16 +1409,16 @@ def estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripci
         f"'etiquetas' (array de strings)."
     )
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model=MODELO_TEXTO, contents=prompt)
+        client = GeminiClient(api_key=api_key)
+        response = client.models.generate_content(model=MODELO_TEXTO, contents=prompt, config=text_config(768, model=MODELO_TEXTO))
         datos = _extraer_json(response.text)
-        etiquetas = datos.get("etiquetas", []) or []
+        etiquetas = [e for e in (datos.get("etiquetas", []) or []) if isinstance(e, str)][:5]
         if vocabulario:
             vocab_lower = {v.lower(): v for v in vocabulario}
             etiquetas = [vocab_lower[e.lower()] for e in etiquetas if e.lower() in vocab_lower]
         return etiquetas
     except Exception as e:
-        print(f"⚠️ No se pudieron estimar las etiquetas: {e}")
+        print(f"⚠️ No se pudieron estimar las etiquetas: {type(e).__name__}")
         return []
 
 
@@ -1431,7 +1448,7 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
         ruta_temp = "/tmp/temp_lens.jpg"
         img_pil.save(ruta_temp, format="JPEG", quality=85)
 
-        client = genai.Client(api_key=api_key)
+        client = GeminiClient(api_key=api_key)
         archivo_ref = client.files.upload(file=ruta_temp)
 
         contexto = ""
@@ -1456,7 +1473,7 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
         response = client.models.generate_content(
             model=MODELO_TEXTO,
             contents=[archivo_ref, prompt],
-            config=types.GenerateContentConfig(tools=[{"google_search": {}}])
+            config=text_config(1536, search=True, model=MODELO_TEXTO)
         )
         datos = _extraer_json(response.text)
 
@@ -1486,24 +1503,21 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
 
         return recomendacion, reporte, tipo_recomendado
     except Exception as e:
-        return f"❌ Error en la búsqueda visual: {e}", "", "Simple"
+        return f"❌ Error en la búsqueda visual: {type(e).__name__}", "", "Simple"
 
 
 def investigar_prompts(producto, marca, desc, api_key):
     prompt = (
-        f"Actúa como un director de arte publicitario. Producto: '{producto}', Marca: '{marca}', Contexto: '{desc}'. "
-        f"Devuelve un JSON estricto con dos claves: 'lifestyle' y 'comercial'. "
-        f"Escribe ambos valores exclusivamente en inglés. Cada valor solo debe describir el AMBIENTE, "
-        f"la iluminación y la cámara; nunca debe rediseñar el producto. Para 'lifestyle', crea una escena "
-        f"realista de uso con el producto completo, separado de los props y con su frente legible. "
-        f"Para 'comercial', crea una escena de estudio dinámica pero limpia; los ingredientes o accesorios "
-        f"pueden rodear el producto, nunca cruzarlo, duplicarlo ni sustituirlo. No pidas personas, manos, "
-        f"texto publicitario, logos flotantes, mascotas extraídas del empaque, sellos ni insignias. "
-        f"En ambos casos exige composición cuadrada 1:1 y una sola unidad/conjunto, exactamente como la referencia."
+        "Return JSON {lifestyle,comercial}, English strings <=80 words each. Describe only setting, "
+        "lighting and camera for this product. Lifestyle: realistic use context. Commercial: premium studio. "
+        "Both: square, one complete reference product, unobstructed front; props separate; no people, hands, "
+        "added text/logos or extracted artwork. Never redesign packaging. Product data: "
+        + json.dumps({"product": str(producto)[:180], "brand": str(marca)[:120],
+                      "context": str(desc or "")[:1000]}, ensure_ascii=False)
     )
     try:
-        client = genai.Client(api_key=api_key)
-        res = client.models.generate_content(model=MODELO_TEXTO, contents=prompt)
+        client = GeminiClient(api_key=api_key)
+        res = client.models.generate_content(model=MODELO_TEXTO, contents=prompt, config=text_config(768, model=MODELO_TEXTO))
         return _extraer_json(res.text)
     except Exception:
         return {
@@ -1553,19 +1567,12 @@ def _contrato_visual(slot):
         ),
     }.get(slot, "Keep the complete product unobstructed and centered.")
     return (
-        "\n\n===== IMMUTABLE PRODUCT CONTRACT =====\n"
-        "The supplied image(s) are evidence, not inspiration. The physical product and every visible part of its "
-        "packaging are LOCKED. Copy them faithfully; do not redesign, beautify, translate or reconstruct them.\n"
-        "- Preserve the exact object count/set, silhouette, dimensions, materials, closures, seams and proportions.\n"
-        "- Preserve the exact package colors, artwork, brand marks, characters, flavor, weight, count, numbers and "
-        "text layout. If tiny text is unreadable, preserve its original visual texture; never invent characters.\n"
-        "- Do not add or remove labels, nutrition seals, badges, logos, watermarks, barcodes, certification marks or text.\n"
-        "- Show the complete product with every edge inside the frame. No crop, occlusion, duplicate or alternate flavor.\n"
-        "- Do not create a second package or a different presentation of the same product.\n"
-        f"- {regla_escena}\n"
-        "- Output must be natively STRICT 1:1 SQUARE, sharp and at least 1024 x 1024 pixels.\n"
-        "When scene styling conflicts with product fidelity, product fidelity always wins.\n"
-        "===== END IMMUTABLE PRODUCT CONTRACT ====="
+        "\nPRODUCT FIDELITY OVERRIDES ALL STYLING/FEEDBACK: copy the reference, never redesign it. "
+        "Preserve object count/set, full silhouette, proportions, materials, closures, seams, colors, artwork, "
+        "characters, brand, flavor, weight, numbers and text layout. Keep unreadable text as its original texture; "
+        "never invent letters. No added/removed labels, seals, badges, logos, watermarks, barcodes or certifications. "
+        "One complete product/set: no crop, occlusion, duplicate or alternate presentation. "
+        + regla_escena + " Sharp, native square 1:1, minimum 1024x1024."
     )
 
 
@@ -1586,7 +1593,7 @@ def _validacion_local_imagen(ruta_imagen):
             errores.append(f"Output is only {ancho}x{alto}; minimum accepted size is 1024x1024.")
         return errores
     except Exception as e:
-        return [f"The generated file is not a valid readable image: {e}"]
+        return [f"The generated file is not a valid readable image: {type(e).__name__}"]
 
 
 def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
@@ -1626,7 +1633,8 @@ def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
             "aprobada": False,
             "qa_unavailable": True,
             "puntuacion": 0,
-            "errores": [f"The automatic visual comparison failed and the image cannot be approved: {e}"],
+            "technical_error": True,
+            "errores": [f"The automatic visual comparison failed and the image cannot be approved: {type(e).__name__}"],
             "resumen": "No se pudo completar el control automático de fidelidad.",
         }
 
@@ -1639,7 +1647,7 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
         return None
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = GeminiClient(api_key=api_key)
         archivos_ref = [_imagen_para_ia(ruta) for ruta in rutas_ref]
         contrato = _contrato_visual(slot)
         errores_automaticos = []
@@ -1706,6 +1714,9 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
                     "resumen": ultimo_qa.get("resumen", ""),
                 }
 
+            if ultimo_qa.get("technical_error"):
+                Path(ruta_candidata).unlink(missing_ok=True)
+                break
             errores_automaticos = ultimo_qa.get("errores") or [
                 "Recreate the image with exact product fidelity and strict 1:1 format."
             ]
@@ -1714,11 +1725,11 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
             except OSError:
                 pass
 
-        print(f"❌ Imagen rechazada por QA tras {MAX_INTENTOS_IMAGEN} intentos: {ultimo_qa}")
+        print(f"❌ Imagen rechazada por QA tras {MAX_INTENTOS_IMAGEN} intentos: [detalles omitidos]")
         return {
             "ruta": None,
             "puntuacion": ultimo_qa.get("puntuacion", 0),
-            "intentos": MAX_INTENTOS_IMAGEN,
+            "intentos": intento,
             "resumen": ultimo_qa.get("resumen", "No superó el control de calidad."),
             "errores": ultimo_qa.get("errores", []),
         }
@@ -1735,7 +1746,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
                 gr.update(visible=False), "", "", "", "", "", None]
 
     api_key = sesion["gemini_key"]
-    client = genai.Client(api_key=api_key)
+    client = GeminiClient(api_key=api_key)
     service, spreadsheet_id, df_actual = _cargar_df(sesion)
 
     lista_cats = df_actual['categoria'].dropna().unique().tolist() if 'categoria' in df_actual else []
@@ -1743,7 +1754,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
     lista_subcats = df_actual['subcategoria'].dropna().unique().tolist() if 'subcategoria' in df_actual else []
     lista_subcats = lista_subcats if lista_subcats else SUBCATEGORIAS_DEFECTO
 
-    token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.get("session_id", "sesion"))[:64]
+    token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
     archivos_ia = []
     img_1_pil = comprimir_imagen(imagen_1).convert("RGB")
     ruta_temp_1 = f"/tmp/{token_sesion}_temp_in_1.jpg"
@@ -1763,8 +1774,9 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         img_2_pil.save(ruta_base_reverso, format="JPEG", quality=95)
         rutas_base_memoria.append(ruta_base_reverso)
 
+    vocabulario_etiquetas = _vocabulario_relevante(_obtener_vocabulario_etiquetas(df_actual), str(descripcion_breve or ""))
     prompt_datos = (
-        f"Analiza el producto de las imágenes. Contexto extra: '{descripcion_breve}'. "
+        f"Analiza el producto de las imágenes. Contexto extra: '{str(descripcion_breve or '')[:1000]}'. "
         f"Actúa como un experto en SEO para e-commerce. Devuelve un JSON estricto con:\n"
         f"1. 'nombre': El nombre del producto claro y comercial.\n"
         f"2. 'marca': La marca del producto.\n"
@@ -1775,14 +1787,16 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         f"5. 'subcategoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Subcategorías: "
         f"{lista_subcats}. NO inventes ninguna.\n"
         f"6. 'desc_corta': Optimizado para SEO (Máximo 150 caracteres).\n"
-        f"7. 'desc_larga': Optimizado para SEO con beneficios/ingredientes en formato de viñetas (-).\n"
+        f"7. 'desc_larga': máximo 180 palabras, viñetas; solo ingredientes/beneficios verificables en las fotos.\n"
+        f"8. 'etiquetas': hasta 5 strings. Si hay vocabulario, elige exclusivamente de: {vocabulario_etiquetas}. "
+        "Sin vocabulario, propone etiquetas reutilizables sin alegaciones dietéticas o de salud no verificadas."
     )
 
     try:
-        res_datos = client.models.generate_content(model=MODELO_TEXTO, contents=archivos_ia + [prompt_datos])
+        res_datos = client.models.generate_content(model=MODELO_TEXTO, contents=archivos_ia + [prompt_datos], config=text_config(1536, model=MODELO_TEXTO))
         datos = _extraer_json(res_datos.text)
     except Exception as e:
-        return [f"❌ Error leyendo imagen: {e}", "", "", "", "", 0, "Simple",
+        return [f"❌ Error leyendo imagen: {type(e).__name__}", "", "", "", "", 0, "Simple",
                 gr.update(visible=False), "", "", "", "", "", None]
 
     nombre = datos.get("nombre", "Producto Desconocido")
@@ -1797,15 +1811,11 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         subcat_final = lista_subcats[0]
 
     sku_gen = generar_sku_logica(nombre, marca, gramaje)
-    vocabulario_etiquetas = _obtener_vocabulario_etiquetas(df_actual)
-    # Independent network requests; no shared Drive or Gemini client.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        price_task = pool.submit(estimar_precio_producto, nombre, marca, gramaje, cat_final, api_key)
-        tags_task = pool.submit(estimar_etiquetas_producto, nombre, marca, cat_final,
-                                subcat_final, descripcion_breve, vocabulario_etiquetas, api_key)
-        datos_precio = price_task.result()
-        etiquetas_sugeridas = tags_task.result()
+    datos_precio = estimar_precio_producto(nombre, marca, gramaje, cat_final, api_key)
     precio_sugerido = datos_precio.get("precio_sugerido", 0)
+    etiquetas_sugeridas = [e for e in datos.get("etiquetas", []) if isinstance(e, str)][:5]
+    if vocabulario_etiquetas:
+        etiquetas_sugeridas = [e for e in etiquetas_sugeridas if e in vocabulario_etiquetas]
     etiquetas_str = ", ".join(etiquetas_sugeridas)
 
     return [
@@ -1836,8 +1846,13 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
     service = _get_drive_service(sesion)
     _, carpeta_imagenes_id, _, logo_id = _preparar_estructura(service, sesion)
 
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(sku)):
+        return gr.update(), historial_nuevo, "❌ SKU inválido: usa letras, números, guion o guion bajo."
     nombre_archivo = f"{sku}_{slot}.jpg"
-    token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.get("session_id", "sesion"))[:64]
+    token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
+    rutas = _rutas_referencia(ruta_base)
+    if not rutas or any(not Path(r).name.startswith(token_sesion + "_") or Path(r).parent != Path("/tmp") for r in rutas):
+        return gr.update(), historial_nuevo, "❌ Referencia de imagen inválida para esta sesión."
     ruta_local = f"/tmp/{token_sesion}_{nombre_archivo}"
 
     resultado = generar_foto_individual(
@@ -2548,3 +2563,4 @@ fastapi_app = gr.mount_gradio_app(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(fastapi_app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
+

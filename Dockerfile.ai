@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py gemini_gateway.py oauth_guard.py .
 COPY ai_app.py .
 COPY inventory_schema.py .
 COPY static ./static
@@ -22,3 +22,4 @@ EXPOSE 7860
 
 # Servicio IA: Gradio/Gemini + escritura exclusiva a Lista completa.
 CMD ["uvicorn", "ai_app:fastapi_app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--workers", "1"]
+
