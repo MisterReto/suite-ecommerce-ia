@@ -76,10 +76,9 @@ class DirectServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 303)
                 self.assertIn('HttpOnly', response.headers['set-cookie'])
                 page = await client.get(response.headers['location'])
-                self.assertEqual(page.status_code, 200)
+                self.assertEqual(page.status_code, 303)
+                self.assertEqual(page.headers["location"], "/woocommerce-batch-sync")
                 self.assertEqual(page.headers['x-suite-executor'], 'sync-service')
-                self.assertIn('Suite e-commerce', page.text)
-                self.assertIn('segundo servicio', page.text)
                 self.assertNotIn('private-store-key', page.text)
                 def fake_sync(session, sku, include_images):
                     from sync_bridge_protocol import setting

@@ -44,9 +44,8 @@ class SplitServicesTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_reuses_page_without_ai_runtime(self):
         body, headers = signed()
         response = await self.client.post('/internal/tools', content=body, headers=headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('Sincronizar producto completo', response.text)
-        self.assertIn('Escritura habilitada', response.text)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers['location'], '/woocommerce-batch-sync')
         self.assertNotIn(CONTEXT['access_token'], response.text)
         self.assertNotIn('test-secret', response.text)
         self.assertTrue(all(name not in sys.modules for name in ('gradio', 'ai_app', 'pandas', 'google.genai')))
@@ -55,7 +54,7 @@ class SplitServicesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/internal/tools', json={})).status_code, 401)
         body, headers = signed()
         self.assertEqual((await self.client.post('/internal/tools', content=body + b' ', headers=headers)).status_code, 401)
-        self.assertEqual((await self.client.post('/internal/tools', content=body, headers=headers)).status_code, 200)
+        self.assertEqual((await self.client.post('/internal/tools', content=body, headers=headers)).status_code, 303)
         self.assertEqual((await self.client.post('/internal/tools', content=body, headers=headers)).status_code, 409)
         body, headers = signed(timestamp=int(time.time())-121)
         self.assertEqual((await self.client.post('/internal/tools', content=body, headers=headers)).status_code, 401)
@@ -96,7 +95,8 @@ class SplitServicesTests(unittest.IsolatedAsyncioTestCase):
         request = Request(scope, receive)
         with patch.dict(os.environ, {'SYNC_SERVICE_URL':'https://worker.example', 'WC_WRITE_ENABLED':'true'}), patch('httpx.AsyncClient', client_factory):
             response = await sync_gateway.forward_tool(request, legacy)
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers['location'], '/woocommerce-batch-sync')
         self.assertEqual(response.headers['x-suite-executor'], 'sync-service')
 
 if __name__ == '__main__':

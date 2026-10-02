@@ -304,14 +304,19 @@ class ToolIntegrationTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "error")
         create.assert_not_called()
 
-    def test_hub_loads_inventory_only_and_boolean_options_are_strict(self):
+    def test_hub_is_one_document_and_never_loads_preview_automatically(self):
         from inventory_hub import inventory_hub
-        with patch("inventory_hub.inventory_web._session", return_value={"email": "test"}):
+        with patch("inventory_web._context", return_value=({"email": "test"}, "sheet", Mock())), \
+             patch("inventory_web.read_inventory", return_value=[PARENT, CHILD]), \
+             patch("inventory_web.counted_initial_skus", return_value=set()), \
+             patch("publication_web.WooCommerceClient") as wc:
             body = inventory_hub(Mock()).body.decode()
-        self.assertEqual(body.count("<iframe"), 1)
-        self.assertIn('src="/inventory-manager"', body)
-        self.assertNotIn('src="/woocommerce-publish-preview"', body)
-        self.assertIn('data-page="/inventory-count"', body)
+        self.assertNotIn("<iframe", body)
+        self.assertNotIn("data-page=", body)
+        self.assertIn("id='bulk-btn'", body)
+        self.assertIn("id='review-btn'", body)
+        self.assertIn("id='history-rows'", body)
+        wc.assert_not_called()
         with self.assertRaises(ValueError):
             self.batch._option_bool({"include_stock": "false"}, "include_stock", False)
 

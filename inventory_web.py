@@ -15,7 +15,7 @@ from urllib.parse import quote
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Mount
 
 import app as legacy_app
@@ -56,28 +56,6 @@ def _money(value: Any) -> str:
         return "$0.00"
 
 
-def _render_inventory_rows(rows: list[dict[str, Any]]) -> str:
-    if not rows:
-        return "<tr><td colspan='7'>No encontré productos.</td></tr>"
-    out = []
-    for row in rows:
-        sku = html.escape(str(row.get("sku", "")))
-        name = html.escape(str(row.get("nombre_producto", "")))
-        brand = html.escape(str(row.get("Marca", "")))
-        category = html.escape(str(row.get("categorias", "")))
-        stock = "—" if is_variable_parent(row) else int(row.get("Existencias", 0) or 0)
-        price = "—" if is_variable_parent(row) else _money(row.get("precio", 0))
-        out.append(
-            "<tr>"
-            f"<td><button class='sku-btn' onclick='selectSku({html.escape(json.dumps(str(row.get('sku', ''))), quote=True)})'>{sku}</button></td>"
-            f"<td>{name}</td><td>{brand}</td><td>{category}</td>"
-            f"<td class='num'><b>{stock}</b></td><td class='num'>{price}</td>"
-            f"<td><a href='/inventory-manager?sku={html.escape(quote(str(row.get('sku','')), safe=''))}'>Historial</a></td>"
-            "</tr>"
-        )
-    return "".join(out)
-
-
 def _render_movements(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "<tr><td colspan='9'>Aún no hay movimientos registrados para este SKU.</td></tr>"
@@ -108,101 +86,107 @@ def _render_bulk_rows(rows: list[dict[str, Any]], counted: set[str]) -> str:
         brand = html.escape(str(row.get("Marca", "")))
         current = int(row.get("Existencias", 0) or 0)
         done = sku_raw in counted
+        parent = is_variable_parent(row)
+        category = html.escape(str(row.get("categorias", "")))
+        current_text = "—" if parent else current
+        price = "—" if parent else _money(row.get("precio", 0))
+        count_input = "—" if parent else (
+            f"<input aria-label='Conteo físico de {sku}' class='bulk-stock' data-sku='{sku}' "
+            f"type='number' min='0' step='1' value='{current}'>"
+        )
         out.append(
             "<tr>"
-            f"<td><input class='bulk-check' type='checkbox' data-sku='{sku}' {'checked' if not done else ''}></td>"
-            f"<td><code>{sku}</code></td><td>{name}</td><td>{brand}</td>"
-            f"<td>{current}</td>"
-            f"<td><input class='bulk-stock' data-sku='{sku}' type='number' min='0' step='1' value='{current}'></td>"
-            f"<td>{'✅ Ya contado' if done else 'Pendiente'}</td>"
+            f"<td><input aria-label='Seleccionar {sku}' class='bulk-check' type='checkbox' data-sku='{sku}' {'disabled' if parent else ''}></td>"
+            f"<td><button class='sku-btn' data-history='{sku}'>{sku}</button></td>"
+            f"<td>{name}</td><td>{brand}</td><td>{category}</td>"
+            f"<td data-stock='{sku}'>{current_text}</td><td>{price}</td><td>{count_input}</td>"
+            f"<td data-count-status='{sku}'>{'Portada sin stock propio' if parent else '✅ Ya contado' if done else 'Pendiente'}</td>"
             "</tr>"
         )
     return "".join(out)
 
 
-@fastapi_app.get("/inventory-manager", response_class=HTMLResponse)
-def inventory_manager(request: Request, q: str = "", sku: str = ""):
+def render_inventory(request: Request, q: str = "", sku: str = ""):
     try:
         session, spreadsheet_id, sheets = _context(request)
         rows = read_inventory(sheets, spreadsheet_id)
-        filtered = search_inventory(rows, q, limit=150)
+        filtered = search_inventory(rows, q, limit=500)
         summary = inventory_summary(rows)
+        counted = counted_initial_skus(sheets, spreadsheet_id)
+        pending = sum(not is_variable_parent(row) and str(row.get("sku", "")) not in counted for row in rows)
         selected_sku = str(sku or "").strip()
         history = read_movements(sheets, spreadsheet_id, selected_sku, limit=50) if selected_sku else []
         movement_options = "".join(
             f"<option value='{html.escape(t)}'>{html.escape(t)}</option>" for t in MOVEMENT_TYPES
         )
-        selected_title = html.escape(selected_sku) if selected_sku else "Selecciona un SKU"
-        email = html.escape(str(session.get("email", "")))
-
-        body = f"""<!doctype html>
-<html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Inventario físico</title>
-<style>
-body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;padding:24px}}
-.wrap{{max-width:1500px;margin:auto}} .card{{background:#fff;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}} .metric b{{font-size:30px;display:block}} .metric span{{color:#667085;font-size:13px}}
-.metric{{background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
-.toolbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}} input,select,textarea{{padding:10px;border:1px solid #cfd4dc;border-radius:8px;font:inherit;box-sizing:border-box}}
-input[type=text]{{min-width:250px}} button,.btn{{border:0;border-radius:8px;background:#172033;color:#fff;padding:10px 14px;text-decoration:none;cursor:pointer;font:inherit}} .secondary{{background:#475467}}
-table{{width:100%;border-collapse:collapse;font-size:13px}} th,td{{padding:9px;border-bottom:1px solid #e6e8ec;text-align:left;vertical-align:top}} th{{background:#f2f4f7;position:sticky;top:0}} .table-wrap{{max-height:520px;overflow:auto}} .num{{text-align:right}} .sku-btn{{background:#eef2ff;color:#27336b;padding:5px 8px}} code{{background:#eef0f3;padding:2px 5px;border-radius:4px}}
-.form-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}} .form-grid label{{display:flex;flex-direction:column;gap:5px;font-size:13px;font-weight:bold}} .notice{{padding:12px;border-radius:8px;background:#eefbf3;border:1px solid #86d7a2}} .error{{background:#fff1f1;border-color:#f1a3a3}}
-</style></head><body><div class='wrap'>
-<h1>📦 Inventario físico</h1>
-<div class='card toolbar'><a class='btn secondary' href='/'>← Suite</a><a class='btn secondary' href='/inventory-sync'>WooCommerce</a><a class='btn' href='/inventory-count'>Conteo inicial masivo</a><span>Sesión: <b>{email}</b></span></div>
+        body = f"""<!doctype html><html lang='es'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'><title>Suite e-commerce · Inventario</title>
+<link rel='icon' href='/suite-static/rincon-logo.png'><link rel='stylesheet' href='/suite-static/inventory.css'>
+<script src='/suite-static/inventory.js' defer></script></head><body><main class='wrap'>
+<header><img src='/suite-static/rincon-logo.png' alt='El Rincón de Asia'><h1>Inventario</h1><a class='btn secondary' href='/'>← Suite</a></header>
+<p>Sesión: <b>{html.escape(str(session.get("email", "")))}</b></p>
 <div class='grid'>
-<div class='metric'><b>{summary['products']}</b><span>Productos</span></div><div class='metric'><b>{summary['units']}</b><span>Unidades registradas</span></div>
-<div class='metric'><b>{summary['low_stock']}</b><span>Stock bajo (1–3)</span></div><div class='metric'><b>{summary['out_of_stock']}</b><span>Agotados</span></div>
-<div class='metric'><b>{_money(summary['retail_value'])}</b><span>Valor a precio de venta</span></div>
-</div>
-<div id='msg'></div>
-<div class='card'><h2>Registrar movimiento</h2><p>Para <b>Inventario inicial</b> y <b>Ajuste</b>, la cantidad representa el <u>stock final</u>. Para Entrada/Salida/Merma/Devolución representa unidades a sumar o restar.</p>
+<div class='metric'><b>{summary['products']}</b><span>Productos con stock propio</span></div>
+<div class='metric'><b id='units'>{summary['units']}</b><span>Unidades registradas</span></div>
+<div class='metric'><b id='low-stock'>{summary['low_stock']}</b><span>Stock bajo (1–3)</span></div>
+<div class='metric'><b id='out-of-stock'>{summary['out_of_stock']}</b><span>Agotados</span></div>
+<div class='metric'><b id='retail-value' data-value='{summary['retail_value']}'>{_money(summary['retail_value'])}</b><span>Valor a precio de venta</span></div>
+</div><div id='msg' role='status' aria-live='polite'></div>
+<section class='card' id='catalog'><h2>Catálogo y conteo físico</h2>
+<p><b id='pending-count'>{pending}</b> SKU pendientes de conteo inicial. Escribe el stock físico final y selecciona únicamente los SKU que vas a guardar. Las portadas FULL no administran stock ni precio.</p>
+<form method='get' action='/inventory-hub' class='toolbar'><input name='q' value='{html.escape(q)}' aria-label='Buscar productos' placeholder='SKU, producto, marca o categoría'><button>Buscar</button><a class='btn secondary' href='/inventory-hub'>Limpiar</a></form>
+<p>Mostrando {len(filtered)} de {len(rows)} productos. Filtra por SKU si necesitas localizar otro producto.</p>
+<div class='toolbar'><button id='bulk-btn' type='button'>Guardar conteos seleccionados en Drive</button><span id='selection-count' role='status'>0 seleccionados</span></div>
+<div class='table-wrap'><table><thead><tr><th>Seleccionar</th><th>SKU / historial</th><th>Producto</th><th>Marca</th><th>Categoría</th><th>Existencias</th><th>Precio</th><th>Conteo físico final</th><th>Estado</th></tr></thead><tbody>{_render_bulk_rows(filtered, counted)}</tbody></table></div></section>
+<section class='card' id='movement'><h2>Registrar movimiento</h2>
+<p>Inventario inicial y Ajuste: stock final. Entrada, Salida, Merma y Devolución: unidades a sumar o restar.</p>
 <div class='form-grid'>
 <label>SKU<input id='m-sku' value='{html.escape(selected_sku)}' placeholder='Selecciona un SKU'></label>
 <label>Movimiento<select id='m-type'>{movement_options}</select></label>
 <label>Cantidad<input id='m-qty' type='number' min='0' step='1' value='0'></label>
-<label>Referencia<input id='m-ref' placeholder='Factura, pedido, conteo...'></label>
-<label>Motivo<input id='m-reason' placeholder='Compra, merma, corrección...'></label>
-</div><br><button id='save-btn' onclick='saveMovement()'>Guardar movimiento</button></div>
-<div class='card'><h2>Catálogo</h2><form method='get' class='toolbar'><input name='q' value='{html.escape(q)}' placeholder='Buscar SKU, producto, marca o categoría'><button>Buscar</button><a class='btn secondary' href='/inventory-manager'>Limpiar</a></form><br>
-<div class='table-wrap'><table><thead><tr><th>SKU</th><th>Producto</th><th>Marca</th><th>Categoría</th><th>Existencias</th><th>Precio</th><th></th></tr></thead><tbody>{_render_inventory_rows(filtered)}</tbody></table></div></div>
-<div class='card'><h2>Historial — {selected_title}</h2><div class='table-wrap'><table><thead><tr><th>Fecha</th><th>ID</th><th>Tipo</th><th>Cantidad</th><th>Antes</th><th>Después</th><th>Motivo</th><th>Referencia</th><th>Usuario</th></tr></thead><tbody>{_render_movements(history)}</tbody></table></div></div>
-</div>
-<script>
-function selectSku(sku){{ document.getElementById('m-sku').value=sku; window.history.replaceState(null,'','/inventory-manager?sku='+encodeURIComponent(sku)); }}
-async function saveMovement(){{
- const btn=document.getElementById('save-btn'); if(btn.disabled) return; btn.disabled=true; btn.textContent='Guardando...';
- const msg=document.getElementById('msg'); msg.innerHTML='';
- const payload={{sku:document.getElementById('m-sku').value,movement_type:document.getElementById('m-type').value,quantity:document.getElementById('m-qty').value,reason:document.getElementById('m-reason').value,reference:document.getElementById('m-ref').value}};
- try{{ const r=await fetch('/inventory-movement',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(payload)}}); const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error'); msg.textContent='✅ '+data.message; setTimeout(()=>location.href='/inventory-manager?sku='+encodeURIComponent(payload.sku),700); }}catch(e){{ msg.textContent='❌ '+e.message; btn.disabled=false; btn.textContent='Guardar movimiento'; }}
-}}
-</script></body></html>"""
+<label>Referencia<input id='m-ref' placeholder='Factura, pedido, conteo…'></label>
+<label>Motivo<input id='m-reason' placeholder='Compra, merma, corrección…'></label>
+</div><p><button id='save-btn' type='button'>Guardar movimiento en Drive</button></p></section>
+<section class='card' id='history'><h2>Historial — <span id='history-title'>{html.escape(selected_sku) if selected_sku else 'Selecciona un SKU'}</span></h2>
+<div class='table-wrap'><table><thead><tr><th>Fecha</th><th>ID</th><th>Tipo</th><th>Cantidad</th><th>Antes</th><th>Después</th><th>Motivo</th><th>Referencia</th><th>Usuario</th></tr></thead><tbody id='history-rows'>{_render_movements(history)}</tbody></table></div></section>
+<section class='card' id='review'><h2>Revisar Sheets y WooCommerce</h2>
+<p>Compara nombres, existencias y precios; detecta faltantes, duplicados y visibilidad de agotados. La revisión se ejecuta solo al pulsar el botón y no modifica la tienda.</p>
+<button id='review-btn' type='button'>Revisar sincronización y stock ahora</button>
+<p id='review-status' role='status' aria-live='polite'>Aún no se ha consultado WooCommerce.</p><div id='review-summary' class='grid'></div>
+<div class='table-wrap' id='review-table' hidden><table><thead><tr><th>SKU</th><th>Producto</th><th>Estado</th><th>Stock Drive</th><th>Stock tienda</th><th>Precio Drive</th><th>Precio tienda</th><th>Revisión de stock</th></tr></thead><tbody id='review-rows'></tbody></table></div>
+<p><a class='btn secondary' href='/woocommerce-batch-sync'>Subir o actualizar productos</a></p></section>
+</main></body></html>"""
         return HTMLResponse(body)
     except PermissionError as exc:
-        return HTMLResponse(f"<h2>{html.escape(str(exc))}</h2><a href='/'>Volver</a>", status_code=401)
+        return HTMLResponse(f"<h2>{html.escape(public_error(exc))}</h2><a href='/'>Volver</a>", status_code=401)
     except Exception as exc:
-        return HTMLResponse(f"<h2>Error</h2><pre>{html.escape(str(exc))}</pre>", status_code=500)
+        return HTMLResponse(f"<h2>Error</h2><p>{html.escape(public_error(exc))}</p><a href='/inventory-hub'>Reintentar</a>", status_code=500)
 
 
-@fastapi_app.get("/inventory-count", response_class=HTMLResponse)
+@fastapi_app.get("/inventory-manager")
+def inventory_manager(request: Request, q: str = "", sku: str = ""):
+    return RedirectResponse("/inventory-hub?q=" + quote(q, safe="") + "&sku=" + quote(sku, safe=""), status_code=303)
+
+
+@fastapi_app.get("/inventory-count")
 def inventory_count(request: Request, q: str = ""):
+    return RedirectResponse("/inventory-hub?" + "q=" + quote(q, safe="") + "#catalog", status_code=303)
+
+
+@fastapi_app.get("/inventory-history")
+def inventory_history(request: Request, sku: str = ""):
     try:
-        session, spreadsheet_id, sheets = _context(request)
-        rows = read_inventory(sheets, spreadsheet_id)
-        filtered = search_inventory([r for r in rows if not is_variable_parent(r)], q, limit=360)
-        counted = counted_initial_skus(sheets, spreadsheet_id)
-        pending = sum(1 for row in rows if not is_variable_parent(row) and str(row.get("sku", "")) not in counted)
-        body = f"""<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Conteo inicial</title>
-<style>body{{font-family:Arial,sans-serif;background:#f6f7f9;color:#172033;margin:0;padding:24px}}.wrap{{max-width:1500px;margin:auto}}.card{{background:#fff;border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 2px 8px rgba(0,0,0,.05)}}.toolbar{{display:flex;gap:8px;flex-wrap:wrap;align-items:center}}input{{padding:9px;border:1px solid #cfd4dc;border-radius:8px}}button,.btn{{border:0;border-radius:8px;background:#172033;color:#fff;padding:10px 14px;text-decoration:none;cursor:pointer}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #e6e8ec;text-align:left}}th{{background:#f2f4f7;position:sticky;top:0}}.table-wrap{{max-height:650px;overflow:auto}}.notice{{padding:12px;border-radius:8px;background:#eefbf3;border:1px solid #86d7a2}}.error{{background:#fff1f1;border-color:#f1a3a3}}code{{background:#eef0f3;padding:2px 5px;border-radius:4px}}</style></head><body><div class='wrap'>
-<h1>🧮 Conteo inicial masivo</h1><div class='card toolbar'><a class='btn' href='/inventory-manager'>← Inventario</a><b>{pending}</b> SKU pendientes de conteo inicial</div><div id='msg'></div>
-<div class='card'><p>Marca los SKU que quieras guardar y escribe el <b>stock físico final</b>. Puedes hacer el conteo por bloques; los ya contados aparecen como ✅.</p><form method='get' class='toolbar'><input name='q' value='{html.escape(q)}' placeholder='Filtrar por SKU, producto, marca o categoría' style='min-width:320px'><button>Filtrar</button><a class='btn' href='/inventory-count'>Limpiar</a></form><br><button id='bulk-btn' onclick='saveBulk()'>Guardar conteos seleccionados</button><br><br>
-<div class='table-wrap'><table><thead><tr><th></th><th>SKU</th><th>Producto</th><th>Marca</th><th>Stock actual</th><th>Conteo físico</th><th>Estado</th></tr></thead><tbody>{_render_bulk_rows(filtered, counted)}</tbody></table></div></div></div>
-<script>async function saveBulk(){{const btn=document.getElementById('bulk-btn');if(btn.disabled)return;const selected=[...document.querySelectorAll('.bulk-check:checked')];if(!selected.length){{alert('Selecciona al menos un SKU');return;}}const counts=selected.map(c=>{{const sku=c.dataset.sku;return {{sku:sku,stock:document.querySelector('.bulk-stock[data-sku="'+CSS.escape(sku)+'"]').value}};}});if(!confirm('Se guardarán '+counts.length+' conteos físicos. ¿Continuar?'))return;btn.disabled=true;btn.textContent='Guardando...';const msg=document.getElementById('msg');try{{const r=await fetch('/inventory-count-bulk',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{counts:counts}})}});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');msg.textContent='✅ '+d.message;setTimeout(()=>location.reload(),800);}}catch(e){{msg.textContent='❌ '+e.message;btn.disabled=false;btn.textContent='Guardar conteos seleccionados';}}}}</script></body></html>"""
-        return HTMLResponse(body)
+        _, spreadsheet_id, sheets = _context(request)
+        selected = str(sku or "").strip()
+        if not selected:
+            raise ValueError("Selecciona un SKU.")
+        return {"ok": True, "sku": selected, "rows": read_movements(sheets, spreadsheet_id, selected, limit=50)}
     except PermissionError as exc:
-        return HTMLResponse(f"<h2>{html.escape(str(exc))}</h2><a href='/'>Volver</a>", status_code=401)
+        return JSONResponse(status_code=401, content={"error": public_error(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": public_error(exc)})
     except Exception as exc:
-        return HTMLResponse(f"<h2>Error</h2><pre>{html.escape(str(exc))}</pre>", status_code=500)
+        return JSONResponse(status_code=500, content={"error": public_error(exc)})
 
 
 @fastapi_app.post("/inventory-count-bulk")

@@ -150,6 +150,7 @@ async def tools(request: Request):
                 content=payload.encode(), headers={"cookie": f"session_id={sid}", "content-type": "application/json"})
         return Response(result.content, status_code=result.status_code, headers={
             "content-type": result.headers.get("content-type", "application/json"), "cache-control": "no-store",
+            **({"location": result.headers["location"]} if "location" in result.headers else {}),
         })
     finally:
         STORE_CONTEXT.reset(scope_token)
@@ -197,6 +198,7 @@ async def direct_tool(request: Request, tool_path: str):
             text = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + badge, text, count=1)
             content = text.encode("utf-8")
         return Response(content, status_code=result.status_code, headers={"content-type": content_type,
-            "cache-control": "no-store", "x-suite-executor": "sync-service"})
+            "cache-control": "no-store", "x-suite-executor": "sync-service",
+            **({"location": result.headers["location"]} if "location" in result.headers else {})})
     finally:
         STORE_CONTEXT.reset(token)

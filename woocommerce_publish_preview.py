@@ -48,8 +48,8 @@ def inspect_out_of_stock_visibility(client: WooCommerceClient) -> dict[str, Any]
     return result
 
 
-def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: WooCommerceClient) -> dict[str, Any]:
-    wc_index, duplicate_skus = client.catalog_by_sku(include_variations=True)
+def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: WooCommerceClient, *, catalog=None) -> dict[str, Any]:
+    wc_index, duplicate_skus = catalog if catalog is not None else client.catalog_by_sku(include_variations=True)
     rows = []
     counts = {
         "total_inventory": len(inventory_rows),

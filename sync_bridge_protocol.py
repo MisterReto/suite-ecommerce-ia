@@ -8,7 +8,7 @@ import time
 STORE_CONTEXT = ContextVar("store_context", default={})
 TOOL_PATHS = {
     "/inventory-hub", "/inventory-manager", "/inventory-count",
-    "/inventory-movement", "/inventory-count-bulk",
+    "/inventory-movement", "/inventory-count-bulk", "/inventory-history", "/inventory-review",
     "/inventory-sync", "/wc-health", "/wc-preview", "/wp-media-health",
     "/woocommerce-image-preview", "/woocommerce-product-sync",
     "/woocommerce-publish-preview", "/product-sync-one", "/image-sync-one",

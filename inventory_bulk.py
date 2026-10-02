@@ -140,6 +140,7 @@ def register_initial_counts(
             "sku": product["sku"],
             "old_stock": old_stock,
             "new_stock": new_stock,
+            "unit_price": product.get("precio", 0),
             "delta": delta,
             "movement_id": movement_id,
         })

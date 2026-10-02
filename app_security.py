@@ -176,7 +176,7 @@ class SecurityMiddleware:
             input_receive = buffered
         else:
             input_receive = receive
-        heavy = path in {"/batch-step", "/product-sync-one", "/image-sync-one", "/inventory-count-bulk", "/inventory-movement", "/stock-preview-start", "/woocommerce-publish-preview"}
+        heavy = path in {"/batch-step", "/product-sync-one", "/image-sync-one", "/inventory-count-bulk", "/inventory-movement", "/inventory-review", "/stock-preview-start", "/woocommerce-publish-preview"}
         if heavy:
             with self.lock:
                 available = self.busy < 3
