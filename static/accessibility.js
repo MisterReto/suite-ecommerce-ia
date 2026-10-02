@@ -72,6 +72,7 @@
 
     const items = [
       { href: '/', icon: '＋', label: 'Nuevo producto', help: 'Capturar un producto con IA y guardarlo en Drive' },
+      { href: '/loyverse', icon: '🏪', label: 'Loyverse', help: 'Conectar punto de venta y revisar existencias por sucursal' },
       { href: '/inventory-hub', icon: '📦', label: 'Inventario', help: 'Catálogo, movimientos, conteo físico y revisión de WooCommerce en una sola página' },
       { href: '/woocommerce-batch-sync', icon: '🚚', label: 'Subida masiva', help: 'Crear o actualizar productos en paralelo con progreso recuperable' },
       { href: '/woocommerce-image-preview', icon: '🖼️', label: 'Imágenes', help: 'Revisar imágenes de Drive y WordPress' },
