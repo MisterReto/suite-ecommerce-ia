@@ -44,8 +44,10 @@ def _context(request: Request):
     session = _session(request)
     if not session:
         raise PermissionError("Primero inicia sesión con Google Drive en la Suite.")
-    spreadsheet_id, _ = integration_server._read_master_inventory(session)
+    drive = legacy_app._get_drive_service(session)
+    _, _, spreadsheet_id, _ = legacy_app._preparar_estructura(drive, session)
     sheets = legacy_app._get_sheets_service(session)
+    legacy_app._validar_inventario_preparado(sheets, spreadsheet_id)
     return session, spreadsheet_id, sheets
 
 
