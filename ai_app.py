@@ -105,12 +105,14 @@ _replace_once(old_save_tail, new_save_tail, "publicación individual después de
 old_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=2\">
 <script defer src=\"/suite-static/tutorial.js?v=2\"></script>
+<script defer src=\"/suite-static/generation-sounds.js?v=1\"></script>
 \"\"\""""
 new_head = """TUTORIAL_HEAD = \"\"\"
 <link rel=\"stylesheet\" href=\"/suite-static/tutorial.css?v=3\">
 <link rel=\"stylesheet\" href=\"/suite-static/ui.css?v=5\">
 <script defer src=\"/suite-static/tutorial.js?v=6\"></script>
 <script defer src=\"/suite-static/accessibility.js?v=9\"></script>
+<script defer src=\"/suite-static/generation-sounds.js?v=1\"></script>
 \"\"\""""
 _replace_once(old_head, new_head, "assets de interfaz accesible")
 
@@ -396,3 +398,4 @@ legacy._aplicar_formato_filas = _no_legacy_format
 legacy._AUTO_SYNC_AFTER_SAVE = None  # La publicación explícita se delega al servicio de sincronización.
 
 fastapi_app = legacy.fastapi_app
+
