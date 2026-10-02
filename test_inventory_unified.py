@@ -47,7 +47,7 @@ class InventoryPage(unittest.TestCase):
              patch('publication_web.WooCommerceClient',return_value=client):
             response=publication_web.inventory_review(Mock())
         self.assertTrue(response['ok'])
-        client.catalog_by_sku.assert_called_once_with(include_variations=True)
+        client.catalog_by_sku.assert_called_once_with(include_variations=True,force_refresh=True)
         self.assertEqual(set(call[0] for call in client.method_calls),{'catalog_by_sku','get_setting'})
         self.assertTrue(response['visibility']['known'])
         self.assertIsNone(response['rows'][0]['inventory_stock'])
@@ -100,3 +100,4 @@ class LegacyLinks(unittest.IsolatedAsyncioTestCase):
 
 if __name__=='__main__':
     unittest.main()
+

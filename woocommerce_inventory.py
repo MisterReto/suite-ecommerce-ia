@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from inventory_schema import normalize_product_row, is_variable_parent
+from woocommerce_stock import stock_reading
 
 
 @dataclass(frozen=True)
@@ -79,13 +80,9 @@ def compare_product(inventory_row: Mapping[str, Any], wc_product: Mapping[str, A
             notes=("No existe un producto/variación con este SKU en WooCommerce.",),
         )
 
-    wc_stock = wc_product.get("stock_quantity")
-    try:
-        wc_stock = int(wc_stock) if wc_stock is not None else None
-    except (TypeError, ValueError):
-        wc_stock = None
-
-    manages_stock = _manages_stock(wc_product.get("manage_stock"))
+    reading = stock_reading(wc_product)
+    wc_stock = reading["quantity"]
+    manages_stock = reading["managed"]
     stock_status = str(wc_product.get("stock_status") or "").strip() or None
     wc_price = _money(wc_product.get("regular_price") or wc_product.get("price"))
     name_matches = _normalize_name(wc_product.get("name")) == _normalize_name(inv["nombre_producto"])
@@ -105,7 +102,10 @@ def compare_product(inventory_row: Mapping[str, Any], wc_product: Mapping[str, A
 
     # stock_quantity=None NO es una diferencia numérica si WooCommerce no está
     # administrando stock para ese producto/variación. Se reporta por separado.
-    if manages_stock:
+    if reading["inherited"]:
+        changes.append("stock_inherited")
+        notes.append("Existencias compartidas del padre; esta cantidad no es exclusiva de la variación.")
+    elif manages_stock:
         if wc_stock != inv["Existencias"]:
             changes.append("stock")
     else:
@@ -123,6 +123,8 @@ def compare_product(inventory_row: Mapping[str, Any], wc_product: Mapping[str, A
     inventory_changes = {"stock", "price"}.intersection(changes)
     if inventory_changes:
         status = "inventory_mismatch"
+    elif "stock_inherited" in changes:
+        status = "stock_inherited"
     elif "stock_unmanaged" in changes:
         status = "stock_unmanaged"
     elif "name" in changes:
@@ -146,3 +148,4 @@ def compare_product(inventory_row: Mapping[str, Any], wc_product: Mapping[str, A
         changes=tuple(changes),
         notes=tuple(notes),
     )
+

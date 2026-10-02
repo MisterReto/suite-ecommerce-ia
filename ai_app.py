@@ -13,6 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import types
+import threading
+
+from catalog_capture import records_from_values, prepare_capture_updates
 
 import pandas as pd
 
@@ -233,18 +236,12 @@ def _canonical_row(record):
 def _read_master(sheets_service, spreadsheet_id):
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{MASTER_SHEET}'!A:N",
+        range=f"'{MASTER_SHEET}'",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute()
-    values = result.get("values", [])
-    rows = []
-    for raw in values[1:]:
-        row = list(raw[: len(MASTER_COLUMNS)])
-        row.extend([""] * (len(MASTER_COLUMNS) - len(row)))
-        rows.append(row)
-    df = pd.DataFrame(rows, columns=list(MASTER_COLUMNS))
-
-    # Alias solo en memoria para dropdowns/detección heredados.
+    rows = records_from_values(result.get("values", []))
+    columns = list(MASTER_COLUMNS) + ["atributo_nombre", "atributo_valor", "codigo_barras"]
+    df = pd.DataFrame([{key: row.get(key, "") for key in columns} for row in rows], columns=columns)
     if not df.empty:
         paths = df["categorias"].apply(split_category_path)
         df["categoria"] = paths.apply(lambda x: x[0])
@@ -257,125 +254,36 @@ def _read_master(sheets_service, spreadsheet_id):
     return df
 
 
+_CAPTURE_LOCKS = {}
+_CAPTURE_LOCKS_GUARD = threading.Lock()
+
 
 def _append_master_row(session, spreadsheet_id, record):
-    """Añade una fila A:T y mantiene la relación padre/atributo de WooCommerce."""
-    sheets = legacy._get_sheets_service(session)
-    response = sheets.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{MASTER_SHEET}'!A:T",
-        valueRenderOption="UNFORMATTED_VALUE",
-    ).execute()
-    values = response.get("values", [])
-    if not values:
-        values = [list(MASTER_COLUMNS) + ["", "", "", "", "atributo_nombre", "atributo_valor"]]
-
-    grid = []
-    for row_number, raw in enumerate(values[1:], start=2):
-        row = list(raw[:20])
-        row.extend([""] * (20 - len(row)))
-        if any(str(value or "").strip() for value in row[:14]):
-            grid.append((row_number, row))
-
-    canonical = _canonical_row(record)
-    sku = str(canonical[2] or "").strip()
-    requested_kind = str(_clean(record.get("tipo", "")) or "").strip().casefold()
-    requested_parent = str(_clean(record.get("sku_padre", "")) or "").strip()
-
-    if not sku:
-        raise ValueError("El SKU es obligatorio.")
-    if any(str(row[2] or "").strip() == sku for _, row in grid):
-        raise ValueError(f"El SKU {sku} ya existe en Lista completa.")
-    if requested_kind == "variable" and (
-        not requested_parent or requested_parent.casefold() == "no detectado"
-    ):
-        raise ValueError(
-            "Una variación necesita el SKU de un padre existente de tipo variable."
-        )
-
-    updates = []
-    attribute_name = ""
-    attribute_value = ""
-    if canonical[1] == "variation":
-        parent_matches = [
-            (row_number, row)
-            for row_number, row in grid
-            if str(row[2] or "").strip() == canonical[0]
-        ]
-        if len(parent_matches) != 1:
-            raise ValueError(
-                f"No encontré un único producto padre con SKU {canonical[0]} en Lista completa."
-            )
-        parent_row_number, parent_row = parent_matches[0]
-        if str(parent_row[1] or "").strip().casefold() != "variable":
-            raise ValueError(
-                f"El SKU {canonical[0]} existe, pero no está marcado como producto variable."
-            )
-
-        attribute_name = str(_clean(record.get("atributo_nombre", "")) or "Tamaño").strip()
-        attribute_value = str(
-            _clean(record.get("atributo_valor", ""))
-            or _clean(record.get("variante", ""))
-            or ""
-        ).strip()
-        if not attribute_value:
-            raise ValueError(
-                "Captura el valor de la variación (por ejemplo: 360ml, Fresa o 5 piezas)."
-            )
-
-        parent_attribute = str(parent_row[18] or "").strip()
-        if parent_attribute and parent_attribute.casefold() != attribute_name.casefold():
-            raise ValueError(
-                f"El padre {canonical[0]} usa el atributo {parent_attribute}; "
-                f"seleccionaste {attribute_name}."
-            )
-        if parent_attribute:
-            attribute_name = parent_attribute
-
-        options = []
-        for value in str(parent_row[19] or "").split(","):
-            value = value.strip()
-            if value and value.casefold() not in {item.casefold() for item in options}:
-                options.append(value)
-        for _, child in grid:
-            if (
-                str(child[0] or "").strip() == canonical[0]
-                and str(child[1] or "").strip().casefold() == "variation"
-                and str(child[18] or "").strip().casefold() == attribute_name.casefold()
-            ):
-                value = str(child[19] or "").strip()
-                if value and value.casefold() not in {item.casefold() for item in options}:
-                    options.append(value)
-        if attribute_value.casefold() not in {item.casefold() for item in options}:
-            options.append(attribute_value)
-
-        updates.append({
-            "range": f"'{MASTER_SHEET}'!S{parent_row_number}:T{parent_row_number}",
-            "majorDimension": "ROWS",
-            "values": [[attribute_name, ", ".join(options)]],
-        })
-
-    next_row = max((row_number for row_number, _ in grid), default=1) + 1
-    physical_row = canonical + ["", "", "", "", attribute_name, attribute_value]
-    updates.insert(0, {
-        "range": f"'{MASTER_SHEET}'!A{next_row}:T{next_row}",
-        "majorDimension": "ROWS",
-        "values": [physical_row],
-    })
-
-    headers = list(values[0][:20])
-    headers.extend([""] * (20 - len(headers)))
-    if headers[18:20] != ["atributo_nombre", "atributo_valor"]:
-        updates.append({
-            "range": f"'{MASTER_SHEET}'!S1:T1",
-            "majorDimension": "ROWS",
-            "values": [["atributo_nombre", "atributo_valor"]],
-        })
-
-    sheets.spreadsheets().values().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"valueInputOption": "RAW", "data": updates},
-    ).execute()
+    """Read fresh, reject duplicates, then write the parent and child atomically."""
+    with _CAPTURE_LOCKS_GUARD:
+        lock = _CAPTURE_LOCKS.setdefault(spreadsheet_id, threading.RLock())
+    with lock:
+        sheets = legacy._get_sheets_service(session)
+        response = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{MASTER_SHEET}'",
+            valueRenderOption="UNFORMATTED_VALUE",
+        ).execute()
+        updates = prepare_capture_updates(response.get("values", []), record)
+        metadata = sheets.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title,gridProperties(columnCount)))",
+        ).execute()
+        for sheet in metadata.get("sheets", []):
+            props = sheet.get("properties", {})
+            if props.get("title") == MASTER_SHEET and props.get("gridProperties", {}).get("columnCount", 21) < 21:
+                sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": [{
+                    "updateSheetProperties": {"properties": {"sheetId": props["sheetId"], "gridProperties": {"columnCount": 21}},
+                                              "fields": "gridProperties.columnCount"}}]}).execute()
+        sheets.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"valueInputOption": "RAW", "data": updates},
+        ).execute()
     return spreadsheet_id
 
 

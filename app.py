@@ -36,6 +36,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBa
 from google import genai
 from gemini_gateway import GeminiClient, text_config
 from product_generation import DESCRIPTION_RULES, clean_description, branded_image
+from product_capture import ProductCapture, NEW_PARENT, EXISTING_PARENT
 from pathlib import Path
 from oauth_guard import issue_oauth, consume_oauth, email_allowed
 from google.genai import types
@@ -2231,7 +2232,10 @@ TUTORIAL_HEAD = """
 <script defer src="/suite-static/generation-sounds.js?v=1"></script>
 """
 
+captura = ProductCapture(globals())
+
 with gr.Blocks(title="Suite e-commerce") as demo:
+    memoria_portada_padre = gr.State(None)
     memoria_ruta_base = gr.State(None)
     # Historial de correcciones por cada slot de imagen
     hist_1 = gr.State([])
@@ -2313,6 +2317,15 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                         variant="primary",
                         elem_id="tour-analyze",
                     )
+                    with gr.Accordion("Código de barras (opcional)", open=False):
+                        in_codigo_barras = gr.Textbox(label="EAN / UPC / GTIN", placeholder="Escanéalo con tu lector o escríbelo; conserva los ceros iniciales")
+                        foto_codigo = gr.Image(label="Foto del código", type="filepath", sources=["upload", "webcam", "clipboard"], format="jpeg",
+                            **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}})} if hasattr(gr, "WebcamOptions") else {}))
+                        btn_leer_codigo = gr.Button("📷 Leer código de la foto", size="sm")
+                        estado_codigo = gr.Textbox(label="Lectura del código", interactive=False, lines=2)
+                    btn_verificar_producto = gr.Button("🔎 Verificar producto en mi inventario")
+                    estado_coincidencia = gr.Textbox(label="Coincidencias y variaciones", interactive=False, lines=3)
+
 
                 with gr.Column(scale=1):
                     gr.Markdown("### 2. Clasificación, Textos y Precio")
@@ -2336,6 +2349,14 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                             value="Simple",
                             elem_id="tour-product-type",
                         )
+                        with gr.Group(visible=False) as grupo_padre:
+                            modo_padre = gr.Radio([EXISTING_PARENT, NEW_PARENT], value=EXISTING_PARENT, label="Producto padre")
+                            padres_existentes = gr.Dropdown(choices=[], value=None, label="Padres existentes (busca por nombre, marca o SKU)", interactive=True)
+                            nombre_padre = gr.Textbox(label="Nombre de la familia / producto padre", placeholder="Ej. Soju 7 Drops (sin fijar un único sabor o tamaño)")
+                            btn_refrescar_padres = gr.Button("🔄 Actualizar padres del inventario", size="sm")
+                            portada_padre = gr.Image(label="Portada del producto padre", interactive=False)
+                            estado_portada = gr.Textbox(label="Portada de la familia", interactive=False, lines=2)
+                            btn_portada = gr.Button("🖼️ Actualizar portada con fotos reales", size="sm")
                         in_sku_padre = gr.Textbox(
                             label="SKU del producto padre (obligatorio para variaciones)",
                             visible=False,
@@ -2477,9 +2498,18 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                       in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, in_etiquetas, memoria_ruta_base]
     sonidos.change(fn=None, inputs=[sonidos], outputs=None,
                    js="(enabled) => { window.suiteGenerationSound?.setEnabled(enabled); }", queue=False)
+    entradas_revision = [in_sku, in_nombre, in_marca, in_gramaje, in_codigo_barras,
+                         in_sku_padre, in_atributo_nombre, in_atributo_valor]
     btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos,
-                      js=_sonido_inicio("textos")).then(fn=None, inputs=None, outputs=None,
-                      js=_sonido_fin("textos"), queue=False)
+                      js=_sonido_inicio("textos")).then(captura.detect_from_product,
+                      inputs=[img1, img2, in_codigo_barras], outputs=[in_codigo_barras]).then(captura.check,
+                      inputs=entradas_revision, outputs=[estado_coincidencia]).then(
+                      fn=None, inputs=None, outputs=None, js=_sonido_fin("textos"), queue=False)
+    btn_leer_codigo.click(captura.scan, inputs=[foto_codigo, in_codigo_barras],
+                         outputs=[in_codigo_barras, estado_codigo]).then(captura.check,
+                         inputs=entradas_revision, outputs=[estado_coincidencia])
+    btn_verificar_producto.click(captura.check, inputs=entradas_revision, outputs=[estado_coincidencia])
+    in_codigo_barras.submit(captura.check, inputs=entradas_revision, outputs=[estado_coincidencia])
 
     btn_act_sku.click(recalcular_sku_ui, inputs=[in_nombre, in_marca, in_gramaje], outputs=[in_sku])
     btn_act_precio.click(recalcular_precio_ui, inputs=[in_nombre, in_marca, in_gramaje, in_cat], outputs=[in_precio])
@@ -2488,7 +2518,26 @@ with gr.Blocks(title="Suite e-commerce") as demo:
         inputs=[in_nombre, in_marca, in_cat, in_subcat, desc_input],
         outputs=[in_etiquetas]
     )
-    in_tipo.change(cambio_tipo_ui, inputs=[in_tipo, in_nombre, in_marca], outputs=[in_sku_padre])
+    entradas_padres = [in_tipo, modo_padre, in_nombre, in_marca, in_sku, padres_existentes]
+    salidas_padres = [padres_existentes, in_sku_padre, grupo_padre, nombre_padre, in_atributo_nombre, modo_padre]
+    entradas_portada = [in_tipo, modo_padre, in_sku_padre, nombre_padre, in_sku, memoria_ruta_base]
+    salidas_portada = [portada_padre, estado_portada, memoria_portada_padre]
+    js_inicio_portada = "(...args) => { if (args[0] === 'Variable') window.suiteGenerationSound?.start('portada'); return args; }"
+    for trigger in [in_tipo.change, modo_padre.input, btn_refrescar_padres.click]:
+        trigger(captura.load_parents, inputs=entradas_padres, outputs=salidas_padres).then(
+            captura.cover, inputs=entradas_portada, outputs=salidas_portada,
+            js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
+            captura.check, inputs=entradas_revision, outputs=[estado_coincidencia]).then(
+            fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
+    padres_existentes.input(captura.select_parent, inputs=[padres_existentes],
+                           outputs=[in_sku_padre, nombre_padre, in_atributo_nombre]).then(
+        captura.cover, inputs=entradas_portada, outputs=salidas_portada,
+        js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
+        captura.check, inputs=entradas_revision, outputs=[estado_coincidencia]).then(
+        fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
+    btn_portada.click(captura.regenerate_cover, inputs=entradas_portada, outputs=salidas_portada,
+                     js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
+                     fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
 
     # Primera pasada: resetea los 3 historiales de feedback
     btn_generar_fotos.click(
@@ -2528,10 +2577,11 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                              inputs=None, outputs=[hist_3, estado])
 
     btn_guardar.click(
-        guardar_producto_sheet,
+        captura.save,
         inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje,
                 in_atributo_nombre, in_atributo_valor, in_precio,
-                in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga],
+                in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga,
+                in_codigo_barras, modo_padre, nombre_padre, memoria_portada_padre],
         outputs=[estado]
     )
 

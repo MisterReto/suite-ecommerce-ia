@@ -9,6 +9,7 @@ import inventory_web
 from app_security import public_error
 from woocommerce_client import WooCommerceClient
 from woocommerce_inventory import compare_product
+from woocommerce_stock import stock_reading
 from inventory_schema import is_variable_parent
 from woocommerce_publish_preview import build_stock_publish_preview
 
@@ -27,7 +28,7 @@ def inventory_review(request: Request):
         _, inventory = inventory_web.integration_server._read_master_inventory(session)
         client = WooCommerceClient()
         # Download the catalog once for stock readiness and the comparison.
-        catalog = client.catalog_by_sku(include_variations=True)
+        catalog = client.catalog_by_sku(include_variations=True, force_refresh=True)
         stock = build_stock_publish_preview(inventory, client, catalog=catalog)
         stock_rows = {row['sku']: row for row in stock['rows']}
         rows, summary = [], {}
@@ -37,7 +38,9 @@ def inventory_review(request: Request):
                 comparison.update(inventory_stock=None, woocommerce_stock=None, inventory_price=None, woocommerce_price=None)
             if row['sku'] in catalog[1]:
                 comparison['status'] = 'duplicate'
-            comparison.update(name=row.get('nombre_producto', ''), stock_preview=stock_rows[row['sku']])
+            reading = stock_reading(catalog[0].get(row['sku']) or {})
+            comparison.update(name=row.get('nombre_producto', ''), stock_preview=stock_rows[row['sku']],
+                              stock_source=reading['source'], stock_parent_sku=reading['parent_sku'])
             summary[comparison['status']] = summary.get(comparison['status'], 0) + 1
             rows.append(comparison)
         return {'ok': True, 'rows': rows, 'summary': summary, 'visibility': stock['visibility'],
@@ -66,3 +69,4 @@ def retired_stock_preview(request: Request):
 _root_mounts = [r for r in fastapi_app.router.routes if isinstance(r, Mount) and getattr(r, 'path', None) in {'', '/'}]
 if _root_mounts:
     fastapi_app.router.routes[:] = [r for r in fastapi_app.router.routes if r not in _root_mounts] + _root_mounts
+

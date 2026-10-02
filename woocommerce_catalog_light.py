@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from woocommerce_client import WooCommerceClient, WooCommerceError
+from woocommerce_stock import attach_parent_stock
 
 _CACHE_LOCK = Lock()
 _CACHE: dict[str, tuple[float, dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]] = {}
@@ -61,6 +62,7 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
     index: dict[str, dict[str, Any]] = {}
     duplicates: dict[str, list[dict[str, Any]]] = {}
     variable_ids: list[int] = []
+    parents_by_id = {}
 
     def add(row: dict[str, Any], entity_type: str, parent_id: int | None = None):
         sku = str(row.get("sku") or "").strip()
@@ -76,6 +78,7 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
         add(product, "product")
         if product.get("type") == "variable" and product.get("id"):
             variable_ids.append(int(product["id"]))
+            parents_by_id[int(product["id"])] = product
 
     def fetch_variations(parent_id: int):
         local_client = WooCommerceClient(client.config)
@@ -94,6 +97,9 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
                         raise WooCommerceError(f"No pude leer variaciones: {exc}") from exc
                     for variation in variations:
                         add(variation, "variation", parent_id)
+                        sku = str(variation.get("sku") or "").strip()
+                        if sku and sku not in duplicates:
+                            index[sku] = attach_parent_stock(index[sku], parents_by_id[parent_id])
                 futures.clear()
 
     with _CACHE_LOCK:
@@ -105,3 +111,4 @@ def catalog_by_sku_light(client: WooCommerceClient, *, force: bool = False):
 def clear_catalog_cache() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
+

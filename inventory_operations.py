@@ -159,7 +159,7 @@ def ensure_movements_sheet(sheets_service, spreadsheet_id: str) -> int:
 def read_inventory(sheets_service, spreadsheet_id: str) -> list[dict[str, Any]]:
     response = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{MASTER_SHEET}'!A:N",
+        range=f"'{MASTER_SHEET}'",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute()
     values = response.get("values", [])
@@ -380,3 +380,4 @@ def register_movement(
         "new_stock": new_stock,
         "unit_price": product.get("precio", 0),
     }
+

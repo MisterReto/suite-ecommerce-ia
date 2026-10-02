@@ -124,7 +124,7 @@ def render_inventory(request: Request, q: str = "", sku: str = ""):
         body = f"""<!doctype html><html lang='es'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width,initial-scale=1'><title>Suite e-commerce · Inventario</title>
 <link rel='icon' href='/suite-static/rincon-logo.png'><link rel='stylesheet' href='/suite-static/inventory.css'>
-<script src='/suite-static/inventory.js' defer></script></head><body><main class='wrap'>
+<script src='/suite-static/inventory.js?v=2' defer></script></head><body><main class='wrap'>
 <header><img src='/suite-static/rincon-logo.png' alt='El Rincón de Asia'><h1>Inventario</h1><a class='btn secondary' href='/'>← Suite</a></header>
 <p>Sesión: <b>{html.escape(str(session.get("email", "")))}</b></p>
 <div class='grid'>
@@ -256,3 +256,4 @@ async def inventory_movement(request: Request):
 _root_mounts = [r for r in fastapi_app.router.routes if isinstance(r, Mount) and getattr(r, "path", None) in {"", "/"}]
 if _root_mounts:
     fastapi_app.router.routes[:] = [r for r in fastapi_app.router.routes if r not in _root_mounts] + _root_mounts
+

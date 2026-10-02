@@ -9,6 +9,7 @@ from typing import Any
 
 from woocommerce_client import WooCommerceClient
 from inventory_schema import is_variable_parent
+from woocommerce_stock import stock_reading
 
 
 def inspect_out_of_stock_visibility(client: WooCommerceClient) -> dict[str, Any]:
@@ -58,6 +59,7 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
         "missing": 0,
         "duplicate": 0,
         "blocked_variable_parent": 0,
+        "shared_parent_stock": 0,
     }
 
     duplicate_set = set(duplicate_skus.keys())
@@ -90,7 +92,12 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
             product_id = wc.get("id")
             parent_id = wc.get("_parent_product_id")
             wc_type = str(wc.get("type") or "").strip().casefold()
-            if entity_type == "variation":
+            if entity_type == "variation" and stock_reading(wc)["inherited"]:
+                status = "shared_parent_stock"
+                stock = None
+                reason = "Stock compartido con el padre. Configura stock individual antes de publicar cantidades por variación."
+                counts["shared_parent_stock"] += 1
+            elif entity_type == "variation":
                 status = "ready_variation"
                 reason = "Se puede publicar stock en esta variación."
                 counts["ready_variation"] += 1
@@ -121,3 +128,4 @@ def build_stock_publish_preview(inventory_rows: list[dict[str, Any]], client: Wo
         "duplicates": sorted(duplicate_set),
         "rows": rows,
     }
+
