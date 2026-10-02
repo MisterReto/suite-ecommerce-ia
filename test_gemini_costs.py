@@ -88,6 +88,8 @@ def test_production_extraction_combines_tags(monkeypatch):
     monkeypatch.setattr(app, "estimar_etiquetas_producto", MagicMock(side_effect=AssertionError("Extra paid call")))
     output = app.modulo_extraer_textos(np.zeros((32,32,3), dtype=np.uint8), None, "ramen", None)
     assert len(output) == 14 and output[12] == "ramen" and output[5] == 20
+    prompt = sdk.models.generate_content.call_args.kwargs["contents"][-1]
+    assert "2 o 3 párrafos" in prompt and "Sin títulos, viñetas" in prompt
     assert sdk.models.generate_content.call_count == pricing.call_count == 1
     assert "test_" not in output[13][0]
 
@@ -133,3 +135,42 @@ def test_visual_variants_uses_inline_image_and_grounded_search(monkeypatch):
     assert calls[0]["contents"][0].inline_data.mime_type == "image/jpeg"
     assert calls[0]["contents"][0].inline_data.data.startswith(b"\xff\xd8")
     assert calls[0]["config"].tools
+
+
+def test_watermark_uses_bundled_logo_without_drive(monkeypatch, tmp_path):
+    from PIL import Image
+    path = tmp_path / "product.jpg"
+    Image.new("RGB", (1024, 1024), "white").save(path)
+    app.estampar_logo(str(path), None, None)
+    with Image.open(path) as result:
+        assert result.format == "JPEG"
+        assert min(result.crop((256,256,768,768)).convert("L").getextrema()) < 250
+        assert min(result.crop((800,800,1000,1000)).convert("L").getextrema()) < 100
+    # A failed Drive logo download still uses the official bundled asset.
+    app.estampar_logo(str(path), None, "unavailable-logo")
+
+
+def test_generation_always_brands_after_qa(monkeypatch, tmp_path):
+    import io
+    from PIL import Image
+    candidate = Image.new("RGB", (1024, 1024), "red")
+    buffer = io.BytesIO()
+    candidate.save(buffer, format="PNG")
+    reference = str(tmp_path / "reference.png")
+    candidate.save(reference)
+    client = MagicMock()
+    monkeypatch.setattr(app, "GeminiClient", lambda **kwargs: client)
+    monkeypatch.setattr(app, "_extraer_imagen_bytes", lambda result: buffer.getvalue())
+    monkeypatch.setattr(app, "_imagen_para_ia", lambda path: "reference")
+    monkeypatch.setattr(app, "_validacion_local_imagen", lambda path: [])
+    monkeypatch.setattr(app, "_validar_con_vision", lambda *args: {"aprobada": True, "puntuacion": 99})
+    stamp = MagicMock()
+    monkeypatch.setattr(app, "estampar_logo", stamp)
+    path = str(tmp_path / "out.jpg")
+    result = app.generar_foto_individual("scene", reference, path, "key", None, None, slot="1_hd")
+    assert result["ruta"] == path
+    stamp.assert_called_once_with(path, None, None)
+    stamp.side_effect = OSError("missing logo")
+    result = app.generar_foto_individual("scene", reference, path, "key", None, None, slot="1_hd")
+    assert result["ruta"] is None and "marca de agua" in result["resumen"]
+    assert not os.path.exists(path)

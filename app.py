@@ -35,6 +35,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload, MediaIoBa
 
 from google import genai
 from gemini_gateway import GeminiClient, text_config
+from product_generation import DESCRIPTION_RULES, clean_description, branded_image
 from pathlib import Path
 from oauth_guard import issue_oauth, consume_oauth, email_allowed
 from google.genai import types
@@ -1227,19 +1228,22 @@ def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local
     return archivo['id']
 
 
-def _descargar_logo_temporal(service, logo_id):
-    if logo_id is None:
-        return None
-    peticion = service.files().get_media(fileId=logo_id)
-    buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(buffer, peticion)
-    listo = False
-    while not listo:
-        _, listo = downloader.next_chunk()
-    ruta_logo_temp = "/tmp/logo_temp.png"
-    with open(ruta_logo_temp, "wb") as f:
-        f.write(buffer.getvalue())
-    return ruta_logo_temp
+def _cargar_logo_marca(service, logo_id):
+    # Each request owns its buffer; no shared /tmp file between sessions.
+    if logo_id:
+        try:
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, service.files().get_media(fileId=logo_id))
+            listo = False
+            while not listo:
+                _, listo = downloader.next_chunk()
+            buffer.seek(0)
+            with Image.open(buffer) as logo:
+                return logo.convert("RGBA")
+        except Exception:
+            pass  # The bundled official logo also works when Drive is unavailable.
+    with Image.open(os.path.join(STATIC_DIR, "rincon-logo.png")) as logo:
+        return logo.convert("RGBA")
 
 
 # ==========================================
@@ -1273,31 +1277,10 @@ def comprimir_imagen(img_array, max_size=1024):
 
 
 def estampar_logo(ruta_imagen, service, logo_id):
-    try:
-        ruta_logo_temp = _descargar_logo_temporal(service, logo_id)
-        if not ruta_logo_temp:
-            return
-        img_base = Image.open(ruta_imagen).convert("RGBA")
-        logo_original = Image.open(ruta_logo_temp).convert("RGBA")
-
-        # Un solo sello discreto. La versión anterior también estampaba una marca
-        # de agua enorme en el centro y tapaba texto, ilustraciones y producto.
-        ancho_esquina = max(48, int(img_base.width * 0.10))
-        prop_esquina = ancho_esquina / float(logo_original.width)
-        alto_esquina = int((float(logo_original.height) * float(prop_esquina)))
-        logo_esquina = logo_original.resize((ancho_esquina, alto_esquina), Image.Resampling.LANCZOS)
-        alpha_esquina = logo_esquina.split()[3]
-        alpha_esquina = alpha_esquina.point(lambda p: p * 0.82)
-        logo_esquina.putalpha(alpha_esquina)
-        margen = max(16, int(img_base.width * 0.025))
-        pos_x_esquina = img_base.width - logo_esquina.width - margen
-        pos_y_esquina = img_base.height - logo_esquina.height - margen
-        img_base.paste(logo_esquina, (pos_x_esquina, pos_y_esquina), logo_esquina)
-
-        img_final = img_base.convert("RGB")
-        img_final.save(ruta_imagen, quality=95)
-    except Exception as e:
-        print(f"Error con el logo: {e}")
+    logo = _cargar_logo_marca(service, logo_id)
+    with Image.open(ruta_imagen) as image:
+        final = branded_image(image, logo)
+    final.save(ruta_imagen, format="JPEG", quality=95, optimize=True)
 
 
 # ==========================================
@@ -1705,8 +1688,12 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
                     os.remove(ruta_candidata)
                 except OSError:
                     pass
-                if logo_id:
+                try:
                     estampar_logo(ruta_salida_local, service, logo_id)
+                except Exception:
+                    Path(ruta_salida_local).unlink(missing_ok=True)
+                    return {"ruta": None, "intentos": intento,
+                            "resumen": "No se pudo aplicar la marca de agua. La imagen no se guardó."}
                 return {
                     "ruta": ruta_salida_local,
                     "puntuacion": ultimo_qa.get("puntuacion", 0),
@@ -1786,8 +1773,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         f"{lista_cats}. NO inventes ninguna.\n"
         f"5. 'subcategoria': Clasifícalo ESTRICTAMENTE usando SOLO una de las siguientes Subcategorías: "
         f"{lista_subcats}. NO inventes ninguna.\n"
-        f"6. 'desc_corta': Optimizado para SEO (Máximo 150 caracteres).\n"
-        f"7. 'desc_larga': máximo 180 palabras, viñetas; solo ingredientes/beneficios verificables en las fotos.\n"
+        f"6-7. Descripciones: {DESCRIPTION_RULES}\n"
         f"8. 'etiquetas': hasta 5 strings. Si hay vocabulario, elige exclusivamente de: {vocabulario_etiquetas}. "
         "Sin vocabulario, propone etiquetas reutilizables sin alegaciones dietéticas o de salud no verificadas."
     )
@@ -1822,7 +1808,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         "✅ Textos, precio y etiquetas sugeridas. Verifica SKU, Categorías, Precio y Etiquetas.",
         sku_gen, nombre, marca, gramaje, precio_sugerido, "Simple",
         gr.update(visible=False), cat_final, subcat_final,
-        datos.get("desc_corta", ""), datos.get("desc_larga", ""),
+        clean_description(datos.get("desc_corta", ""), short=True), clean_description(datos.get("desc_larga", "")),
         etiquetas_str,
         rutas_base_memoria
     ]
@@ -2231,9 +2217,18 @@ def limpiar_feedback():
 # ==========================================
 # 6. INTERFAZ GRÁFICA
 # ==========================================
+def _sonido_inicio(task):
+    return "(...args) => { window.suiteGenerationSound?.start(" + json.dumps(task) + "); return args; }"
+
+
+def _sonido_fin(task):
+    return "() => { window.suiteGenerationSound?.finish(" + json.dumps(task) + "); }"
+
+
 TUTORIAL_HEAD = """
 <link rel="stylesheet" href="/suite-static/tutorial.css?v=2">
 <script defer src="/suite-static/tutorial.js?v=2"></script>
+<script defer src="/suite-static/generation-sounds.js?v=1"></script>
 """
 
 with gr.Blocks(title="Suite e-commerce") as demo:
@@ -2297,6 +2292,7 @@ with gr.Blocks(title="Suite e-commerce") as demo:
         # ==================================
         with gr.Tab("1. Ingreso y Edición de Productos"):
             estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)
+            sonidos = gr.Checkbox(value=True, label="Sonidos al iniciar y finalizar la generación")
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -2367,8 +2363,8 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                         )
                         btn_act_etiquetas = gr.Button("🔄 Recalcular Etiquetas", size="sm")
 
-                    in_desc_corta = gr.Textbox(label="Desc. Corta (SEO - max 150 carácteres)", lines=2)
-                    in_desc_larga = gr.Textbox(label="Desc. Larga (SEO - Viñetas y Beneficios)", lines=5)
+                    in_desc_corta = gr.Textbox(label="Descripción corta (máximo 240 caracteres)", lines=2)
+                    in_desc_larga = gr.Textbox(label="Descripción larga (párrafos y usos confirmados)", lines=5)
 
                 with gr.Column(scale=2):
                     gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")
@@ -2479,7 +2475,11 @@ with gr.Blocks(title="Suite e-commerce") as demo:
     entradas_textos = [img1, img2, desc_input]
     salidas_textos = [estado, in_sku, in_nombre, in_marca, in_gramaje, in_precio, in_tipo,
                       in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, in_etiquetas, memoria_ruta_base]
-    btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos)
+    sonidos.change(fn=None, inputs=[sonidos], outputs=None,
+                   js="(enabled) => { window.suiteGenerationSound?.setEnabled(enabled); }", queue=False)
+    btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos,
+                      js=_sonido_inicio("textos")).then(fn=None, inputs=None, outputs=None,
+                      js=_sonido_fin("textos"), queue=False)
 
     btn_act_sku.click(recalcular_sku_ui, inputs=[in_nombre, in_marca, in_gramaje], outputs=[in_sku])
     btn_act_precio.click(recalcular_precio_ui, inputs=[in_nombre, in_marca, in_gramaje, in_cat], outputs=[in_precio])
@@ -2495,30 +2495,30 @@ with gr.Blocks(title="Suite e-commerce") as demo:
         modulo_generar_todo,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta],
         outputs=[estado, out_img1, out_img2, out_img3, hist_1, hist_2, hist_3],
-        concurrency_id="image_generation", concurrency_limit=1,
-    )
+        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagenes"),
+    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagenes"), queue=False)
 
     # Re-generaciones con retroalimentación
     btn_rehacer_1.click(
         rehacer_hd,
         inputs=[memoria_ruta_base, in_sku, err_1, fb_1, hist_1],
         outputs=[out_img1, hist_1, estado],
-        concurrency_id="image_generation", concurrency_limit=1,
-    ).then(limpiar_feedback, inputs=None, outputs=[err_1, fb_1])
+        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_1"),
+    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_1"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_1, fb_1])
 
     btn_rehacer_2.click(
         rehacer_life,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_2, fb_2, hist_2],
         outputs=[out_img2, hist_2, estado],
-        concurrency_id="image_generation", concurrency_limit=1,
-    ).then(limpiar_feedback, inputs=None, outputs=[err_2, fb_2])
+        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_2"),
+    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_2"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_2, fb_2])
 
     btn_rehacer_3.click(
         rehacer_comercial,
         inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_3, fb_3, hist_3],
         outputs=[out_img3, hist_3, estado],
-        concurrency_id="image_generation", concurrency_limit=1,
-    ).then(limpiar_feedback, inputs=None, outputs=[err_3, fb_3])
+        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_3"),
+    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_3"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_3, fb_3])
 
     btn_limpiar_hist_1.click(lambda: ([], "🧹 Historial de correcciones (Fondo Blanco) reiniciado."),
                              inputs=None, outputs=[hist_1, estado])

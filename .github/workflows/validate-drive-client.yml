@@ -21,7 +21,7 @@ jobs:
           cache: pip
       - name: Instalar dependencias
         run: |
-          pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit
+          pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest
           pip install -r requirements.txt
       - name: Revisar dependencias vulnerables
         run: pip-audit --progress-spinner off
@@ -29,9 +29,10 @@ jobs:
         run: python -m compileall -q .
       - name: Verificar aislamiento y delegación entre servicios
         run: |
-          python -m unittest test_store_connection test_stability test_sync_changes -q
+          python -m unittest test_store_connection test_stability test_sync_changes test_generation_content -q
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
+          python -m pytest test_gemini_costs.py -q
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com
@@ -50,3 +51,4 @@ jobs:
           assert app.MODELO_IMAGEN == "gemini-3.1-flash-image"
           print("Arranque canónico correcto.")
           PY
+
