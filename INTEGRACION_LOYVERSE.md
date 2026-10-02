@@ -1,7 +1,7 @@
 # Loyverse: conexión y sincronización de existencias
 
 Abre `/loyverse` desde el servicio principal. Conecta Google Drive y pega un token
-personal de Loyverse con STORES_READ, ITEMS_READ, INVENTORY_READ e INVENTORY_WRITE.
+personal de Loyverse con STORES_READ, ITEMS_READ, INVENTORY_READ INVENTORY_WRITE e ITEMS_WRITE para crear artículos.
 El token permanece en la sesión del servidor; no se guarda en Drive, Git ni el navegador.
 Desconectar o expirar/reiniciar la sesión elimina la conexión.
 
@@ -11,9 +11,16 @@ Desconectar o expirar/reiniciar la sesión elimina la conexión.
 4. Selecciona hasta 20 SKU, confirma las cantidades de Drive y envía.
 5. Vuelve a comparar para verificar. Un resultado incierto nunca se reintenta automáticamente.
 
-Esta entrega sincroniza existencias de productos y variaciones que YA existen en
-Loyverse. Identifica productos faltantes y conflictos, pero no crea artículos,
-no cambia precios, no sube portadas y no importa ventas automáticamente.
+Permite crear productos simples faltantes y familias nuevas completas con variantes.
+La revisión muestra nombre (hasta 64 caracteres), precios y atributos antes de crear.
+Cada variante conserva SKU y código como texto. Un nombre o referencia ya existente,
+SKU/código ambiguo, padre ausente, atributo repetido o dato inválido bloquea la creación.
+Las familias parcialmente existentes requieren revisión manual; no se alteran sus hijos.
+
+Los artículos nuevos se crean con stock 0 y se habilitan en la sucursal seleccionada.
+Después se compara otra vez para enviar las existencias con la revisión de stock.
+No configura impuestos ni sube portadas: revisar esos datos en Loyverse antes de vender.
+No cambia precios existentes ni importa ventas automáticamente.
 No es sincronización bidireccional ni en tiempo real. Los padres no tienen stock propio.
 
 Las revisiones vencen en cinco minutos y solo pueden usarse una vez. Se releen

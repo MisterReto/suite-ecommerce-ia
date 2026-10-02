@@ -61,3 +61,8 @@ class LoyverseClient:
     def set_stock(self, variant, store, value):
         return self.request('POST', '/inventory', json={'inventory_levels': [
             {'variant_id': variant, 'store_id': store, 'stock_after': value}]})
+
+    def create_item(self, payload):
+        if 'id' in payload or any('variant_id' in v for v in payload.get('variants', [])):
+            raise ValueError('Esta operación solo permite crear productos nuevos.')
+        return self.request('POST', '/items', json=payload)

@@ -10,7 +10,7 @@ import app as runtime
 from inventory_web import _context
 from inventory_schema import MASTER_SHEET
 from loyverse_client import LoyverseClient, LoyverseError
-from loyverse_sync import plan_stock
+from loyverse_sync import plan_catalog
 
 LOCK = RLock()
 
@@ -38,8 +38,10 @@ def compare(request, value, store):
         raise ValueError('Revisa las columnas SKU y Existencias del inventario.')
     rows = [dict(zip(headers, list(row) + [''] * max(0, len(headers)-len(row))))
             for row in values[1:] if any(str(v).strip() for v in row)]
-    items, levels = client(value).snapshot(store)
-    return plan_stock(rows, items, levels, store)
+    api = client(value)
+    items, levels = api.snapshot(store)
+    stores = api.list('stores')
+    return plan_catalog(rows, items, levels, store, stores)
 
 
 def _operate(request, action, data):
@@ -78,25 +80,46 @@ def _operate(request, action, data):
                 raise ValueError('El inventario cambió o la selección no es válida. Vuelve a comparar.')
         completed = []
         api = client(value)
+        created = []
         for sku in selected:
             row = planned[sku]
+            if row.get('action') == 'create':
+                # Catalog may have changed since the first comparison. Never retry POST.
+                try:
+                    fresh = {p['sku']: p for p in compare(request, value, preview['store'])}
+                    if fresh.get(sku) != row:
+                        return {'completed': completed, 'created': created, 'uncertain': None,
+                                'error': 'El catálogo cambió. Vuelve a comparar antes de crear.'}
+                    response = api.create_item(row['payload'])
+                    expected = {v['sku'] for v in row['payload']['variants']}
+                    actual = {v.get('sku') for v in response.get('variants', []) if v.get('variant_id')}
+                    if not response.get('id') or expected != actual:
+                        raise LoyverseError('No se confirmó la creación completa.')
+                except LoyverseError as exc:
+                    return {'completed': completed, 'created': created, 'uncertain': sku,
+                            'error': str(exc) + ' Revisa Loyverse y vuelve a comparar antes de reintentar.'}
+                except Exception:
+                    return {'completed': completed, 'created': created, 'uncertain': sku,
+                            'error': 'No se confirmó la creación. Revisa Loyverse y vuelve a comparar.'}
+                created.append(sku)
+                continue
             # A fresh stock read per write narrows the POS-sale race window.
             try:
                 levels = api.list('inventory', store_ids=preview['store'], variant_ids=row['variant_id'])
             except LoyverseError:
-                return {'completed': completed, 'uncertain': None, 'error': 'No se pudo consultar el siguiente SKU. Vuelve a comparar.'}
+                return {'completed': completed, 'created': created, 'uncertain': None, 'error': 'No se pudo consultar el siguiente SKU. Vuelve a comparar.'}
             found = [v for v in levels if v['variant_id'] == row['variant_id'] and v['store_id'] == preview['store']]
             if len(found) != 1 or found[0].get('in_stock') != row['loyverse'] or found[0].get('updated_at') != row['updated_at']:
-                return {'completed': completed, 'error': 'El stock cambió durante la operación. Vuelve a comparar.', 'uncertain': None}
+                return {'completed': completed, 'created': created, 'error': 'El stock cambió durante la operación. Vuelve a comparar.', 'uncertain': None}
             try:
                 result = api.set_stock(row['variant_id'], preview['store'], row['drive'])
                 confirmed = [v for v in result.get('inventory_levels', []) if v.get('variant_id') == row['variant_id'] and v.get('store_id') == preview['store'] and v.get('in_stock') == row['drive']]
                 if len(confirmed) != 1:
                     raise LoyverseError('La respuesta no confirmó el stock.')
             except LoyverseError:
-                return {'completed': completed, 'uncertain': sku, 'error': 'No se confirmó este SKU. Revisa Loyverse y vuelve a comparar antes de reintentar.'}
+                return {'completed': completed, 'created': created, 'uncertain': sku, 'error': 'No se confirmó este SKU. Revisa Loyverse y vuelve a comparar antes de reintentar.'}
             completed.append(sku)
-        return {'completed': completed, 'uncertain': None}
+        return {'completed': completed, 'created': created, 'uncertain': None}
     finally:
         LOCK.release()
 
