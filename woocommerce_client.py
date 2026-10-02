@@ -15,6 +15,7 @@ from urllib3.util.retry import Retry
 from app_security import validate_service_url
 from store_connection import require_store_connection
 from sync_bridge_protocol import setting
+from woocommerce_stock import attach_parent_stock
 
 
 class WooCommerceError(RuntimeError):
@@ -223,6 +224,7 @@ class WooCommerceClient:
         index: dict[str, dict[str, Any]] = {}
         duplicates: dict[str, list[dict[str, Any]]] = {}
         variable_ids: list[int] = []
+        parents_by_id = {}
 
         def add(row: dict[str, Any], entity_type: str, parent_id: int | None = None):
             sku = str(row.get("sku", "") or "").strip()
@@ -238,6 +240,7 @@ class WooCommerceClient:
             add(product, "product")
             if include_variations and product.get("type") == "variable" and product.get("id"):
                 variable_ids.append(int(product["id"]))
+                parents_by_id[int(product["id"])] = product
 
         if variable_ids:
             workers = min(self.config.metadata_workers, len(variable_ids))
@@ -255,7 +258,12 @@ class WooCommerceClient:
                         except Exception as exc:
                             raise WooCommerceError(f"No pude leer variaciones del producto {parent_id}: {exc}") from exc
                         for variation in variations:
+                            item = self._slim(variation, "variation", parent_id)
                             add(variation, "variation", parent_id=parent_id)
+                            enriched = attach_parent_stock(item, parents_by_id[parent_id])
+                            sku = str(variation.get("sku") or "").strip()
+                            if sku and sku not in duplicates:
+                                index[sku] = enriched
                     futures.clear()
 
         if self.config.cache_ttl > 0:
@@ -287,7 +295,7 @@ class WooCommerceClient:
                 if len(matches) > 1:
                     raise WooCommerceError(f"SKU duplicado en WooCommerce: {sku}")
                 if matches:
-                    return self._slim(matches[0], "variation", int(parent["id"]))
+                    return attach_parent_stock(self._slim(matches[0], "variation", int(parent["id"])), parent)
         index, duplicates = self.catalog_by_sku(include_variations=True)
         if sku in duplicates:
             raise WooCommerceError(f"SKU duplicado en WooCommerce: {sku}")
@@ -308,3 +316,4 @@ class WooCommerceClient:
 
     def update_variation(self, parent_product_id: int, variation_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request("PUT", f"products/{int(parent_product_id)}/variations/{int(variation_id)}", payload=payload)
+

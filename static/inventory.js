@@ -1,7 +1,14 @@
 (() => {
   'use strict';
   const el = id => document.getElementById(id);
-  const labels = {in_sync:'En sincronía',inventory_mismatch:'Stock/precio distinto',stock_unmanaged:'Stock no administrado',content_difference:'Nombre distinto',missing_in_woocommerce:'Falta en tienda',variable_parent:'Portada sin stock propio',duplicate:'SKU duplicado'};
+  const labels = {in_sync:'En sincronía',inventory_mismatch:'Stock/precio distinto',stock_unmanaged:'Sin conteo en tienda',stock_inherited:'Stock compartido con padre',content_difference:'Nombre distinto',missing_in_woocommerce:'Falta en tienda',variable_parent:'Portada sin stock propio',duplicate:'SKU duplicado'};
+  function storeStock(row) {
+    if (row.status === 'variable_parent') return '—';
+    if (row.stock_source === 'parent') return row.woocommerce_stock == null ? 'Compartido · cantidad no informada' : row.woocommerce_stock + ' · compartido con ' + (row.stock_parent_sku || 'padre');
+    if (row.woocommerce_stock != null) return row.woocommerce_stock;
+    const availability = {instock:'Disponible',outofstock:'Agotado',onbackorder:'Bajo pedido'};
+    return (availability[row.stock_status] || 'No informado') + ' · sin conteo';
+  }
   const money = value => value == null ? '—' : '$' + Number(value).toLocaleString('es-MX', {minimumFractionDigits:2,maximumFractionDigits:2});
   function notice(text, error=false) { el('msg').textContent=text; el('msg').classList.toggle('error',error); }
   async function jsonRequest(path, body) {
@@ -100,8 +107,9 @@
         const label=document.createElement('span');label.textContent=labels[status]||status;
         card.append(number,label);el('review-summary').appendChild(card);
       });
-      renderRows(el('review-rows'),data.rows.map(row=>[row.sku,row.name,labels[row.status]||row.status,row.inventory_stock,row.woocommerce_stock,money(row.inventory_price),money(row.woocommerce_price),row.stock_preview.reason]));
+      renderRows(el('review-rows'),data.rows.map(row=>[row.sku,row.name,labels[row.status]||row.status,row.inventory_stock,storeStock(row),money(row.inventory_price),money(row.woocommerce_price),row.stock_preview.reason]));
       el('review-table').hidden=false;
     } catch(error) {el('review-status').textContent=error.message;throw error;}
   }));
 })();
+

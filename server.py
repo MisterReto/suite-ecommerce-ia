@@ -39,7 +39,7 @@ def _read_master_inventory(session) -> tuple[str, list[dict[str, Any]]]:
     legacy_app._validar_inventario_preparado(sheets, spreadsheet_id)
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"'{MASTER_SHEET}'!A:T",
+        range=f"'{MASTER_SHEET}'",
         valueRenderOption="UNFORMATTED_VALUE",
     ).execute()
     values = result.get("values", [])
@@ -198,3 +198,4 @@ def inventory_sync_dashboard(request: Request):
 _root_gradio_mounts = [route for route in fastapi_app.router.routes if isinstance(route, Mount) and getattr(route, "path", None) in {"", "/"}]
 if _root_gradio_mounts:
     fastapi_app.router.routes[:] = [route for route in fastapi_app.router.routes if route not in _root_gradio_mounts] + _root_gradio_mounts
+

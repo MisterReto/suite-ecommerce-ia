@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade "pip>=26.2" "setuptools>=83" && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py gemini_gateway.py oauth_guard.py product_generation.py .
+COPY app.py gemini_gateway.py oauth_guard.py product_generation.py catalog_capture.py product_capture.py .
 COPY ai_app.py .
 COPY product_web_ai.py .
 COPY single_product_auto.py .
@@ -18,7 +18,7 @@ COPY inventory_schema.py .
 COPY inventory_operations.py .
 COPY inventory_bulk.py .
 COPY inventory_web.py .
-COPY woocommerce_client.py .
+COPY woocommerce_client.py woocommerce_stock.py .
 COPY woocommerce_inventory.py .
 COPY woocommerce_publish_preview.py .
 COPY publication_web.py .
