@@ -8,6 +8,11 @@ else:
     from product_web_ai import fastapi_app
 
 
+if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
+    import loyverse_web
+    loyverse_web.register(fastapi_app)
+
+
 @fastapi_app.get("/service-health")
 def service_health():
     return {"ok": True, "role": os.getenv("SUITE_SERVICE_ROLE", "main"),
