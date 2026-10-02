@@ -1445,11 +1445,11 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
     api_key = sesion["gemini_key"]
     try:
         img_pil = comprimir_imagen(imagen).convert("RGB")
-        ruta_temp = "/tmp/temp_lens.jpg"
-        img_pil.save(ruta_temp, format="JPEG", quality=85)
+        buffer_imagen = io.BytesIO()
+        img_pil.save(buffer_imagen, format="JPEG", quality=85)
 
         client = GeminiClient(api_key=api_key)
-        archivo_ref = client.files.upload(file=ruta_temp)
+        archivo_ref = types.Part.from_bytes(data=buffer_imagen.getvalue(), mime_type="image/jpeg")
 
         contexto = ""
         if nombre_actual:
@@ -2563,4 +2563,3 @@ fastapi_app = gr.mount_gradio_app(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(fastapi_app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
-

@@ -106,3 +106,30 @@ def test_oauth_one_use_and_pkce(monkeypatch):
     monkeypatch.setenv("APP_ALLOWED_EMAILS", "allowed@example.com")
     assert oauth_guard.email_allowed("allowed@example.com")
     assert not oauth_guard.email_allowed("stranger@example.com")
+
+
+def test_visual_variants_uses_inline_image_and_grounded_search(monkeypatch):
+    import numpy as np
+    session = {"gemini_key": "key"}
+    monkeypatch.setattr(app, "_validar_sesion", lambda request: (session, None))
+    result = response({"producto_identificado": "Pocky", "marca_identificada": "Glico",
+                       "tiene_variantes": True,
+                       "variantes": [{"gramaje": "40G", "fuente": "https://example.com", "precio_aprox": 30}],
+                       "justificacion": "Otra presentación"})
+    calls = []
+
+    def generate_content(**kwargs):
+        calls.append(kwargs)
+        return result
+
+    # No Files API: reproduces the actual gateway interface instead of accepting arbitrary attributes.
+    client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    monkeypatch.setattr(app, "GeminiClient", lambda **kwargs: client)
+    recommendation, report, kind = app.buscar_variantes_por_imagen(
+        np.zeros((32, 32, 3), dtype=np.uint8), "Pocky", "Glico", None)
+    assert kind == "Variable"
+    assert "✅" in recommendation and "40G" in report
+    assert len(calls) == 1
+    assert calls[0]["contents"][0].inline_data.mime_type == "image/jpeg"
+    assert calls[0]["contents"][0].inline_data.data.startswith(b"\xff\xd8")
+    assert calls[0]["config"].tools
