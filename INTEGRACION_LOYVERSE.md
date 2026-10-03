@@ -1,7 +1,7 @@
 # Loyverse: conexión y sincronización de existencias
 
 Abre `/loyverse` desde el servicio principal. Conecta Google Drive y pega un token
-personal de Loyverse con STORES_READ, ITEMS_READ, INVENTORY_READ INVENTORY_WRITE e ITEMS_WRITE para crear artículos.
+personal de Loyverse con STORES_READ, ITEMS_READ, INVENTORY_READ, INVENTORY_WRITE e ITEMS_WRITE para crear artículos.
 El token permanece en la sesión del servidor; no se guarda en Drive, Git ni el navegador.
 Desconectar o expirar/reiniciar la sesión elimina la conexión.
 
@@ -34,3 +34,16 @@ Referencia oficial consultada: https://developer.loyverse.com/docs/
 Esquema: https://developer.loyverse.com/docs/API-Reference__v1.0.yaml
 
 Pruebas: `python -m pytest test_loyverse.py -q` (HTTP simulado, sin API key real).
+
+
+La subida responde inmediatamente con una tarea de sesión y muestra progreso por
+producto. `Consultar progreso` y recargar la página recuperan el resultado sin
+reenviar el lote. Si se corta la conexión, no se reintentan escrituras. Se conservan
+los SKU confirmados y se identifica el SKU incierto. Si el servicio reinició,
+reconecta y compara con Loyverse antes de enviar otra vez.
+
+La validación inicial lee Drive y el catálogo una sola vez. Antes de cada creación
+consulta cambios recientes del catálogo con `updated_at_min` y revalida duplicados;
+antes de cada ajuste verifica el stock de esa variación. Las lecturas HTTP tienen
+tiempo límite; una tarea deja de iniciar escrituras al alcanzar 10 minutos.
+El proceso es temporal, ligado a la sesión, y utiliza un único worker en Render.
