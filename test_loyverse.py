@@ -101,8 +101,10 @@ class Workflow(unittest.TestCase):
 
     def test_stale_preview_blocks_write(self):
         with patch.object(self.web, 'compare', return_value=[]), patch.object(self.web, 'client') as api:
-            with self.assertRaises(ValueError): self.web.operate(self.request, 'apply', {'id':'p','skus':['A']})
-            api.assert_not_called()
+            result = self.web.operate(self.request, 'apply', {'id':'p','skus':['A']})
+            self.assertIn('cambió', result['error'])
+            api.return_value.set_stock.assert_not_called()
+            api.return_value.create_item.assert_not_called()
         self.assertNotIn('loyverse_preview', self.value)
 
     def test_one_use_and_confirmed_write(self):
@@ -204,3 +206,117 @@ class CreationWorkflow(Workflow):
             self.assertEqual(result['uncertain'],'NEW')
             self.assertEqual(result['created'],[])
             api.create_item.assert_called_once()
+
+
+class UploadExecution(CreationWorkflow):
+    def test_batch_reads_full_catalog_once_and_uses_recent_changes_per_item(self):
+        first=CatalogCreation().row()
+        second=CatalogCreation().row(sku='NEXT', nombre_producto='Nuevo snack', codigo_barras='')
+        rows=[first,second]
+        from loyverse_sync import plan_catalog
+        stores=[{'id':'s'},{'id':'other'}]
+        planned=plan_catalog(rows,[],[],'s',stores)
+        self.value['loyverse_preview']['rows']=planned
+        api=Mock();api.list.return_value=[]
+        api.create_item.side_effect=[{'id':'i1','item_name':'Nuevo ramen','variants':[{'sku':'NEW','variant_id':'v1'}]},
+                                    {'id':'i2','item_name':'Nuevo snack','variants':[{'sku':'NEXT','variant_id':'v2'}]}]
+        def compare(request,value,store,bundle=None,api=None):
+            bundle.update(rows=rows,items=[],levels=[],stores=stores)
+            return planned
+        events=[]
+        with patch.object(self.web,'compare',side_effect=compare) as full,patch.object(self.web,'client',return_value=api):
+            preview,selected=self.web.consume_preview(self.value,{'id':'p','skus':['NEW','NEXT']})
+            result=self.web.execute_upload(self.request,self.value,preview,selected,lambda **event:events.append(event))
+        self.assertEqual(result['created'],['NEW','NEXT'])
+        full.assert_called_once()
+        self.assertEqual(api.list.call_count,2)
+        self.assertTrue(all('updated_at_min' in c.kwargs for c in api.list.call_args_list))
+        self.assertEqual([e['done'] for e in events if 'done' in e],[1,2])
+
+    def test_incremental_conflict_is_detected_before_post(self):
+        raw=CatalogCreation().row()
+        from loyverse_sync import plan_catalog
+        stores=[{'id':'s'},{'id':'other'}]
+        planned=plan_catalog([raw],[],[],'s',stores)
+        self.value['loyverse_preview']['rows']=planned
+        api=Mock();api.list.return_value=[{'id':'new-conflict','item_name':'Nuevo ramen','variants':[]}]
+        def compare(request,value,store,bundle=None,api=None):
+            bundle.update(rows=[raw],items=[],levels=[],stores=stores)
+            return planned
+        with patch.object(self.web,'compare',side_effect=compare),patch.object(self.web,'client',return_value=api):
+            result=self.web.operate(self.request,'apply',{'id':'p','skus':['NEW']})
+        self.assertIn('catálogo cambió',result['error'])
+        self.assertIsNone(result['uncertain'])
+        api.create_item.assert_not_called()
+
+    def test_partial_failure_preserves_confirmed_results(self):
+        raw=[CatalogCreation().row(),CatalogCreation().row(sku='NEXT',nombre_producto='Nuevo snack',codigo_barras='')]
+        from loyverse_sync import plan_catalog
+        stores=[{'id':'s'},{'id':'other'}]; planned=plan_catalog(raw,[],[],'s',stores)
+        self.value['loyverse_preview']['rows']=planned
+        api=Mock();api.list.return_value=[]
+        api.create_item.side_effect=[{'id':'i1','item_name':'Nuevo ramen','variants':[{'sku':'NEW','variant_id':'v1'}]},LoyverseError('timeout')]
+        def compare(request,value,store,bundle=None,api=None):
+            bundle.update(rows=raw,items=[],levels=[],stores=stores);return planned
+        with patch.object(self.web,'compare',side_effect=compare),patch.object(self.web,'client',return_value=api):
+            result=self.web.operate(self.request,'apply',{'id':'p','skus':['NEW','NEXT']})
+        self.assertEqual(result['created'],['NEW'])
+        self.assertEqual(result['uncertain'],'NEXT')
+        self.assertEqual(result['done'],1)
+        self.assertEqual(api.create_item.call_count,2)
+
+
+class HttpUploads(unittest.TestCase):
+    setUpClass = classmethod(Workflow.setUpClass.__func__)
+    setUp = Workflow.setUp
+    tearDown = Workflow.tearDown
+
+    def test_apply_returns_202_before_work_finishes_and_status_is_session_owned(self):
+        import threading
+        from fastapi.testclient import TestClient
+        import loyverse_jobs
+        entered, release = threading.Event(), threading.Event()
+        def upload(request, value, preview, selected, progress):
+            entered.set()
+            progress(current='A', phase='Enviando a Loyverse')
+            release.wait(3)
+            return {'done':1,'completed':['A'],'created':[],'error':None,'uncertain':None}
+        http=TestClient(self.app)
+        http.cookies.set('session_id','test-loy')
+        try:
+            with patch.object(self.web,'execute_upload',side_effect=upload):
+                first=http.post('/loyverse/apply',json={'id':'p','skus':['A']},headers={'Origin':'http://testserver'})
+                self.assertEqual(first.status_code,202)
+                self.assertTrue(entered.wait(1))
+                job_id=first.json()['id']
+                status=http.get('/loyverse-upload-status',params={'job_id':job_id})
+                self.assertEqual(status.status_code,200)
+                self.assertEqual(status.json()['job']['current'],'A')
+                retry=http.post('/loyverse/apply',json={'id':'p','skus':['A']},headers={'Origin':'http://testserver'})
+                self.assertEqual(retry.status_code,202)
+                self.assertEqual(retry.json()['id'],job_id)
+                self.assertEqual(http.get('/loyverse-upload-status?job_id=unknown').status_code,404)
+                outsider=TestClient(self.app)
+                self.assertEqual(outsider.get('/loyverse-upload-status',params={'job_id':job_id}).status_code,401)
+                release.set()
+                for _ in range(100):
+                    if loyverse_jobs.status(self.value)['state'] not in loyverse_jobs.ACTIVE_STATES:
+                        break
+                    threading.Event().wait(.01)
+                self.assertEqual(loyverse_jobs.status(self.value)['state'],'done')
+        finally:
+            release.set()
+
+    def test_invalid_selection_does_not_consume_review(self):
+        with self.assertRaises(ValueError):
+            self.web.start_upload(self.request,{'id':'p','skus':['not-eligible']})
+        self.assertIn('loyverse_preview',self.value)
+
+
+class Deadlines(unittest.TestCase):
+    @patch('loyverse_client.requests.request')
+    def test_deadline_expiry_blocks_requests_and_does_not_retry_writes(self, send):
+        api=LoyverseClient('secret-token',deadline=time.monotonic()-1)
+        with self.assertRaises(LoyverseError):
+            api.create_item({'item_name':'New','variants':[]})
+        send.assert_not_called()

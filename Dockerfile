@@ -28,7 +28,7 @@ COPY woocommerce_media_prepare.py .
 COPY woocommerce_product_sync.py .
 COPY media_web.py .
 COPY product_web.py .
-COPY loyverse_client.py loyverse_sync.py loyverse_web.py ./
+COPY loyverse_client.py loyverse_sync.py loyverse_web.py loyverse_jobs.py ./
 COPY static ./static
 
 ENV PORT=7860

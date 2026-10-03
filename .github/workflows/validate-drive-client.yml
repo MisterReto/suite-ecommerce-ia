@@ -13,6 +13,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      GRADIO_ANALYTICS_ENABLED: "False"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,7 +34,8 @@ jobs:
           python -m unittest test_store_connection test_stability test_sync_changes test_generation_content test_catalog_capture test_variation_stock -q
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
-          python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py -q
+          python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
+          node test_loyverse_ui.js
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com

@@ -1,5 +1,6 @@
 """Bounded Loyverse REST client. Never retry writes or disclose remote bodies."""
 import requests
+import time
 
 
 class LoyverseError(RuntimeError):
@@ -9,18 +10,22 @@ class LoyverseError(RuntimeError):
 class LoyverseClient:
     BASE = 'https://api.loyverse.com/v1.0'
 
-    def __init__(self, token):
+    def __init__(self, token, deadline=None):
         if not isinstance(token, str) or not 10 <= len(token.strip()) <= 4096 or any(c.isspace() for c in token.strip()):
             raise ValueError('Introduce un token de acceso válido de Loyverse.')
         self.token = token.strip()
+        self.deadline = deadline or time.monotonic() + 120
 
     def request(self, method, path, **kwargs):
         if path not in {'/stores', '/items', '/inventory'}:
             raise ValueError('Operación no permitida.')
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise LoyverseError('La consulta excedió el tiempo límite. Vuelve a comparar.')
         try:
             response = requests.request(method, self.BASE + path,
                 headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json'},
-                timeout=(10, 45), allow_redirects=False, **kwargs)
+                timeout=(min(10, remaining), min(30, remaining)), allow_redirects=False, **kwargs)
         except requests.RequestException:
             raise LoyverseError('No se pudo confirmar la respuesta de Loyverse. Revisa antes de reintentar.') from None
         if response.status_code in (401, 403):

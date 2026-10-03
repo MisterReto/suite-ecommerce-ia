@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py gemini_gateway.py oauth_guard.py .
 COPY ai_app.py .
 COPY inventory_schema.py .
-COPY loyverse_client.py loyverse_sync.py loyverse_web.py ./
+COPY loyverse_client.py loyverse_sync.py loyverse_web.py loyverse_jobs.py ./
 COPY static ./static
 
 ENV PORT=7860
