@@ -1733,6 +1733,9 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         return ["❌ Sube al menos la foto principal.", "", "", "", "", 0, "Simple",
                 gr.update(visible=False), "", "", "", "", "", None]
 
+    sesion["capture_revision"] = secrets.token_urlsafe(18)
+    sesion.pop("product_images", None)
+
     api_key = sesion["gemini_key"]
     client = GeminiClient(api_key=api_key)
     service, spreadsheet_id, df_actual = _cargar_df(sesion)
@@ -1826,12 +1829,13 @@ PROMPT_HD = (
 
 
 def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial, sesion):
-    """Núcleo compartido: arma la corrección, genera, sube a Drive y devuelve
+    """Núcleo compartido: arma la corrección, genera un borrador y devuelve
     (ruta_imagen, historial_actualizado, mensaje)."""
     correccion, historial_nuevo, resumen = _construir_correccion(errores, feedback, historial)
 
     service = _get_drive_service(sesion)
-    _, carpeta_imagenes_id, _, logo_id = _preparar_estructura(service, sesion)
+    _, _, _, logo_id = _preparar_estructura(service, sesion)
+    revision = sesion.get("capture_revision")
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(sku)):
         return gr.update(), historial_nuevo, "❌ SKU inválido: usa letras, números, guion o guion bajo."
@@ -1840,7 +1844,7 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
     rutas = _rutas_referencia(ruta_base)
     if not rutas or any(not Path(r).name.startswith(token_sesion + "_") or Path(r).parent != Path("/tmp") for r in rutas):
         return gr.update(), historial_nuevo, "❌ Referencia de imagen inválida para esta sesión."
-    ruta_local = f"/tmp/{token_sesion}_{nombre_archivo}"
+    ruta_local = f"/tmp/{token_sesion}_{sku}_{slot}_{secrets.token_urlsafe(12)}.jpg"
 
     resultado = generar_foto_individual(
         prompt, ruta_base, ruta_local, sesion["gemini_key"], service, logo_id,
@@ -1858,13 +1862,10 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
         )
 
     ruta_aprobada = resultado["ruta"]
-    try:
-        _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_aprobada)
-    except Exception:
-        return ruta_aprobada, historial_nuevo, f"⚠️ {nombre_archivo} generada, pero no se guardó en Drive. Descárgala antes de salir."
+    captura.stage_image(sesion, str(sku), slot, ruta_aprobada, revision)
     mensaje = (
-        f"✅ {nombre_archivo} aprobada ({resultado.get('puntuacion', 0)}/100) y guardada en Drive "
-        f"después de {resultado.get('intentos', 1)} intento(s).\n{resumen}"
+        f"✅ {nombre_archivo} aprobada ({resultado.get('puntuacion', 0)}/100) "
+        f"después de {resultado.get('intentos', 1)} intento(s). Vista previa: se subirá a Drive al pulsar Guardar.\n{resumen}"
     )
     return ruta_aprobada, historial_nuevo, mensaje
 
@@ -2501,6 +2502,7 @@ with gr.Blocks(title="Suite e-commerce") as demo:
     entradas_revision = [in_sku, in_nombre, in_marca, in_gramaje, in_codigo_barras,
                          in_sku_padre, in_atributo_nombre, in_atributo_valor]
     btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos,
+                      concurrency_id="image_generation", concurrency_limit=1,
                       js=_sonido_inicio("textos")).then(captura.detect_from_product,
                       inputs=[img1, img2, in_codigo_barras], outputs=[in_codigo_barras]).then(captura.check,
                       inputs=entradas_revision, outputs=[estado_coincidencia]).then(
@@ -2582,7 +2584,7 @@ with gr.Blocks(title="Suite e-commerce") as demo:
                 in_atributo_nombre, in_atributo_valor, in_precio,
                 in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga,
                 in_codigo_barras, modo_padre, nombre_padre, memoria_portada_padre],
-        outputs=[estado]
+        outputs=[estado], concurrency_id="image_generation", concurrency_limit=1
     )
 
     btn_usar_foto_tab1.click(lambda x: x, inputs=[img1], outputs=[img_lens])

@@ -35,6 +35,7 @@ jobs:
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
           python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
+          python -m pytest test_gradio_security.py -q
           node test_loyverse_ui.js
       - name: Verificar arranque y adaptadores
         env:
@@ -54,4 +55,3 @@ jobs:
           assert app.MODELO_IMAGEN == "gemini-3.1-flash-image"
           print("Arranque canónico correcto.")
           PY
-
