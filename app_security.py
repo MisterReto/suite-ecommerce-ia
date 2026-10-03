@@ -13,6 +13,7 @@ import bleach
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS
+from gradio_security import GradioGuard
 
 
 def clean_html(value):
@@ -93,12 +94,22 @@ class SecurityMiddleware:
         self.app, self.sessions = app, sessions
         self.limiter = WindowLimiter()
         self.busy, self.lock = 0, Lock()
+        self.gradio = GradioGuard()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         request = Request(scope)
         path, method = request.url.path, request.method
+        sid = request.cookies.get("sync_session") or request.cookies.get("session_id")
+        session = self.sessions().get(sid) if sid else None
+        if session and session.get("expires_at", 0) <= time.time():
+            self.sessions().pop(sid, None)
+            session = None
+        owner, ui_cookie = self.gradio.viewer(request, session)
+        upload = path.startswith(("/gradio_api/upload", "/upload"))
+        user_file = path.startswith(("/gradio_api/file=", "/file="))
+        upload_response, upload_ok = bytearray(), False
         # Gradio 6 HTML templates compile with Function(). Keep evaluation
         # disabled on the worker and non-UI responses; only the main UI needs it.
         gradio_ui = os.getenv("SUITE_SERVICE_ROLE", "main") == "main" and path in {"/", "/index.html"}
@@ -107,7 +118,9 @@ class SecurityMiddleware:
             policy = policy.replace(b"script-src 'self'", b"script-src 'self' 'unsafe-eval'", 1)
         original_send = send
         async def secure_send(message):
+            nonlocal upload_ok
             if message["type"] == "http.response.start":
+                upload_ok = upload and session is not None and 200 <= message["status"] < 300
                 headers = list(message.get("headers", []))
                 headers.extend([
                     (b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"SAMEORIGIN"),
@@ -115,9 +128,17 @@ class SecurityMiddleware:
                     (b"permissions-policy", b"camera=(self), microphone=(), geolocation=()"),
                     (b"content-security-policy", policy),
                 ])
+                if ui_cookie and path in {"/", "/config"}:
+                    headers.append((b"set-cookie", f"suite_ui={ui_cookie}; Path=/; Max-Age=28800; Secure; HttpOnly; SameSite=Lax".encode()))
                 if request.cookies.get("sync_session") or request.cookies.get("session_id") or path in {"/internal/tools", "/sync-handoff/redeem"} or path.startswith(("/session/", "/auth/", "/sync-")):
                     headers.append((b"cache-control", b"no-store"))
                 message = dict(message, headers=headers)
+            elif message["type"] == "http.response.body" and upload_ok:
+                upload_response.extend(message.get("body", b""))
+                if len(upload_response) > 32768:
+                    upload_ok = False
+                elif not message.get("more_body", False):
+                    self.gradio.register_uploads(session, upload_response)
             await original_send(message)
         send = secure_send
         external = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
@@ -140,15 +161,10 @@ class SecurityMiddleware:
         ):
             return await JSONResponse({"error": "Demasiadas solicitudes. Intenta en un minuto."}, status_code=429,
                 headers={"retry-after": "60"})(scope, receive, send)
-        sid = request.cookies.get("sync_session") or request.cookies.get("session_id")
-        session = self.sessions().get(sid) if sid else None
-        if session and session.get("expires_at", time.time() + 1) < time.time():
-            self.sessions().pop(sid, None)
-            session = None
-        upload = path.startswith(("/gradio_api/upload", "/upload"))
-        user_file = path.startswith(("/gradio_api/file=", "/file="))
         if (upload or user_file) and not session:
             return await JSONResponse({"error": "Conecta Google Drive antes de subir imágenes."}, status_code=401)(scope, receive, send)
+        if user_file and not self.gradio.file_permitted(path, session):
+            return await JSONResponse({"error": "La imagen no pertenece a esta sesión."}, status_code=403)(scope, receive, send)
         maximum = 12_000_000 if upload else 2_000_000 if internal else 512_000
         raw = bytearray()
         if method in {"POST", "PUT", "PATCH"}:
@@ -176,6 +192,8 @@ class SecurityMiddleware:
             input_receive = buffered
         else:
             input_receive = receive
+        if not self.gradio.permits(request, session, owner, raw):
+            return await JSONResponse({"error": "El recurso no pertenece a esta sesión. Recarga la página."}, status_code=403)(scope, input_receive, send)
         heavy = path in {"/batch-step", "/product-sync-one", "/image-sync-one", "/inventory-count-bulk", "/inventory-movement", "/inventory-review", "/stock-preview-start", "/woocommerce-publish-preview"}
         if heavy:
             with self.lock:

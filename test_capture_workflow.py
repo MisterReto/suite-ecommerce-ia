@@ -125,3 +125,46 @@ def test_parent_and_child_are_written_once_and_small_grid_is_extended(capture, m
     updates = write.call_args.kwargs['body']['data']
     assert len([u for u in updates if ':U' in u['range'] and not u['range'].endswith('S1:U1')]) == 2
     sheet.spreadsheets.return_value.batchUpdate.assert_called_once()
+
+
+def test_generation_does_not_upload_and_save_uploads_only_current_previews(capture, monkeypatch):
+    session, reference = capture
+    session["gemini_key"] = "fake"
+    session["capture_revision"] = "current"
+    upload, append = MagicMock(), MagicMock()
+    monkeypatch.setattr(app, "_get_drive_service", lambda *_: MagicMock())
+    monkeypatch.setattr(app, "_subir_imagen_drive", upload)
+    monkeypatch.setattr(app, "_agregar_fila_google_sheet", append)
+    def generate(_prompt, _reference, path, *args, **kwargs):
+        Image.new("RGB", (32,32), "orange").save(path)
+        return {"ruta":path, "puntuacion":99, "intentos":1}
+    monkeypatch.setattr(app, "generar_foto_individual", generate)
+    generated = []
+    try:
+        for slot in ("1_hd","2_uso"):
+            path, _, message = app._rehacer_generico(slot,"prompt",[reference],"PANK1KG",[],"",[],session)
+            generated.append(path)
+            assert "al pulsar Guardar" in message
+            upload.assert_not_called()
+        result = app.captura.save("PANK1KG","Simple","","Panko 1 kg","Brand","1 kg","","",40,
+                                  "Alimentos","Harinas","panko","Panko.","Para empanizar.","",NEW_PARENT,"",None,None)
+        assert "guardado" in result
+        assert [c.args[2] for c in upload.call_args_list] == ["PANK1KG_1_hd.jpg","PANK1KG_2_uso.jpg"]
+        assert append.call_args.args[2]["imagenes"] == "PANK1KG_1_hd.jpg,PANK1KG_2_uso.jpg"
+        session["capture_revision"] = "another-product"
+        assert app.captura.draft_images(session,"PANK1KG") == []
+    finally:
+        for path in generated:
+            Path(path).unlink(missing_ok=True)
+
+
+def test_save_failure_does_not_report_success_or_write_sheet(capture, monkeypatch):
+    session, reference = capture
+    app.captura.stage_image(session,"PANK1KG","1_hd",reference,None)
+    append = MagicMock()
+    monkeypatch.setattr(app,"_agregar_fila_google_sheet",append)
+    monkeypatch.setattr(app,"_subir_imagen_drive",MagicMock(side_effect=RuntimeError("offline")))
+    result = app.captura.save("PANK1KG","Simple","","Panko 1 kg","Brand","1 kg","","",40,
+                             "Alimentos","Harinas","","","","",NEW_PARENT,"",None,None)
+    assert "No pude completar" in result
+    append.assert_not_called()

@@ -174,6 +174,34 @@ class ProductCapture:
             raise ValueError("Analiza primero la foto del producto para preparar su portada.")
         return paths
 
+    def stage_image(self, session, sku, slot, path, revision):
+        if revision != session.get("capture_revision"):
+            raise ValueError("La foto base cambió. Genera las imágenes del producto actual.")
+        if slot not in {"1_hd", "2_uso", "3_comercial"} or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sku):
+            raise ValueError("Imagen de producto inválida.")
+        picture = Path(path)
+        if picture.parent != Path("/tmp") or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
+            raise ValueError("La imagen no pertenece a esta sesión.")
+        draft = session.get("product_images")
+        if not draft or draft["sku"] != sku or draft["revision"] != revision:
+            draft = {"sku": sku, "revision": revision, "files": {}}
+            session["product_images"] = draft
+        draft["files"][slot] = str(picture)
+
+    def draft_images(self, session, sku):
+        draft = session.get("product_images", {})
+        if draft.get("sku") != sku or draft.get("revision") != session.get("capture_revision"):
+            return []
+        images = []
+        for slot in ("1_hd", "2_uso", "3_comercial"):
+            path = draft.get("files", {}).get(slot)
+            if path:
+                picture = Path(path)
+                if picture.parent != Path("/tmp") or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
+                    raise ValueError("Una vista previa ya no está disponible. Vuelve a generarla.")
+                images.append((f"{sku}_{slot}.jpg", path))
+        return images
+
     def _drive_picture(self, service, folder, name):
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,140}", name):
             return None
@@ -203,7 +231,7 @@ class ProductCapture:
             if not text(title):
                 raise ValueError("Captura el nombre de la familia para la portada.")
             paths = self._references(session, reference)
-            key = hashlib.sha256(repr((parent, title, sku, mode, [(p, Path(p).stat().st_mtime_ns) for p in paths])).encode()).hexdigest()
+            key = hashlib.sha256(repr((parent, title, sku, mode, session.get("capture_revision"), [(p, Path(p).stat().st_mtime_ns) for p in paths])).encode()).hexdigest()
             covers = session.setdefault("family_covers", {})
             for token, info in covers.items():
                 if info["key"] == key and Path(info["path"]).is_file():
@@ -245,7 +273,8 @@ class ProductCapture:
                 old = covers.pop(next(iter(covers)))
                 Path(old["path"]).unlink(missing_ok=True)
             covers[token] = {"key": key, "path": path, "parent": parent, "title": title,
-                             "sku": sku, "mode": mode, "message": message}
+                             "sku": sku, "mode": mode, "message": message,
+                             "revision": session.get("capture_revision")}
             return path, message, token
         except ValueError as error:
             return None, f"⚠️ {error}", None
@@ -269,7 +298,9 @@ class ProductCapture:
             session = self.session(request)
             if not text(name):
                 raise ValueError("Captura el nombre del producto.")
+            session.pop("capture_snapshot", None)
             service, sheet, rows = self.snapshot(session)
+            images = self.draft_images(session, text(sku))
             record = {"sku": text(sku), "tipo": "variation" if kind == "Variable" else "simple",
                       "sku_padre": text(parent) if kind == "Variable" else "", "nombre_producto": text(name),
                       "Marca": text(brand), "gramaje": text(size), "atributo_nombre": text(attribute),
@@ -277,11 +308,11 @@ class ProductCapture:
                       "categorias": f"{category} > {subcategory}" if category and subcategory else text(category or subcategory),
                       "etiquetas": tags, "descripcion_corta": short, "descripcion_larga": long,
                       "codigo_barras": barcode(code),
-                      "imagenes": f"{sku}_1_hd.jpg,{sku}_2_uso.jpg,{sku}_3_comercial.jpg"}
+                      "imagenes": ",".join(name for name, _ in images)}
             info = None
             if kind == "Variable":
                 info = session.get("family_covers", {}).get(cover_token)
-                if not info or (info["parent"], info["title"], info["sku"], info["mode"]) != (parent, title, sku, mode) or not Path(info["path"]).is_file():
+                if not info or (info["parent"], info["title"], info["sku"], info["mode"]) != (parent, title, sku, mode) or info.get("revision") != session.get("capture_revision") or not Path(info["path"]).is_file():
                     raise ValueError("Prepara o actualiza la portada del padre antes de guardar la variación.")
                 record["_parent_cover"] = f"{parent}_portada_{cover_token}.jpg"
                 if mode == NEW_PARENT:
@@ -294,12 +325,17 @@ class ProductCapture:
             values = [list(MASTER_COLUMNS) + ["", "", "", "", "atributo_nombre", "atributo_valor", "codigo_barras"]]
             values += [[r.get(k, "") for k in MASTER_COLUMNS] + ["", "", "", "", r.get("atributo_nombre", ""), r.get("atributo_valor", ""), r.get("codigo_barras", "")] for r in rows]
             prepare_capture_updates(values, record)
-            if info:
+            if images or info:
                 _, folder, _, _ = self.backend["_preparar_estructura"](service, session)
+                for filename, path in images:
+                    self.backend["_subir_imagen_drive"](service, folder, filename, path)
+            if info:
                 self.backend["_subir_imagen_drive"](service, folder, record["_parent_cover"], info["path"])
             self.backend["_agregar_fila_google_sheet"](session, sheet, record)
             session.pop("capture_snapshot", None)
-            detail = f" Padre {parent} y portada vinculados." if kind == "Variable" else ""
+            detail = f" {len(images)} imagen(es) guardadas en Drive."
+            if kind == "Variable":
+                detail += f" Padre {parent} y portada vinculados."
             return f"💾 {sku} guardado en Lista completa.{detail}\nhttps://docs.google.com/spreadsheets/d/{sheet}/edit"
         except ValueError as error:
             return f"⛔ {error}"
