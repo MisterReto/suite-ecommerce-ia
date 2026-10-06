@@ -57,12 +57,29 @@ jobs:
           node ../test_frontend_proxy.cjs
       - name: Instalar dependencias
         run: |
-          pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest
+          pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest pyyaml jsonschema
           pip install -r requirements.txt
       - name: Revisar dependencias vulnerables
         run: pip-audit --progress-spinner off
       - name: Compilar Python
         run: python -m compileall -q -x 'node_modules|\.next|\.venv' .
+      - name: Validar Blueprint con el schema oficial de Render
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urllib.request import urlopen
+          import yaml
+          from jsonschema import Draft202012Validator
+
+          with urlopen("https://render.com/schema/render.yaml.json", timeout=20) as response:
+              schema = json.load(response)
+          blueprint = yaml.safe_load(Path("deploy/render-platform.yaml").read_text())
+          Draft202012Validator(schema).validate(blueprint)
+          assert sorted(item["type"] for item in blueprint["services"]) == ["web", "web", "worker"]
+          assert not any(item["name"] in {"suite-ecommerce-ia", "suite-ecommerce-ia-ai"} for item in blueprint["services"])
+          print("Blueprint válido: frontend, API y worker independientes; servicios históricos preservados.")
+          PY
       - name: Verificar aislamiento y delegación entre servicios
         run: |
           python -m unittest test_store_connection test_stability test_sync_changes test_generation_content test_catalog_capture test_variation_stock -q

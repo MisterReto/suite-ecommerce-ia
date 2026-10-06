@@ -19,6 +19,8 @@ const config: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   ...(separate ? {
+    // Match the API upload allowance plus multipart overhead.
+    experimental: { proxyClientMaxBodySize: 13_000_000 },
     async rewrites() {
       return { beforeFiles: [
         ...["/api/:path*", "/auth/:path*", "/suite-static/:path*", "/webhooks/:path*",

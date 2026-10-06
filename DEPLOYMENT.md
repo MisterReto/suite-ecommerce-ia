@@ -18,7 +18,9 @@ Arrancar worker y comprobar heartbeat desde `/api/platform/status` autenticado. 
 
 ## Comprobación técnica
 
-La CI construye la exportación compatible y Next standalone, typecheck, proxy HTTP con backend local TLS, cookies, redirects OAuth y transferencia íntegra de 12 MB. Ejecuta los grupos de pruebas Python, auditoría de dependencias, y concurrencia contra PostgreSQL 17. El contrato del generador se prueba con Python 3.11 y 3.14.
+La CI construye la exportación compatible y Next standalone, typecheck, proxy HTTP con backend local TLS, cookies, redirects OAuth y transferencia íntegra de 12 MB. Valida el Blueprint con el schema oficial de Render. Ejecuta los grupos de pruebas Python, auditoría de dependencias, y concurrencia contra PostgreSQL 17. El contrato del generador se prueba con Python 3.11 y 3.14.
+
+Next requiere `experimental.proxyClientMaxBodySize=13000000` para no truncar el upload antes de llegar a la API. La API mantiene su límite de archivo de 12 MB y validación de imagen. Esta opción experimental está declarada explícitamente y cubierta por la prueba de transferencia completa.
 
 Esto no verifica los contenedores finales en Render, la cuenta Google real ni una llamada Gemini. El proxy conserva el origen visible de la UI; la API mantiene validación de Host y exige el `APP_PUBLIC_ORIGIN` configurado.
 

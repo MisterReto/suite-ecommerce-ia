@@ -54,3 +54,7 @@ Los endpoints `/api/uploads`, `/api/capture`, `/api/analyze`, `/api/draft`, `/ap
 | No se publica | Aprobación, permisos, flags de escritura y IDs externos. |
 
 No pruebes una falla de generación repitiendo automáticamente una llamada pagada incierta.
+
+## Límite del proxy
+
+Next.js limitaba el body a 10 MB y la regresión de 12 MB detectó truncamiento/socket hang up. El frontend separado configura 13 MB para cubrir el archivo permitido y el sobre multipart; la API conserva su validación y límites propios. El transporte correcto no sustituye la comprobación del formato real de imagen.
