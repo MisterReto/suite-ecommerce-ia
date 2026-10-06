@@ -1,6 +1,7 @@
 """Abstraction over the accepted pipeline, not an alternative implementation."""
 
 from typing import Protocol
+import os
 import creative_pipeline
 
 
@@ -42,6 +43,10 @@ class ImageGenerationService:
     """Reuses brief, generation, logo, QA and corrections exactly as accepted."""
 
     provider = GeminiProvider()
+
+    def __init__(self):
+        if os.getenv("AI_PROVIDER", "gemini").strip().casefold() != "gemini":
+            raise RuntimeError("Ese proveedor aún no está habilitado; revisa AI_PROVIDER sin cambiar el modelo actual.")
 
     def plan(self, value, current, progress):
         from studio_api import creative_plan

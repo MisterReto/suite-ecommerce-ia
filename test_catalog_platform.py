@@ -34,6 +34,7 @@ class DriveDouble:
     def __init__(self,root): self.root_id=root;self.files={};self.uploads=[]
     def download(self,key): return self.files[key]
     def working_folder(self,*parts): return "/".join(parts)
+    def folder(self,name,parent=None): return (parent + "/" if parent else "") + name
     def upload(self,path,name,folder,properties=None):
         raw=Path(path).read_bytes();key=uid();self.files[key]=raw
         self.uploads.append({"id":key,"name":name,"folder":folder,"properties":properties,"raw":raw})

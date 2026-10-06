@@ -60,10 +60,10 @@ def public_error(exc):
         return "No se pudo confirmar la operación. Revisa su estado antes de reintentar."
     message = str(exc)
     values = dict(STORE_CONTEXT.get())
-    values.update({key: os.getenv(key, "") for key in (*STORE_KEYS, "GOOGLE_CLIENT_SECRET", "SYNC_SERVICE_SHARED_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AI_API_KEY", "GOOGLE_REFRESH_TOKEN", "DATABASE_URL", "GOOGLE_SERVICE_ACCOUNT_JSON")})
+    values.update({key: os.getenv(key, "") for key in (*STORE_KEYS, "GOOGLE_CLIENT_SECRET", "SYNC_SERVICE_SHARED_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AI_API_KEY", "GOOGLE_REFRESH_TOKEN", "DATABASE_URL", "REDIS_URL", "LOYVERSE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON")})
     for key, value in values.items():
-        if any(part in key for part in ("SECRET", "KEY", "PASSWORD", "TOKEN", "DATABASE_URL", "SERVICE_ACCOUNT")) and isinstance(value, str) and len(value) >= 6:
-            message = message.replace(value, "[oculto]")
+        if any(part in key for part in ("SECRET", "KEY", "PASSWORD", "TOKEN", "DATABASE_URL", "REDIS_URL", "SERVICE_ACCOUNT")) and isinstance(value, str) and len(value) >= 6:
+            message = message.replace(value, "[REDACTED]")
     return html.escape(message[:300])
 
 
@@ -137,7 +137,14 @@ class SecurityMiddleware:
                 return await JSONResponse({"error": "Configura APP_PUBLIC_ORIGIN como origen HTTPS."},
                                           status_code=503)(scope, receive, send)
         origin = public or external or str(request.base_url).rstrip("/")
-        internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse"}
+        internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse", "/api/webhooks/woocommerce", "/api/webhooks/loyverse"}
+        paid = path == "/api/generate" or path == "/api/platform/generation/jobs" or (
+            path.startswith(("/api/images/", "/api/platform/assets/")) and path.endswith(("/correct", "/regenerate")))
+        if method == "POST" and paid and session:
+            limit = int(os.getenv("GENERATION_REQUESTS_PER_MINUTE", "12"))
+            if not self.limiter.allow((sid, "generation"), limit):
+                return await JSONResponse({"error": "Demasiadas solicitudes de generación. Revisa los trabajos activos."},
+                    status_code=429, headers={"retry-after": "60"})(scope, receive, send)
         if method not in {"GET", "HEAD", "OPTIONS"} and not internal:
             source = request.headers.get("origin")
             referer = request.headers.get("referer", "")

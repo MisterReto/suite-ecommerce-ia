@@ -94,8 +94,7 @@ async def receive(provider, request):
             )
             db.add(event)
             db.flush()
-            db.add(
-                GenerationJob(
+            job = GenerationJob(
                     tenant_id=tenant,
                     actor="webhook",
                     kind="webhook",
@@ -104,7 +103,8 @@ async def receive(provider, request):
                     + hashlib.sha256((provider + ":" + event_id).encode()).hexdigest(),
                     payload={"event_id": event.id},
                 )
-            )
+            db.add(job)
+            queue.dispatch(db, job)
             return {"accepted": True}
     except IntegrityError:
         with transaction() as db:
@@ -129,11 +129,13 @@ async def receive(provider, request):
 
 
 @router.post("/webhooks/woocommerce", status_code=202)
+@router.post("/api/webhooks/woocommerce", status_code=202)
 async def woocommerce(request: Request):
     return await receive("woocommerce", request)
 
 
 @router.post("/webhooks/loyverse", status_code=202)
+@router.post("/api/webhooks/loyverse", status_code=202)
 async def loyverse(request: Request):
     return await receive("loyverse", request)
 

@@ -64,12 +64,16 @@ class Capture(BaseModel):
 class Generation(BaseModel):
     slots: list[str] = Field(default_factory=lambda: list(SLOTS), min_length=1, max_length=3)
     automatic_review: bool = False
+    request_key: str | None = Field(default=None, min_length=12, max_length=100)
+    confirm_cost: bool = False
 
 
 class Correction(BaseModel):
     feedback: str = Field(default="", max_length=600)
     errors: list[str] = Field(default_factory=list, max_length=8)
     automatic_review: bool = False
+    request_key: str | None = Field(default=None, min_length=12, max_length=100)
+    confirm_cost: bool = False
 
 
 class Approval(BaseModel):
@@ -106,6 +110,10 @@ def draft(value):
 
 
 def idle(value):
+    from catalog_platform import studio_jobs
+
+    if studio_jobs.enabled() and studio_jobs.find_active(value):
+        raise HTTPException(409, "Espera a que termine la generación del worker.")
     if any(j["status"] in {"queued", "running"} for j in value.get("studio_jobs", {}).values()):
         raise HTTPException(409, "Espera a que termine la operación actual.")
 
@@ -214,15 +222,26 @@ def session_status(request: Request):
     if not value.get("gemini_key") and os.getenv("AI_API_KEY"):
         value["gemini_key"]=os.environ["AI_API_KEY"]
     value.setdefault("file_namespace", secrets.token_urlsafe(24))
-    active = next((dict(j) for j in value.get("studio_jobs", {}).values() if j["status"] in {"queued", "running"}), None)
+    from catalog_platform import studio_jobs
+    from catalog_platform.api import image_unit
+
+    if studio_jobs.enabled():
+        studio_jobs.recover_latest(value)
+    usage = usage_for_key(value["gemini_key"]) if value.get("gemini_key") else {}
+    if studio_jobs.enabled():
+        for key, count in studio_jobs.recorded_usage(value).items():
+            usage[key] = usage.get(key, 0) + count
+    active = (studio_jobs.find_active(value) if studio_jobs.enabled() else None) or next((dict(j) for j in value.get("studio_jobs", {}).values() if j["status"] in {"queued", "running"}), None)
     return {"authenticated": True, "email": value.get("email", ""),
             "gemini_configured": bool(value.get("gemini_key")),
             "folder": value.get("carpeta_raiz_nombre_manual") or "Proyecto_IA",
             "folder_id": value.get("carpeta_raiz_id_manual", ""),
             "image_model": IMAGE_MODEL, "text_model": TEXT_MODEL,
+            "image_provider": "gemini", "estimated_image_usd": image_unit(IMAGE_MODEL),
+            "generation_backend": "worker" if studio_jobs.enabled() else "local",
             "loyverse": {"configured": bool(value.get("loyverse_token")), "stores": value.get("loyverse_stores", []),
                          "job": loyverse_jobs.status(value)},
-            "usage": usage_for_key(value["gemini_key"]) if value.get("gemini_key") else {},
+            "usage": usage,
             "draft": view(value), "job": active, "errors": runtime.ETIQUETAS_ERRORES}
 
 
@@ -427,6 +446,10 @@ def generate_images(data: Generation, value=Depends(session)):
     slots = list(dict.fromkeys(data.slots))
     if any(slot not in SLOTS for slot in slots):
         raise HTTPException(422, "Tipo de imagen inválido.")
+    from catalog_platform import studio_jobs
+
+    if studio_jobs.enabled():
+        return JSONResponse(studio_jobs.enqueue_capture(value, current, slots, data), status_code=202)
     def action(update):
         plan, styles = creative_plan(value, current, update) if any(s != "1_hd" for s in slots) else ({}, [])
         failures = []
@@ -455,6 +478,10 @@ def correct_image(slot: str, data: Correction, value=Depends(session)):
         corrections.append(data.feedback.strip())
     if not corrections:
         raise HTTPException(422, "Indica qué debe cambiar en la imagen.")
+    from catalog_platform import studio_jobs
+
+    if studio_jobs.enabled():
+        return JSONResponse(studio_jobs.enqueue_capture(value, current, [slot], data, corrections), status_code=202)
     def action(update):
         plan, styles = creative_plan(value, current, update) if slot != "1_hd" else ({}, [])
         prompt = runtime.PROMPT_HD if slot == "1_hd" else plan["lifestyle" if slot == "2_uso" else "comercial"]
@@ -472,6 +499,10 @@ def approve(slot: str, data: Approval, value=Depends(session)):
     if slot not in current["images"]:
         raise HTTPException(404, "La imagen todavía no existe.")
     current["images"][slot]["approved"] = data.approved
+    from catalog_platform import studio_jobs
+
+    if studio_jobs.enabled():
+        studio_jobs.record_approval(value, slot, data.approved)
     return {"draft": view(value)}
 
 
@@ -527,11 +558,18 @@ def save(data: Save, request: Request, value=Depends(session)):
         if not result.startswith("💾"):
             raise ValueError(result)
         current["saved"] = result
+        from catalog_platform import studio_jobs
+        if studio_jobs.enabled():
+            studio_jobs.record_saved(value, current)
     return start_job(value, "Guardando producto", action)
 
 
 @app.get("/api/jobs/{key}")
 def get_job(key: str, value=Depends(session)):
+    from catalog_platform import studio_jobs
+
+    if studio_jobs.enabled() and re.fullmatch(r"[0-9a-f-]{36}", key):
+        return studio_jobs.get_job(value, key)
     with LOCK:
         job = value.get("studio_jobs", {}).get(key)
         if not job:

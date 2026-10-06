@@ -75,6 +75,8 @@ type Brief = {
   search_suggestions?: string;
 };
 type Asset = {
+  provider: string;
+  model: string;
   id: string;
   image_id: string;
   product_id: string;
@@ -142,6 +144,7 @@ type Session = {
   gemini_configured?: boolean;
   folder?: string;
   image_model?: string;
+  estimated_image_usd?: number | null;
 };
 type Status = {
   ready: boolean;
@@ -341,9 +344,12 @@ export default function Platform() {
   });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const operationKeys = useRef(new Map<string, string>());
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -392,7 +398,8 @@ export default function Platform() {
     setError("");
   }, []);
   const attempt = async (action: () => Promise<void>) => {
-    if (busy) return;
+    if (busy || submitting.current) return;
+    submitting.current = true;
     setBusy(true);
     setError("");
     setNotice("");
@@ -403,7 +410,23 @@ export default function Platform() {
       if (e instanceof ApiError && e.status === 401)
         setSession({ authenticated: false });
     } finally {
+      submitting.current = false;
       setBusy(false);
+    }
+  };
+  const durablePost = async (path: string, body: Record<string, unknown>) => {
+    const signature = JSON.stringify([path, body]);
+    const request_key = operationKeys.current.get(signature) || crypto.randomUUID();
+    operationKeys.current.set(signature, request_key);
+    try {
+      const result = await api(path, "POST", { ...body, request_key });
+      operationKeys.current.delete(signature);
+      return result;
+    } catch (e) {
+      // An uncertain network response must reuse the same intent on retry.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        operationKeys.current.delete(signature);
+      throw e;
     }
   };
   const reloadBase = useCallback(async () => {
@@ -447,12 +470,19 @@ export default function Platform() {
         if (hash === "settings") setMoreTab("settings");
       }
     };
-    const connection = () => setOnline(navigator.onLine);
+    const disconnected = () => { setOnline(false); setReconnecting(false); };
+    const connected = () => {
+      setOnline(true);
+      setReconnecting(true);
+      reloadBase()
+        .catch((e) => setError(`No se pudo reconectar: ${e.message}`))
+        .finally(() => setReconnecting(false));
+    };
     change();
-    connection();
+    setOnline(navigator.onLine);
     window.addEventListener("hashchange", change);
-    window.addEventListener("online", connection);
-    window.addEventListener("offline", connection);
+    window.addEventListener("online", connected);
+    window.addEventListener("offline", disconnected);
     reloadBase()
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -460,8 +490,8 @@ export default function Platform() {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     return () => {
       window.removeEventListener("hashchange", change);
-      window.removeEventListener("online", connection);
-      window.removeEventListener("offline", connection);
+      window.removeEventListener("online", connected);
+      window.removeEventListener("offline", disconnected);
     };
   }, [reloadBase]);
   useEffect(() => {
@@ -552,9 +582,8 @@ export default function Platform() {
     setConfirm(value);
   };
   const operation = async (path: string) => {
-    await api(path, "POST", {
+    await durablePost(path, {
       confirm: true,
-      request_key: crypto.randomUUID(),
     });
     setNotice(
       "Trabajo en cola. Puedes cerrar el navegador y consultar su progreso después.",
@@ -658,10 +687,9 @@ export default function Platform() {
       label: "Autorizar intento",
       uncertain: !!job.payload.in_flight,
       action: async () => {
-        await api(`/api/platform/jobs/${job.id}/retry`, "POST", {
+        await durablePost(`/api/platform/jobs/${job.id}/retry`, {
           confirm: true,
           uncertainty_reviewed: true,
-          request_key: crypto.randomUUID(),
         });
         await reloadOperations();
       },
@@ -2072,16 +2100,14 @@ export default function Platform() {
                             onClick={() =>
                               ask({
                                 title: "Confirmar generación",
-                                text: `${quote.products} productos · ${quote.images} imágenes · ${quote.provider}. Estimación ${quote.estimated_usd == null ? "no disponible" : `USD $${quote.estimated_usd.toFixed(3)}`} más consumo variable. Las imágenes quedarán para revisión.`,
+                                text: `${quote.products} productos · ${quote.images} imágenes · ${quote.provider} · ${quote.model}. Estimación ${quote.estimated_usd == null ? "no disponible" : `USD $${quote.estimated_usd.toFixed(3)}`} más consumo variable. Las imágenes quedarán para revisión.`,
                                 label: "Generar lote",
                                 action: async () => {
-                                  await api(
+                                  await durablePost(
                                     "/api/platform/generation/jobs",
-                                    "POST",
                                     {
                                       ...batch(),
                                       confirm: true,
-                                      request_key: crypto.randomUUID(),
                                       estimate_token: quote.estimate_token,
                                     },
                                   );
@@ -2591,7 +2617,7 @@ export default function Platform() {
         <footer className="p-footer">
           <img src="/logo.png" width={23} height={23} alt="" />
           <span>El Rincón de Asia · De Asia para tu casa.</span>
-          <small>{online ? "En línea" : "Sin conexión"}</small>
+          <small role="status">{reconnecting ? "Reconectando…" : online ? "En línea" : "Sin conexión"}</small>
         </footer>
         {busy && (
           <div className="p-busy" role="status">
@@ -2710,6 +2736,36 @@ export default function Platform() {
               >
                 Ver producto
               </button>
+              {canEdit && ["approved", "published"].includes(selectedAsset.status) && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Guardar imagen aprobada",
+                    text: "Se guardará en imagenes_generadas con su nombre compatible. Si existe una versión anterior, se conservará un respaldo antes de sustituirla. Publicar en la tienda es otra acción.",
+                    label: "Guardar en Drive",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/save`, {
+                        confirm: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Guardar aprobada en Drive</button>
+              )}
+              {canEdit && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Regenerar un candidato",
+                    text: `1 producto · 1 imagen · ${selectedAsset.provider} · ${selectedAsset.model}. Estimado: ${selectedAsset.estimated_correction_usd != null ? `USD $${selectedAsset.estimated_correction_usd.toFixed(3)}` : "no disponible"}; investigación y revisión pueden añadir consumo. Se usarán las referencias originales y se conservará la imagen anterior.`,
+                    label: "Confirmar generación",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/regenerate`, {
+                        confirm_cost: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Regenerar</button>
+              )}
             </div>
             {selectedAsset.metadata_json.qa?.resumen && (
               <p className="p-muted">
@@ -2808,13 +2864,11 @@ export default function Platform() {
                       text: `Se creará una nueva imagen conservando la anterior. Estimación de salida: ${asset.estimated_correction_usd == null ? "tarifa no configurada" : `USD $${asset.estimated_correction_usd.toFixed(3)}`}, más entradas y revisión si aplica. Confirma el consumo adicional.`,
                       label: "Regenerar",
                       action: async () => {
-                        await api(
+                        await durablePost(
                           `/api/platform/assets/${asset.id}/correct`,
-                          "POST",
                           {
                             feedback: correction,
                             confirm_cost: true,
-                            request_key: crypto.randomUUID(),
                           },
                         );
                         await reloadOperations();

@@ -35,6 +35,11 @@ def heartbeat(owner):
 
 
 def available(db):
+    if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") == "rq":
+        from .redis_broker import reachable
+
+        if not reachable():
+            return False
     return (
         db.scalar(
             select(WorkerHeartbeat.id)
@@ -45,32 +50,41 @@ def available(db):
     )
 
 
-def claim(owner):
+def dispatch(db, job):
+    """Ask the transaction to deliver this job ID after a successful commit."""
+    db.flush()
+    db.info.setdefault("dispatch_ids", set()).add(job.id)
+
+
+def recover_expired(db):
+    stamp = time.time()
+    expired = db.scalars(
+        select(GenerationJob)
+        .where(GenerationJob.status == "processing", GenerationJob.lease_until < stamp)
+        .with_for_update(skip_locked=True)
+    ).all()
+    for job in expired:
+        if job.payload.get("in_flight"):
+            job.status = "failed"
+            job.finished_at = now()
+            job.message = "Operación interrumpida con resultado incierto. Revisa los archivos antes de autorizar otro intento."
+        else:
+            job.status = "queued"
+            job.message = "Recuperado después de reinicio; conserva las imágenes terminadas."
+        job.lease_owner = None
+        job.lease_until = None
+    db.flush()
+
+
+def claim(owner, job_id=None):
     stamp = time.time()
     with transaction() as db:
-        expired = db.scalars(
-            select(GenerationJob)
-            .where(
-                GenerationJob.status == "processing", GenerationJob.lease_until < stamp
-            )
-            .with_for_update(skip_locked=True)
-        ).all()
-        for job in expired:
-            if job.payload.get("in_flight"):
-                job.status = "failed"
-                job.finished_at = now()
-                job.message = "Operación interrumpida con resultado incierto. Revisa los archivos antes de autorizar otro intento."
-            else:
-                job.status = "queued"
-                job.message = (
-                    "Recuperado después de reinicio; conserva las imágenes terminadas."
-                )
-            job.lease_owner = None
-            job.lease_until = None
-        db.flush()
+        recover_expired(db)
+        query = select(GenerationJob).where(GenerationJob.status == "queued")
+        if job_id is not None:
+            query = query.where(GenerationJob.id == job_id)
         job = db.scalar(
-            select(GenerationJob)
-            .where(GenerationJob.status == "queued")
+            query
             .order_by(GenerationJob.created_at)
             .with_for_update(skip_locked=True)
             .limit(1)

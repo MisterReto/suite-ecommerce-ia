@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Camera,
   Check,
@@ -89,6 +89,8 @@ type Session = {
   folder?: string;
   folder_id?: string;
   image_model?: string;
+  image_provider?: string;
+  estimated_image_usd?: number | null;
   text_model?: string;
   errors?: string[];
   usage?: Record<string, number>;
@@ -461,8 +463,15 @@ export default function CaptureStudio({
     };
   }, [loyJob?.id, loyJob?.state, loyWorking]);
 
+  const submitting = useRef(false);
+  const generationKeys = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (job && !activeJob(job)) generationKeys.current.clear();
+  }, [job?.id, job?.status]);
+
   const attempt = async (action: () => Promise<void>) => {
-    if (busy) return;
+    if (busy || submitting.current) return;
+    submitting.current = true;
     setPosting(true);
     setError("");
     setMessage("");
@@ -471,6 +480,7 @@ export default function CaptureStudio({
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      submitting.current = false;
       setPosting(false);
     }
   };
@@ -493,6 +503,15 @@ export default function CaptureStudio({
     return result.draft;
   };
   const run = async (path: string, body: unknown = {}) => {
+    if (path === "/api/generate" || path.endsWith("/correct")) {
+      const fingerprint = JSON.stringify([path, draft?.revision, body]);
+      let key = generationKeys.current.get(fingerprint);
+      if (!key) {
+        key = crypto.randomUUID();
+        generationKeys.current.set(fingerprint, key);
+      }
+      body = { ...(body as Record<string, unknown>), request_key: key, confirm_cost: true };
+    }
     const result = await api<{ job?: Job; draft?: Draft }>(path, "POST", body);
     if (result.job) setJob(result.job);
     if (!activeJob(result.job)) {
@@ -1125,6 +1144,13 @@ export default function CaptureStudio({
                   <span className="format-tag">1:1 · Cuadrado</span>
                 </div>
                 <div className="generation-controls">
+                  <p className="p-muted" role="status">
+                    1 producto · {selectedSlots.length} imagen(es) · {session.image_provider || "Gemini"} · {session.image_model || "Modelo configurado"}
+                    {session.estimated_image_usd != null
+                      ? ` · Estimación: USD ${(selectedSlots.length * session.estimated_image_usd).toFixed(3)}`
+                      : " · Estimación de costo no disponible"}.
+                    La investigación y revisión pueden añadir consumo. Generar confirma este consumo.
+                  </p>
                   <div className="slot-selector">
                     {slots.map((s) => (
                       <label key={s.id}>
@@ -1901,8 +1927,8 @@ export default function CaptureStudio({
               <section className="card consumption">
                 <div className="section-heading">
                   <div>
-                    <h2>Consumo de esta clave</h2>
-                    <p>Registro desde el último inicio del servicio.</p>
+                    <h2>Consumo registrado</h2>
+                    <p>Registro disponible de llamadas y tokens. La facturación final se consulta en el proveedor.</p>
                   </div>
                 </div>
                 <div className="usage-grid">

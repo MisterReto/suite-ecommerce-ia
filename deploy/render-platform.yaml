@@ -12,11 +12,17 @@ databases:
     diskSizeGB: 1
     ipAllowList: []
 services:
+  - type: keyvalue
+    name: rincon-generation-queue
+    plan: free
+    region: oregon
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
   - type: web
     name: rincon-frontend
     runtime: docker
     repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/catalog-platform
+    branch: agent/stabilize-architecture-20261006
     dockerfilePath: ./Dockerfile.frontend
     dockerContext: .
     plan: free
@@ -30,7 +36,7 @@ services:
     name: rincon-catalog-api
     runtime: docker
     repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/catalog-platform
+    branch: agent/stabilize-architecture-20261006
     dockerfilePath: ./Dockerfile.api
     dockerContext: .
     plan: free
@@ -46,6 +52,21 @@ services:
         fromDatabase:
           name: rincon-catalog-db
           property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: rincon-generation-queue
+          type: keyvalue
+          property: connectionString
+      - key: GENERATION_QUEUE_BACKEND
+        value: rq
+      - key: STUDIO_IMAGE_JOBS
+        value: worker
+      - key: APP_REQUIRE_ALLOWLIST
+        value: "true"
+      - key: MAX_IMAGES_PER_BATCH
+        value: "30"
+      - key: MAX_ESTIMATED_BATCH_COST
+        sync: false
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: GOOGLE_CLIENT_ID
@@ -78,10 +99,10 @@ services:
     name: rincon-catalog-worker
     runtime: docker
     repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/catalog-platform
+    branch: agent/stabilize-architecture-20261006
     dockerfilePath: ./Dockerfile.worker
     dockerContext: .
-    plan: 0.5c-512mb
+    plan: 1c-2g
     region: oregon
     autoDeployTrigger: checksPass
     maxShutdownDelaySeconds: 300
@@ -90,6 +111,17 @@ services:
         fromDatabase:
           name: rincon-catalog-db
           property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: rincon-generation-queue
+          type: keyvalue
+          property: connectionString
+      - key: GENERATION_QUEUE_BACKEND
+        value: rq
+      - key: IMAGE_WORKER_CONCURRENCY
+        value: "1"
+      - key: STUDIO_IMAGE_JOBS
+        value: worker
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: GOOGLE_CLIENT_ID

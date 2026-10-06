@@ -40,3 +40,10 @@ def transaction():
     with sessionmaker(bind=engine_for(url), expire_on_commit=False)() as db:
         with db.begin():
             yield db
+        # Explicitly requested deliveries occur only after SQL committed. SQL is
+        # the outbox: a Redis outage cannot erase an accepted job.
+        ids = db.info.get("dispatch_ids", ())
+        if ids:
+            from .redis_broker import publish_committed
+
+            publish_committed(ids)

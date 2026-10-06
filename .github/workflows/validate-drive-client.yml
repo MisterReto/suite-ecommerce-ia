@@ -10,6 +10,7 @@ on:
   pull_request:
     branches:
       - agent/woocommerce-inventory-foundation
+      - agent/catalog-platform
 
 jobs:
   validate:
@@ -18,6 +19,15 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
       postgres:
         image: postgres:17
         env:
@@ -55,6 +65,10 @@ jobs:
           cp -r public .next/standalone/
           cp -r .next/static .next/standalone/.next/
           node ../test_frontend_proxy.cjs
+      - name: Navegación móvil y respuesta perdida en navegador real
+        run: |
+          npm install --prefix "$RUNNER_TEMP/rincon-browser-test" --no-audit --no-fund playwright@1.62.1
+          NODE_PATH="$RUNNER_TEMP/rincon-browser-test/node_modules" TEST_CHROMIUM_PATH="$(command -v google-chrome)" node test_frontend_mobile.cjs
       - name: Instalar dependencias
         run: |
           pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest pyyaml jsonschema
@@ -76,7 +90,8 @@ jobs:
               schema = json.load(response)
           blueprint = yaml.safe_load(Path("deploy/render-platform.yaml").read_text())
           Draft202012Validator(schema).validate(blueprint)
-          assert sorted(item["type"] for item in blueprint["services"]) == ["web", "web", "worker"]
+          assert sorted(item["type"] for item in blueprint["services"] if item["type"] != "keyvalue") == ["web", "web", "worker"]
+          assert any(item["type"] == "keyvalue" and item["maxmemoryPolicy"] == "noeviction" for item in blueprint["services"])
           assert not any(item["name"] in {"suite-ecommerce-ia", "suite-ecommerce-ia-ai"} for item in blueprint["services"])
           print("Blueprint válido: frontend, API y worker independientes; servicios históricos preservados.")
           PY
@@ -91,7 +106,8 @@ jobs:
       - name: Cola y solicitudes concurrentes en PostgreSQL real
         env:
           TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
-        run: python -m pytest test_catalog_platform.py -q
+          TEST_REDIS_URL: redis://localhost:6379/0
+        run: python -m pytest test_catalog_platform.py test_stabilization.py -q
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com

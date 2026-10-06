@@ -111,18 +111,72 @@ class DriveService:
     def download(self, file_id):
         if not self.owns(file_id):
             raise ValueError("El archivo no pertenece a la carpeta de trabajo.")
-        stream = io.BytesIO()
-        fetch = MediaIoBaseDownload(
-            stream,
+        with io.BytesIO() as stream:
+            self._download(file_id, stream)
+            return stream.getvalue()
+
+    def _download(self, file_id, stream):
+        fetch = MediaIoBaseDownload(stream,
             self.files().get_media(fileId=file_id, supportsAllDrives=True),
-            chunksize=512 * 1024,
-        )
+            chunksize=512 * 1024)
         done = False
         while not done:
             _, done = fetch.next_chunk()
             if stream.tell() > 12_000_000:
                 raise ValueError("La imagen supera 12 MB.")
-        return stream.getvalue()
+
+    def download_to(self, file_id, destination):
+        """Stream to this process's /tmp; never materialize a batch in RAM."""
+        path = Path(destination).resolve()
+        if path.parent != Path("/tmp") or not self.owns(file_id):
+            raise ValueError("Archivo o destino temporal no autorizado.")
+        try:
+            with path.open("wb") as stream:
+                self._download(file_id, stream)
+            return str(path)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+
+    def metadata(self, file_id):
+        if not self.owns(file_id):
+            raise ValueError("Archivo no autorizado.")
+        return self.files().get(fileId=file_id, supportsAllDrives=True,
+            fields="id,name,mimeType,size,parents,md5Checksum,appProperties,webViewLink").execute()
+
+    def find(self, name, folder=None):
+        safe = name.replace("\\", "\\\\").replace("'", "\\'")
+        return self.list(folder, f"name='{safe}'")
+
+    @staticmethod
+    def url(file_id):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", file_id):
+            raise ValueError("ID Drive inválido.")
+        return "https://drive.google.com/file/d/" + file_id + "/view"
+
+    def save_approved(self, path, filename, folder, asset_id):
+        """Explicit approval/save only. Back up an existing canonical file first."""
+        if not self.owns(folder):
+            raise ValueError("Carpeta de destino no autorizada.")
+        matches = self.find(filename, folder)
+        if len(matches) > 1:
+            raise ValueError("Hay nombres duplicados; selecciona el archivo por ID antes de guardar.")
+        if not matches:
+            return self.upload(path, filename, folder, {"asset_id": asset_id})
+        old = matches[0]
+        metadata = self.metadata(old["id"])
+        if metadata.get("appProperties", {}).get("asset_id") == asset_id:
+            return old
+        # Deterministic backup names also make a retried explicit save safe.
+        backup_folder = self.working_folder("backups", "images")
+        backup_name = old["id"] + "_before_" + asset_id + ".jpg"
+        if not self.find(backup_name, backup_folder):
+            self.files().copy(fileId=old["id"], supportsAllDrives=True,
+                body={"name": backup_name, "parents": [backup_folder]}, fields="id").execute()
+        return self.files().update(fileId=old["id"], supportsAllDrives=True,
+            body={"appProperties": {**metadata.get("appProperties", {}), "asset_id": asset_id}},
+            media_body=MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False),
+            fields="id,name,size").execute()
 
     def upload(self, path, filename, folder, properties=None):
         if not self.owns(folder):

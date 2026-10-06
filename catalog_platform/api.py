@@ -17,6 +17,7 @@ from .models import (
     Product,
     ProductImage,
     GenerationJob,
+    GenerationBatch,
     GeneratedAsset,
     InventoryMovement,
     IntegrationAccount,
@@ -28,7 +29,7 @@ from .models import (
 from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
 from .accounts import persist
-from .queue import available, request_lock
+from .queue import available, request_lock, dispatch
 
 router = APIRouter(prefix="/api/platform")
 
@@ -503,7 +504,7 @@ def selection(db, value, data, lock=False):
     if not rows or data.product_ids and len(rows) != len(set(data.product_ids)):
         raise HTTPException(422, "La selección incluye productos no disponibles.")
     count = len(rows) * len(data.slots) * data.quantity
-    if count > int(os.getenv("MAX_BATCH_IMAGES", "300")):
+    if count > int(os.getenv("MAX_IMAGES_PER_BATCH", os.getenv("MAX_BATCH_IMAGES", "300"))):
         raise HTTPException(
             422, "El lote supera el límite de imágenes. Divide la selección."
         )
@@ -553,6 +554,7 @@ def estimate(db, value, data, lock=False):
 
     rows, refs, count = selection(db, value, data, lock)
     unit = image_unit(IMAGE_MODEL)
+    guard_cost(count * unit if unit is not None else None)
     contract = {
         "products": [(p.id, p.version) for p in rows],
         "references": refs,
@@ -576,6 +578,22 @@ def estimate(db, value, data, lock=False):
         rows,
         refs,
     )
+
+
+def guard_cost(cost):
+    import math
+
+    configured = os.getenv("MAX_ESTIMATED_BATCH_COST", "")
+    if not configured:
+        return
+    try:
+        maximum = float(configured)
+    except ValueError:
+        raise RuntimeError("MAX_ESTIMATED_BATCH_COST debe ser un importe en USD.") from None
+    if not math.isfinite(maximum) or maximum < 0:
+        raise RuntimeError("MAX_ESTIMATED_BATCH_COST debe ser finito y no negativo.")
+    if cost is None or cost > maximum:
+        raise HTTPException(422, "El costo estimado supera el límite configurado o no está disponible.")
 
 
 @router.post("/generation/estimate")
@@ -603,7 +621,14 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             )
         ).all()
         if old:
-            return {"jobs": [serialize(job) for job in old], "replayed": True}
+            if any(job.kind != "generation" or job.actor != actor(value)
+                   or job.payload.get("slots") != data.slots
+                   or job.payload.get("quantity") != data.quantity
+                   or bool(job.payload.get("automatic_review")) != data.automatic_review for job in old):
+                raise HTTPException(409, "request_key ya corresponde a otra solicitud.")
+            if data.product_ids and set(data.product_ids) != {job.product_id for job in old}:
+                raise HTTPException(409, "request_key ya corresponde a otros productos.")
+            return {"batch_id": old[0].batch_id, "jobs": [serialize(job) for job in old], "replayed": True}
         quoted, rows, references = estimate(db, value, data, True)
         if quoted["estimate_token"] != data.estimate_token:
             raise HTTPException(409, "El lote cambió. Consulta la estimación otra vez.")
@@ -612,6 +637,13 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
                 503, "No hay worker conectado. No se aceptó ni cobró el lote."
             )
         persist(db, tenant(value), actor(value), value)
+        batch = GenerationBatch(
+            tenant_id=tenant(value), actor=actor(value), request_key=data.request_key,
+            product_count=len(rows), image_count=quoted["images"],
+            estimated_cost=quoted["estimated_usd"],
+        )
+        db.add(batch)
+        db.flush()
         jobs = []
         for product in rows:
             if db.scalar(
@@ -634,6 +666,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             job = GenerationJob(
                 tenant_id=tenant(value),
                 product_id=product.id,
+                batch_id=batch.id,
                 actor=actor(value),
                 request_key=data.request_key,
                 payload=payload,
@@ -646,6 +679,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             )
             db.add(job)
             db.flush()
+            dispatch(db, job)
             jobs.append(serialize(job))
             audit(
                 db,
@@ -655,7 +689,22 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
                 product.id,
                 after={"job_id": job.id, "estimated_cost": job.estimated_cost},
             )
-        return {"jobs": jobs}
+        return {"batch_id": batch.id, "status": "queued", "jobs": jobs}
+
+
+@router.get("/generation/batches")
+def batches(value=Depends(context)):
+    with transaction() as db:
+        records = db.scalars(select(GenerationBatch)
+                             .where(GenerationBatch.tenant_id == tenant(value))
+                             .order_by(GenerationBatch.created_at.desc()).limit(50)).all()
+        result = []
+        for batch in records:
+            states = dict(db.execute(select(GenerationJob.status, func.count())
+                                     .where(GenerationJob.batch_id == batch.id)
+                                     .group_by(GenerationJob.status)).all())
+            result.append({**serialize(batch), "job_states": states})
+        return {"items": result}
 
 
 @router.get("/jobs")
@@ -803,6 +852,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
             raise HTTPException(503, "No hay worker conectado.")
         persist(db, tenant(value), actor(value), value)
         source = db.get(GenerationJob, asset.job_id)
+        guard_cost(image_unit(source.model))
         payload = {
             **source.payload,
             "slots": [asset.slot],
@@ -826,6 +876,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
         )
         db.add(job)
         db.flush()
+        dispatch(db, job)
         audit(
             db,
             tenant(value),
@@ -837,9 +888,54 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
         return {"job": serialize(job)}
 
 
+class RegenerationInput(BaseModel):
+    confirm_cost: bool
+    request_key: str = Field(min_length=12, max_length=100)
+
+
+@router.post("/assets/{asset_id}/regenerate", status_code=202)
+def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm_cost:
+        raise HTTPException(422, "Confirma el nuevo consumo de IA.")
+    with transaction() as db:
+        asset = db.scalar(select(GeneratedAsset).where(
+            GeneratedAsset.id == asset_id, GeneratedAsset.tenant_id == tenant(value)))
+        if not asset:
+            raise HTTPException(404, "Imagen no disponible.")
+        source = db.get(GenerationJob, asset.job_id)
+        cost = image_unit(source.model)
+        guard_cost(cost)
+        payload = {**source.payload, "slots": [asset.slot], "quantity": 1,
+                   "completed_keys": [], "in_flight": None,
+                   "previous_asset_id": asset.id,
+                   "product": serialize(product_for(db, tenant(value), asset.product_id))}
+        for field in ("previous_raw_id", "feedback", "history"):
+            payload.pop(field, None)
+        product_id, model = asset.product_id, source.model
+    return enqueue_operation(value, "generation", data.request_key, payload,
+                             product_id, model, cost)
+
+
 class PublishInput(BaseModel):
     confirm: bool
     request_key: str = Field(min_length=12, max_length=100)
+
+
+@router.post("/assets/{asset_id}/save", status_code=202)
+def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma el guardado de la imagen aprobada.")
+    with transaction() as db:
+        asset = db.scalar(select(GeneratedAsset).where(
+            GeneratedAsset.id == asset_id, GeneratedAsset.tenant_id == tenant(value)))
+        if not asset or asset.status not in {"approved", "published"}:
+            raise HTTPException(422, "Aprueba la imagen antes de guardarla.")
+        product = product_for(db, tenant(value), asset.product_id)
+        payload = {"asset_id": asset.id, "version": product.version}
+        pid = product.id
+    return enqueue_operation(value, "asset_save", data.request_key, payload, pid)
 
 
 @router.post("/products/{product_id}/publish", status_code=202)
@@ -1061,7 +1157,17 @@ def enqueue_operation(
             )
         )
         if previous:
+            if previous.kind != kind or previous.product_id != product_id or previous.actor != actor(value):
+                raise HTTPException(409, "request_key ya corresponde a otra operación.")
+            if any(previous.payload.get(field) != payload.get(field)
+                   for field in ("asset_id", "previous_asset_id", "retry_of")):
+                raise HTTPException(409, "request_key ya corresponde a otro resultado.")
             return {"job": serialize(previous)}
+        if kind in {"generation", "studio_generation"}:
+            guard_cost(estimated_cost)
+            count = len(payload["slots"]) * payload.get("quantity", 1)
+            if count > int(os.getenv("MAX_IMAGES_PER_BATCH", os.getenv("MAX_BATCH_IMAGES", "300"))):
+                raise HTTPException(422, "El intento supera MAX_IMAGES_PER_BATCH.")
         if product_id:
             product_for(db, tenant(value), product_id, True)
             if db.scalar(
@@ -1089,6 +1195,7 @@ def enqueue_operation(
         )
         db.add(job)
         db.flush()
+        dispatch(db, job)
         audit(
             db,
             tenant(value),
