@@ -50,6 +50,11 @@ jobs:
           npm ci --no-audit --no-fund
           npm audit --omit=dev --audit-level=high
           npm run build
+          npm run typecheck
+          SUITE_FRONTEND_MODE=standalone SUITE_API_ORIGIN=https://127.0.0.1:24443 npm run build
+          cp -r public .next/standalone/
+          cp -r .next/static .next/standalone/.next/
+          node ../test_frontend_proxy.cjs
       - name: Instalar dependencias
         run: |
           pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest
@@ -64,7 +69,7 @@ jobs:
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
           python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
-          python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py -q
+          python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py test_frontend_separation.py -q
           node test_loyverse_ui.js
       - name: Cola y solicitudes concurrentes en PostgreSQL real
         env:

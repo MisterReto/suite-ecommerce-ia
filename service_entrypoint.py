@@ -1,4 +1,4 @@
-"""One image, two independent Render processes selected by role."""
+"""API entrypoint with optional UI hosting for the compatible deployment."""
 import os
 from starlette.routing import Mount
 
@@ -12,8 +12,9 @@ else:
 if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
     import loyverse_web
     loyverse_web.register(fastapi_app)
-    from frontend_host import register_frontend
-    register_frontend(fastapi_app)
+    if os.getenv("SUITE_SERVE_FRONTEND", "true").lower() == "true":
+        from frontend_host import register_frontend
+        register_frontend(fastapi_app)
     from catalog_platform.api import router as catalog_router
     fastapi_app.include_router(catalog_router)
     from catalog_platform.webhooks import router as webhook_router

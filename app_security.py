@@ -127,7 +127,16 @@ class SecurityMiddleware:
         external = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
         if external and request.url.netloc != urlparse(external).netloc:
             return await JSONResponse({"error": "Host no autorizado."}, status_code=400)(scope, receive, send)
-        origin = external or str(request.base_url).rstrip("/")
+        # The separate Next.js service proxies to this API on the user's origin.
+        # Keep API Host validation above; never trust a caller's forwarded host.
+        public = os.getenv("APP_PUBLIC_ORIGIN", "").rstrip("/")
+        if public:
+            parsed = urlparse(public)
+            if (parsed.scheme != "https" or not parsed.netloc or parsed.username
+                    or parsed.password or parsed.path or parsed.query or parsed.fragment):
+                return await JSONResponse({"error": "Configura APP_PUBLIC_ORIGIN como origen HTTPS."},
+                                          status_code=503)(scope, receive, send)
+        origin = public or external or str(request.base_url).rstrip("/")
         internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse"}
         if method not in {"GET", "HEAD", "OPTIONS"} and not internal:
             source = request.headers.get("origin")
