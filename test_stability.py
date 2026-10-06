@@ -21,24 +21,19 @@ def functions(filename, names, scope):
     return scope
 
 class Stability(unittest.TestCase):
-    def test_all_source_replacements(self):
+    def test_canonical_adapter_no_longer_rewrites_source_or_imports_gradio(self):
         source = (ROOT / "app.py").read_text()
-        tree = ast.parse((ROOT / "ai_app.py").read_text())
-        values, count = {}, 0
-        for n in tree.body:
-            if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant):
-                for t in n.targets:
-                    if isinstance(t, ast.Name):
-                        values[t.id] = n.value.value
-            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) and n.value.func.id == "_replace_once":
-                old, new, label = [values[x.id] if isinstance(x, ast.Name) else ast.literal_eval(x) for x in n.value.args]
-                self.assertEqual(source.count(old), 1, label)
-                source = source.replace(old, new, 1)
-                count += 1
-        compile(source, "prepared.py", "exec")
-        self.assertEqual(count, 17)
-        self.assertIn('btn_ajustes.click(lambda: gr.update(selected=0)', source)
-        self.assertIn('💾 Guardar solo en Drive', source)
+        adapter = (ROOT / "ai_app.py").read_text()
+        for filename in ("app.py", "ai_app.py", "product_capture.py", "studio_api.py"):
+            tree = ast.parse((ROOT / filename).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    self.assertFalse(any(n.name == "gradio" for n in node.names))
+                elif isinstance(node, ast.ImportFrom):
+                    self.assertNotEqual(node.module, "gradio")
+        self.assertNotIn('_replace_once', adapter)
+        self.assertNotIn('exec(', adapter)
+        self.assertIn('from studio_api import app as fastapi_app', (ROOT / "service_entrypoint.py").read_text())
         self.assertIn('legacy._AUTO_SYNC_AFTER_SAVE = None', (ROOT / "ai_app.py").read_text())
         self.assertIn('fastapi_app.mount("/suite-static"', source)
         self.assertNotIn('fastapi_app.mount("/static"', source)

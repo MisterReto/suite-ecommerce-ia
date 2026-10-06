@@ -1,4 +1,15 @@
-# Suite e-commerce: servicios separados
+# Servicios Render: migración incremental
+
+La arquitectura nueva añade PostgreSQL y un background worker dedicado. La UI
+Next.js exportada comparte origen con FastAPI en el web principal; se conserva
+el segundo web de herramientas. Configuración y validación en
+[docs/platform-rollout.md](docs/platform-rollout.md). La propuesta aditiva está
+en `deploy/render-platform.yaml` y no reemplaza automáticamente los servicios.
+
+Lo siguiente describe las herramientas históricas que permanecen disponibles
+durante la transición. Sus tablas en Sheets no son el catálogo maestro nuevo.
+
+## Herramientas históricas separadas
 
 La principal sirve captura, IA, ajustes y Google Drive. Los botones de WooCommerce
 abren directamente https://suite-ecommerce-ia-ai.onrender.com. Las antiguas URL

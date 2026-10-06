@@ -23,7 +23,8 @@ STORE_KEYS = (
 
 
 def setting(key, default=""):
-    return STORE_CONTEXT.get().get(key, os.getenv(key, default))
+    aliases={"WC_URL":"WOOCOMMERCE_URL","WC_CONSUMER_KEY":"WOOCOMMERCE_CONSUMER_KEY","WC_CONSUMER_SECRET":"WOOCOMMERCE_CONSUMER_SECRET","WP_URL":"WORDPRESS_URL"}
+    return STORE_CONTEXT.get().get(key, os.getenv(key,os.getenv(aliases.get(key,""),default)))
 
 
 def signature(body: bytes, timestamp: str, nonce: str, key: str) -> str:

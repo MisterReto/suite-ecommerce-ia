@@ -84,9 +84,11 @@ def _worker_context(session, legacy):
         cached = (folder_key, time.monotonic(), refs)
         session["_sync_worker_refs"] = cached
     root, images, spreadsheet, _ = cached[2]
+    from catalog_platform.security import role_for
     return {
         "access_token": session["creds"]["token"],
         "email": session.get("email", ""),
+        "role": role_for(session.get("email", "")),
         "spreadsheet_id": spreadsheet, "images_folder_id": images,
         "root_folder_id": root,
         "store": {k: os.getenv(k, "") for k in STORE_KEYS if os.getenv(k)},

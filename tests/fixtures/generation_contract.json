@@ -1,0 +1,25 @@
+{
+  "protected": {
+    "creative_pipeline.py": null,
+    "studio_api.py": [
+      "make_image",
+      "creative_plan"
+    ],
+    "app.py": [
+      "_validar_con_vision",
+      "PROMPT_HD"
+    ],
+    "gemini_gateway.py": [
+      "image_part",
+      "text_config"
+    ]
+  },
+  "sha256": {
+    "creative_pipeline.py": "fec47a23e3032f19d58716d2a60f9398c3f44900717e400e31891a879b44934a",
+    "studio_api.py": "28e4c331efdf620a65604ed0249e72c9123415b4a9f2d2a8508eec5685db4c93",
+    "app.py": "3a98edff1a306d2fa9e6c2eb6ecdb2f2786ae658ccd08f00b36a37e4ecce0532",
+    "gemini_gateway.py": "85338575adf39bcc0f4015136f2ef739df4271ddc8c1ddc0b2073ea260529560"
+  },
+  "accepted_commit": "3ba6a2f9aeb65265a6165ee6c48b7ab273256d7f",
+  "comparison": "Compare selected AST nodes against the immutable accepted commit using the current interpreter. sha256 entries are legacy provenance, not a cross-version AST serialization."
+}
