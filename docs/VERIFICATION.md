@@ -1,8 +1,10 @@
 # Evidencia, alcance y pendientes
 
 Fecha: 2026-10-06. Rama agent/stabilize-architecture-20261006, base 9dc9a09.
-Producción histórica sigue en 41d0599. No hubo deploy, generación pagada,
-escritura Drive/Sheet/Media/Woo ni creación de infraestructura.
+Producción histórica sigue en 41d0599. Se desplegó staging aditivo en cinco
+recursos free; tres apps live en `df88da8` y dos almacenes disponibles.
+No hubo generación pagada, migración de inventario ni escritura
+Drive/Sheet/Media/Woo. La base nueva preparó su esquema sin importar el Sheet.
 
 ## Comprobaciones locales
 
@@ -65,8 +67,15 @@ ni se deshabilitaron consultas preparadas. Ver docs/CHANGE_PLAN.md.
 
 La repetición sobre `b50ca516` terminó con los tres jobs verdes en el
 [run 37495343135](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37495343135):
-32 pruebas PostgreSQL17/Redis7 sin omisiones y móvil real correcto. Los cambios
-posteriores para alojamiento gratuito requieren su propio CI en
+32 pruebas PostgreSQL17/Redis7 sin omisiones y móvil real correcto. El alojamiento
+gratuito y las referencias directas pasaron su propio CI en
+[run 37535079549](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37535079549)
+sobre `df88da8`: validate y generation-contract de Python 3.11/3.14 terminaron
+success. El grupo PostgreSQL17/Redis7 ejecutó **58 passed sin omisiones**;
+también pasaron móvil Chrome real 360/390/430/1280 px, proxy Next de 12 MB,
+builds, schema del Blueprint y auditorías sin vulnerabilidades conocidas.
+Los datos del navegador son sintéticos, incluido worker dormido/cola disponible.
+Los cambios siguientes deben conservar esos checks en
 [PR #26 → Checks](https://github.com/MisterReto/suite-ecommerce-ia/pull/26/checks).
 Exigir validate y ambos generation-contract verdes antes de desplegar; los
 dos casos PostgreSQL deben ejecutarse en ese grupo, sin omisiones. La evidencia
@@ -90,6 +99,28 @@ por SIGSEGV del binario: el pase móvil se exige en CI con Chrome del runner.
 Las rutas simuladas de ese pase ahora reportan worker dormido pero cola disponible,
 para verificar que las operaciones siguen siendo accesibles durante el cold start.
 
+## Evidencia del despliegue real
+
+El panel del Blueprint muestra las tres apps Deployed y PG/Valkey Available.
+El conector confirma planes free y deploys live; IDs/URLs en RENDER_SERVICES.
+El frontend abrió en navegador y Cuenta y conexiones mostró el enlace para
+conectar Google Drive sin sesión. No se inició OAuth ni se declaró login válido.
+La observación directa del JSON público de health quedó bloqueada por la
+protección de credenciales del navegador; la evidencia de salud disponible es
+la aceptación del health y estado live de Render, sin extraer valores secretos.
+
+La consulta SQL read-only por MCP fue rechazada por la allowlist externa vacía
+de PostgreSQL. Se conservó ese aislamiento; no se verificaron conteos de filas
+por ese medio. El arranque live del worker requiere Redis, esquema y heartbeat
+antes de marcar readiness. El vencimiento verificado de PG es
+`2026-11-05T21:39:57.500361Z`; todavía no hay ensayo de dump/restauración.
+
+La revisión automática rechazó configurar la allowlist y rol admin del dueño
+propuesto por faltar autorización explícita para correo, permiso y servicios.
+No se eludió el rechazo: allowlist vacía, mapa de roles vacío, viewer por defecto.
+Falta registrar/verificar el callback nuevo en Google y completar el primer
+paso de TEST_PLAN. La conexión existente de Render no necesita otro login.
+
 ## Aceptación real todavía pendiente
 
 - Generación real limpio/lifestyle/comercial/regeneración/corrección y lotes.
@@ -97,23 +128,23 @@ para verificar que las operaciones siguen siendo accesibles durante el cold star
 - Drive escritura controlada, Sheet lectura completa y reversión precisa.
 - Memoria y reinicio del worker completo, API/frontend disponibles.
 - WordPress/Woo producto/media/webhook/stock TEST-INTEGRATION y limpieza.
-- Despliegue aditivo, backup/restauración y cambio de entrada ensayado.
+- Backup/restauración y cambio de entrada ensayado; staging ya desplegado.
 - Loyverse futuro sin activar ni asumir firma/OAuth.
 
 El OOM de Render a 512Mi sí fue verificado; métricas no devolvieron series.
 No convertir el RSS de un test simulado en una garantía de capacidad real.
-Blueprint propone web free para worker, 512 MB/concurrency 1, sujeto a medir.
+Blueprint despliega web free para worker, 512 MB/concurrency 1, sujeto a medir.
 No autoriza upgrades ni pagos. PostgreSQL free solo staging, caduca a 30 días.
 
 ## Explicación correcta del sistema resultante
 
-La rama prepara una PWA Next sin secretos, API FastAPI, Redis/RQ y worker
+La rama implementa una PWA Next sin secretos, API FastAPI, Redis/RQ y worker
 independiente que reutiliza el pipeline aceptado. Drive guarda imágenes; SQL
 guarda estado/relaciones/counters y conexiones cifradas. inventario_completo
 continúa durante la transición. WooCommerce es ecommerce; Loyverse es futuro.
 El worker puede fallar sin terminar los procesos web; se revisan operaciones
 inciertas antes de otro gasto. Hay auditoría, documentación y rollback.
 
-Esta explicación describe la implementación preparada. La infraestructura
-productiva sigue siendo la histórica hasta completar TEST_PLAN; no decir que
-los tres servicios nuevos ya están activos ni que SQL es fuente exclusiva.
+Los tres servicios nuevos están activos para staging. La infraestructura
+productiva sigue siendo la histórica hasta completar TEST_PLAN; no presentar
+staging como aceptación de generación real ni SQL como fuente exclusiva.

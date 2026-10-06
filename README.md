@@ -14,7 +14,9 @@ cambian automáticamente proveedor, modelo, prompts ni referencias.
 - WordPress / WooCommerce reutilizan sus clientes existentes y IDs permanentes.
 - Loyverse preparado como contrato; nuevas escrituras/webhooks permanecen inactivos.
 - Si falta PostgreSQL, la captura compatible sigue disponible. No se aceptan lotes
-  durables sin un worker activo. Esta modalidad conserva el flujo de Drive/Sheets
+  durables sin PostgreSQL y un worker configurado; en free, un worker dormido
+  recibe una petición de arranque después de guardar el job. Se distingue
+  disponibilidad de cola de heartbeat activo. Esta modalidad conserva Drive/Sheets
   durante la transición; no equivale a completar la migración.
 
 [Auditoría inicial real](docs/AUDIT_INITIAL.md) · [Flujo protegido](docs/IMAGE_GENERATION_FLOW.md)
@@ -35,7 +37,12 @@ extiende la plataforma existente; no reconstruye la app. No se ejecutaron
 generaciones pagadas ni escrituras reales. La activación depende del pase real
 ordenado: si falla generación en pasos 5–9, detener nuevas integraciones.
 
-El Blueprint ahora prepara frontend, API y worker separados. El Dockerfile compatible conserva el modo exportado. La separación aún requiere activación en Render y pase real.
+El Blueprint ya desplegó frontend, API y worker separados en staging gratuito,
+junto con PostgreSQL/Key Value free, sin modificar los dos servicios históricos.
+La interfaz abre; acceso administrativo, callback Google y pase real siguen
+pendientes. PostgreSQL de pruebas vence el **5 de noviembre de 2026**.
+El Dockerfile compatible conserva el modo exportado. Ver IDs/URLs y evidencia
+en [Render](docs/RENDER_SERVICES.md).
 
 Para ejecutar la protección del generador, conservar el historial git del commit aceptado; CI hace checkout con `fetch-depth: 0`.
 
@@ -67,7 +74,10 @@ GENERATION_QUEUE_BACKEND=rq STUDIO_IMAGE_JOBS=worker SUITE_SERVICE_ROLE=sync SUI
 
 `catalog_platform.migrate` solo crea el esquema inicial aditivo; no sustituye una
 migración versionada ni un respaldo para cambios de esquema futuros. No ejecuta
-DDL al iniciar el servidor web.
+DDL al iniciar el servidor web por defecto. El Blueprint nuevo habilita
+`INITIALIZE_EMPTY_DATABASE=true` únicamente para la BD vacía de staging:
+crea tablas con lock, verifica reinicios y rechaza esquemas ajenos/incompletos
+sin aplicar cambios. No habilitarlo para migrar datos existentes.
 
 ## Pruebas
 

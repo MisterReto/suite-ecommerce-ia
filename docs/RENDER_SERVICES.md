@@ -1,10 +1,13 @@
-# Render: observado y propuesto
+# Render: producción conservada y staging gratuito
 
-Inspección de solo lectura: 2026-10-06. Workspace `ProyectoInventario`
-(`tea-d9kbmqegekts73cogq3g`). No se crearon servicios ni se cambiaron variables,
-planes, ramas, dominios o despliegues.
+Estado verificado: 2026-10-06. Workspace `ProyectoInventario`
+(`tea-d9kbmqegekts73cogq3g`). Se crearon cinco recursos nuevos, todos `free`,
+mediante el Blueprint `rincon-staging-20261006`
+(`exs-db2m0g1srm7s73bv129g`). No se añadió tarjeta ni se contrataron planes
+pagados. Los dos servicios históricos conservaron su rama, configuración y
+despliegue. No se cambió la entrada de producción.
 
-## Servicios actuales
+## Servicios históricos conservados
 
 | Dato | suite-ecommerce-ia | suite-ecommerce-ia-ai |
 | --- | --- | --- |
@@ -26,26 +29,50 @@ valores de entorno de esos servicios. No se asigna al segundo un rol efectivo
 sin inspeccionar su configuración real. Conservar el CMD del Dockerfile del
 commit live como referencia, no el del archivo modificado en otra rama.
 
-No se encontraron PostgreSQL ni Key Value en este workspace. No se observó
-disco configurado en la respuesta de servicios; confirmar el panel antes de
-dar por hecho una ausencia absoluta. No hay un background worker independiente.
+En la inspección inicial no había PostgreSQL ni Key Value en este workspace.
+Ahora existen los dos recursos de staging registrados abajo. No se observó
+disco configurado en los servicios históricos. No se creó un Background Worker
+de pago: el proceso RQ nuevo se aloja como web free.
 
 Se confirmó `oomKilled` en el segundo servicio el 2026-10-01 a las
 23:48:31.840779 UTC, evento `evt-davf2jou01pc73bohtrg`, límite 512Mi.
 La consulta de métricas no devolvió series RAM; no equivale a consumo cero y
 no permite atribuir un pico exacto a una función.
 
-## Propuesta aditiva de esta rama
+## Staging aditivo desplegado
 
 `deploy/render-platform.yaml` usa nombres nuevos; no reemplaza los dos servicios.
 
-| Recurso | Qué ejecuta | Configuración propuesta |
+| Recurso | Qué ejecuta | Configuración desplegada |
 | --- | --- | --- |
 | rincon-frontend | Dockerfile.frontend → node server.js, Next standalone | web free, Oregon, health `/`, sin secretos privados |
 | rincon-catalog-api | Dockerfile.api → uvicorn service_entrypoint:fastapi_app, 1 proceso | web free, health `/service-health`, SUITE_SERVE_FRONTEND=false |
 | rincon-catalog-worker | Dockerfile.worker + override python -m catalog_platform.worker_web → health + RQ pool | web free, 512 MB, concurrency 1, health `/service-health`; plazo de parada predeterminado |
 | rincon-generation-queue | Key Value compatible Redis | free para staging, noeviction, sin IP públicas permitidas |
 | rincon-catalog-db | PostgreSQL administrado | versión 17, free, 1 GB, sin IP públicas permitidas; caduca a los 30 días |
+
+| Recurso | ID | URL / estado observado |
+| --- | --- | --- |
+| rincon-frontend | srv-db2mlb2j9qps73eob7og | https://rincon-frontend.onrender.com/ · live |
+| rincon-catalog-api | srv-db2mlqij9qps73eobrg0 | https://rincon-catalog-api.onrender.com · live |
+| rincon-catalog-worker | srv-db2mlqqj9qps73eobsk0 | https://rincon-catalog-worker.onrender.com · live |
+| rincon-catalog-db | dpg-db2mlb2j9qps73eob7u0-a | available · PostgreSQL 17 |
+| rincon-generation-queue | red-db2mlb2j9qps73eob7hg | available · Valkey 8, persistencia off |
+
+Los tres deploys live observados ejecutan
+`df88da8c0ea664ecf456868492f5a8cdd897c7ee`: frontend
+`dep-db2mlqqj9qps73eobsm0`, API `dep-db2mmhqj9qps73eod90g`, worker
+`dep-db2mlr2j9qps73eobtb0`. Los checks de ese commit están verdes.
+El panel muestra Deployed para las tres apps y Available para los almacenes.
+La interfaz abre y muestra la conexión Google cuando no hay sesión; todavía
+no se verificó login real, generación ni acceso efectivo a Drive/Sheets.
+
+**Vencimiento exacto de PostgreSQL:** `2026-11-05T21:39:57.500361Z`.
+Mantenerlo como pruebas; no trasladar la autoridad del inventario a esta base.
+El acceso administrativo de la app sigue sin configurar: la revisión automática
+rechazó la asignación propuesta por faltar autorización explícita del correo,
+rol y alcance. La allowlist permanece vacía y cerrada. Render sigue conectado;
+el bloqueo corresponde al permiso en la app de staging.
 
 Son **tres servicios de aplicación** y dos almacenes, no cinco aplicaciones ni
 un servicio único. Todos apuntan a `agent/stabilize-architecture-20261006`, con
@@ -57,7 +84,9 @@ Los orígenes públicos se enlazan mediante referencias directas a
 Las claves Google/tienda se referencian dentro de Render desde el servicio
 histórico, sin leer valores ni modificarlo. Render genera la clave Fernet nueva
 en API y worker la comparte por referencia. Las env `sync:false` restantes
-(roles/correos/límite de coste) se completan en privado.
+(roles/correos/límite de coste) se completan en privado tras autorizar el acceso.
+El callback que debe registrarse/verificarse en el cliente Google existente es
+`https://rincon-frontend.onrender.com/auth/callback`, conservando el antiguo.
 
 El presupuesto solicitado es **cero para alojamiento**: todos los recursos
 declaran `plan: free`. No registrar tarjeta ni aceptar upgrades. Render admite

@@ -11,9 +11,11 @@ servicios web Docker de la aplicación histórica; todavía no ejecutan esta
 separación. No se modificaron sus despliegues, variables ni datos en esta auditoría.
 
 La rama `agent/stabilize-architecture-20261006` continúa la plataforma existente
-`agent/catalog-platform` (`9dc9a09`). Prepara tres servicios y mantiene el
-generador aceptado. El siguiente diagrama representa **el modo separado de esta
-rama, cuando se configure**, no una infraestructura ya activada en producción.
+`agent/catalog-platform` (`9dc9a09`). Sus tres servicios separados ya están
+desplegados en staging free y mantienen el generador aceptado. El siguiente
+diagrama representa ese modo separado: las conexiones están enlazadas, pero
+login y operaciones reales todavía requieren el pase de TEST_PLAN. No se cambió
+la entrada de producción ni se activaron nuevas escrituras a la tienda.
 
 ```mermaid
 flowchart TD
@@ -30,7 +32,7 @@ flowchart TD
   W --> E[WordPress / WooCommerce]
 ```
 
-El detalle de servicios actuales, propuesta y comandos está en
+El detalle de servicios históricos, staging gratuito y comandos está en
 [RENDER_SERVICES](RENDER_SERVICES.md). Loyverse sigue siendo una preparación:
 no aparece como sincronización operativa en este diagrama.
 

@@ -1,7 +1,11 @@
 # Activar sin reemplazar producción de golpe
 
-Estado: propuesta en rama; Render actual sigue en 41d0599. No hubo migraciones
-reales ni cambio de tráfico. El Blueprint está en `deploy/render-platform.yaml`.
+Estado: staging gratuito desplegado el 2026-10-06 mediante
+`deploy/render-platform.yaml`. Frontend, API y worker están live en el commit
+`df88da8`; PostgreSQL y Key Value están disponibles. La producción histórica
+sigue en `41d0599`, sin cambio de tráfico ni migración de inventario.
+Se preparó únicamente el esquema de la base nueva y vacía. Login administrativo
+y aceptación real siguen pendientes; ver [RENDER_SERVICES](RENDER_SERVICES.md).
 Seguir [TEST_PLAN](../TEST_PLAN.md); CI verde no sustituye las pruebas reales.
 
 ## 1. Preparar referencias y backups
@@ -23,21 +27,24 @@ El dump en `/tmp` debe transferirse a almacenamiento privado durable y probarse
 en otra base. Conservar la clave Fernet aparte. No iniciar una migración porque
 simplemente existe un archivo dump sin comprobar su restauración.
 
-## 2. Provisionar staging aditivo
+## 2. Staging aditivo creado
 
-Crear mediante el Blueprint los tres nombres nuevos, PG y Key Value. Revisar
-que **todos los recursos sean free** antes de confirmar creación. No añadir
-tarjeta, aceptar pagos ni cambiar las
-ramas ni Dockerfiles de los dos servicios existentes. Key Value noeviction,
-sin acceso público abierto; PG conexión interna en Oregon.
+El Blueprint `rincon-staging-20261006` ya creó los tres nombres nuevos, PG y
+Key Value. Se verificó **free en los cinco recursos**, sin añadir tarjeta ni
+aceptar pagos. Se conservaron las ramas y Dockerfiles de los dos servicios
+existentes. Key Value usa noeviction y PG conexión interna en Oregon; ambos
+tienen la allowlist externa vacía.
 
 Los orígenes se enlazan directamente por
 `RENDER_EXTERNAL_URL` de cada servicio. Google/tienda se reutilizan mediante
 `fromService` del servicio histórico; sus valores no se leen ni se copian al chat.
 Render genera la nueva Fernet base64 de 256 bits en API y worker la referencia.
-Completar roles/correos `sync:false` en privado; allowlist permanece cerrada.
+Completar roles/correos `sync:false` en privado después de obtener autorización
+explícita para el administrador. La revisión automática bloqueó esa asignación;
+la allowlist permanece vacía y cerrada, sin modificar el rol predeterminado viewer.
 `GOOGLE_REDIRECT_BASE` deriva el callback frontend `/auth/callback` al arrancar,
-si no existe un GOOGLE_REDIRECT_URI explícito. Añadir ese callback a Google Console
+si no existe un GOOGLE_REDIRECT_URI explícito. El callback nuevo es
+`https://rincon-frontend.onrender.com/auth/callback`; añadirlo/verificarlo en Google Console
 conservando el callback antiguo. Esto reutiliza cliente/secret existentes;
 no requiere rotar claves por iniciativa de la migración.
 
@@ -61,6 +68,13 @@ reinicios solo verifica un esquema completo. Si hay otras tablas o un esquema
 incompleto, rechaza el arranque sin hacer DDL. Desactivar este flag después de
 preparar staging. No activar este opt-in en una base existente de producción.
 
+API y worker ya arrancaron con ese opt-in en la base nueva. Render aceptó sus
+health y los declaró live; la preparación del worker exige inicializar/verificar
+esquema, conectarse a Redis y escribir el heartbeat antes de responder listo.
+No se obtuvo un conteo directo de tablas/filas por MCP: la BD bloquea conexiones
+externas con su allowlist vacía. No se abrió la red para permitir esa consulta.
+El status autenticado y la prueba de una operación real siguen pendientes.
+
 Para una base que ya existe, preparar backup y migrar explícitamente desde una
 terminal privada autorizada; el shell/pre-deploy de Render no está disponible
 en web free:
@@ -78,7 +92,7 @@ esperar arranque en frío, comprobar una sola entrega y consumo. El status separ
 `worker_ready` real de `worker_can_queue`; no declarar ejecutándose un job queued.
 Sin trabajo pendiente, consultar status no manda tráfico al worker.
 
-Registrar la caducidad de PostgreSQL free a 30 días, exportar cualquier dato de
+La BD free vence el **2026-11-05 a las 21:39:57 UTC**. Exportar cualquier dato de
 pruebas antes de esa fecha y mantener Drive/Sheets como fuente operativa. No
 cambiar la entrada a producción con una base que va a caducar. Las 750 horas
 mensuales se comparten con los dos servicios históricos; no usar keepalive.
