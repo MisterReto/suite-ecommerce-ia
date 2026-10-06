@@ -31,7 +31,7 @@ tarjeta, aceptar pagos ni cambiar las
 ramas ni Dockerfiles de los dos servicios existentes. Key Value noeviction,
 sin acceso público abierto; PG conexión interna en Oregon.
 
-Los orígenes se enlazan por `PUBLIC_SERVICE_ORIGIN`, alias self-reference del
+Los orígenes se enlazan directamente por
 `RENDER_EXTERNAL_URL` de cada servicio. Google/tienda se reutilizan mediante
 `fromService` del servicio histórico; sus valores no se leen ni se copian al chat.
 Render genera la nueva Fernet base64 de 256 bits en API y worker la referencia.

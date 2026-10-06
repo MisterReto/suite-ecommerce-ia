@@ -101,6 +101,8 @@ jobs:
           assert api_env["CREDENTIAL_ENCRYPTION_KEY"].get("generateValue") is True
           assert worker_env["CREDENTIAL_ENCRYPTION_KEY"]["fromService"]["envVarKey"] == "CREDENTIAL_ENCRYPTION_KEY"
           assert api_env["GOOGLE_CLIENT_SECRET"]["fromService"]["name"] == "suite-ecommerce-ia"
+          assert worker_env["GOOGLE_CLIENT_SECRET"]["fromService"]["name"] == "suite-ecommerce-ia"
+          assert api_env["IMAGE_WORKER_ORIGIN"]["fromService"]["envVarKey"] == "RENDER_EXTERNAL_URL"
           assert any(item["type"] == "keyvalue" and item["maxmemoryPolicy"] == "noeviction" for item in blueprint["services"])
           assert not any(item["name"] in {"suite-ecommerce-ia", "suite-ecommerce-ia-ai"} for item in blueprint["services"])
           print("Blueprint válido: frontend, API y worker independientes; servicios históricos preservados.")

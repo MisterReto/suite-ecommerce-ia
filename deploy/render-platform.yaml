@@ -34,11 +34,6 @@ services:
     fromService:
       type: web
       name: rincon-catalog-api
-      envVarKey: PUBLIC_SERVICE_ORIGIN
-  - key: PUBLIC_SERVICE_ORIGIN
-    fromService:
-      type: web
-      name: rincon-frontend
       envVarKey: RENDER_EXTERNAL_URL
 - type: web
   name: rincon-catalog-api
@@ -58,7 +53,7 @@ services:
     fromService:
       type: web
       name: rincon-frontend
-      envVarKey: PUBLIC_SERVICE_ORIGIN
+      envVarKey: RENDER_EXTERNAL_URL
   - key: DATABASE_URL
     fromDatabase:
       name: rincon-catalog-db
@@ -69,7 +64,7 @@ services:
     fromService:
       type: web
       name: rincon-catalog-worker
-      envVarKey: PUBLIC_SERVICE_ORIGIN
+      envVarKey: RENDER_EXTERNAL_URL
   - key: REDIS_URL
     fromService:
       name: rincon-generation-queue
@@ -123,18 +118,13 @@ services:
     value: 'false'
   - key: WP_MEDIA_WRITE_ENABLED
     value: 'false'
-  - key: PUBLIC_SERVICE_ORIGIN
-    fromService:
-      type: web
-      name: rincon-catalog-api
-      envVarKey: RENDER_EXTERNAL_URL
   - key: GOOGLE_SHEET_ID
     value: 1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE
   - key: GOOGLE_REDIRECT_BASE
     fromService:
       type: web
       name: rincon-frontend
-      envVarKey: PUBLIC_SERVICE_ORIGIN
+      envVarKey: RENDER_EXTERNAL_URL
 - type: web
   name: rincon-catalog-worker
   runtime: docker
@@ -173,12 +163,12 @@ services:
   - key: GOOGLE_CLIENT_ID
     fromService:
       type: web
-      name: rincon-catalog-api
+      name: suite-ecommerce-ia
       envVarKey: GOOGLE_CLIENT_ID
   - key: GOOGLE_CLIENT_SECRET
     fromService:
       type: web
-      name: rincon-catalog-api
+      name: suite-ecommerce-ia
       envVarKey: GOOGLE_CLIENT_SECRET
   - key: GOOGLE_DRIVE_FOLDER_ID
     fromService:
@@ -232,11 +222,6 @@ services:
     value: 'false'
   - key: WP_MEDIA_WRITE_ENABLED
     value: 'false'
-  - key: PUBLIC_SERVICE_ORIGIN
-    fromService:
-      type: web
-      name: rincon-catalog-worker
-      envVarKey: RENDER_EXTERNAL_URL
   - key: GOOGLE_SHEET_ID
     fromService:
       type: web
@@ -246,4 +231,4 @@ services:
     fromService:
       type: web
       name: rincon-frontend
-      envVarKey: PUBLIC_SERVICE_ORIGIN
+      envVarKey: RENDER_EXTERNAL_URL

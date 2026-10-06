@@ -52,7 +52,7 @@ un servicio único. Todos apuntan a `agent/stabilize-architecture-20261006`, con
 Docker context `.` y autodeploy solo tras checks verdes. Builds: Dockerfiles,
 sin comandos personalizados aparte. El frontend necesita SUITE_API_ORIGIN en
 build; API y worker reciben DATABASE_URL/REDIS_URL mediante referencias internas.
-Los orígenes públicos se enlazan mediante alias `PUBLIC_SERVICE_ORIGIN` de
+Los orígenes públicos se enlazan mediante referencias directas a
 `RENDER_EXTERNAL_URL`; no se usan hosts privados para recibir tráfico web free.
 Las claves Google/tienda se referencian dentro de Render desde el servicio
 histórico, sin leer valores ni modificarlo. Render genera la clave Fernet nueva

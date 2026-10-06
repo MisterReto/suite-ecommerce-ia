@@ -100,8 +100,7 @@ tres nuevos; no borrar SQL ni cambiar claves, prompts, modelos o Sheet.
 copie múltiples claves sería innecesario. **Cambio:** referencias `fromService`
 a variables existentes de `suite-ecommerce-ia`, comprobadas por nombre en Render;
 API/worker comparten la clave nueva generada por Render (base64, 256 bits), sin
-rotar ninguna clave histórica. Los orígenes públicos se enlazan usando un alias
-self-reference de `RENDER_EXTERNAL_URL`; el callback nuevo se configura al
+rotar ninguna clave histórica. Los orígenes públicos se enlazan usando referencias directas a `RENDER_EXTERNAL_URL`; el callback nuevo se configura al
 obtener la URL frontend, conservando el registro antiguo de Google.
 **Archivos:** Blueprint, CI y documentos de configuración. **Riesgo:** referencias
 a variables ausentes o un ciclo no resuelto por el proveedor. **Pruebas:** schema,
@@ -110,3 +109,8 @@ health HTTP y roles cerrados antes de login. No revelar valores ni cambiar el
 entorno de los servicios históricos. **Rollback:** URLs antiguas, conservar
 la clave nueva con sus datos cifrados y detener staging.
 Fuente: [Blueprint env vars](https://render.com/docs/blueprint-spec#setting-environment-variables).
+
+El Dashboard rechaza referencias encadenadas a variables que ya son referencias.
+Se usan referencias directas a claves del servicio histórico y a
+`RENDER_EXTERNAL_URL`; no un alias intermediario. La clave generada es un valor
+propio de API, por lo que el worker sí puede referenciarla directamente.
