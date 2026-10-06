@@ -34,7 +34,7 @@ def heartbeat(owner):
             )
 
 
-def available(db):
+def worker_ready(db):
     if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") == "rq":
         from .redis_broker import reachable
 
@@ -48,6 +48,15 @@ def available(db):
         )
         is not None
     )
+
+
+def available(db):
+    if worker_ready(db):
+        return True
+    # A dormant free web worker can consume the durable SQL outbox after wakeup.
+    # Legacy/dedicated workers retain the existing fail-closed readiness check.
+    from .worker_wakeup import configured
+    return configured()
 
 
 def dispatch(db, job):

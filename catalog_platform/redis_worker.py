@@ -22,13 +22,15 @@ def concurrency():
     return value
 
 
-def main():
+def main(ready=None):
     cipher()
     if not os.getenv("DATABASE_URL"):
         raise RuntimeError("Falta DATABASE_URL; no se inició el worker.")
     if os.getenv("GENERATION_QUEUE_BACKEND") != "rq" or not redis_broker.reachable():
         raise RuntimeError("Configura Redis y GENERATION_QUEUE_BACKEND=rq.")
     count = concurrency()
+    from .initialize import initialize_empty_database
+    initialize_empty_database()
     stopped = threading.Event()
     pool = subprocess.Popen(
         [str(Path(sys.executable).with_name("rq")), "worker-pool",
@@ -38,6 +40,8 @@ def main():
     )
     def shutdown(*_):
         stopped.set()
+        if ready is not None:
+            ready.clear()
         if pool.poll() is None:
             os.killpg(pool.pid, signal.SIGTERM)
     signal.signal(signal.SIGTERM, shutdown)
@@ -50,6 +54,8 @@ def main():
                 raise RuntimeError("El pool RQ terminó; Render debe reiniciar el worker.")
             queue.heartbeat(owner)
             redis_broker.reconcile()
+            if ready is not None:
+                ready.set()
             stopped.wait(5)
     finally:
         shutdown()

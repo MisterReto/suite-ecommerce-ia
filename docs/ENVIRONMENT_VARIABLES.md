@@ -24,6 +24,8 @@ no son secretos, pero la cuenta debe tener acceso.
 | CREDENTIAL_ENCRYPTION_KEY | API + worker | Fernet válida e idéntica; protege conexiones persistidas |
 | IMAGE_WORKER_CONCURRENCY | worker | entero 1–8, default 1; cambiar solo tras medir RAM |
 | IMAGE_JOB_TIMEOUT_SECONDS | API + worker | timeout RQ, default 1800; resultado incierto no se repite solo |
+| IMAGE_WORKER_ORIGIN | API | origen HTTPS exacto `https://<worker>.onrender.com`, sin path/credenciales; despierta web free después de aceptar un job SQL |
+| INITIALIZE_EMPTY_DATABASE | API + worker | opt-in true solo en staging nuevo/vacío; crea tablas con lock, rechaza esquemas ajenos/incompletos; desactivar después |
 | APP_ROLE_MAP | API + worker | JSON email→admin/editor/viewer; autoriza catálogo por membresía |
 | APP_DEFAULT_ROLE | API + worker | viewer en propuesta; no sustituye membresía explícita |
 | APP_ALLOWED_EMAILS | API | allowlist de login Google; APP_ROLE_MAP sirve de lista si no se proporciona |
@@ -44,7 +46,7 @@ no son secretos, pero la cuenta debe tener acceso.
 | WOOCOMMERCE_WEBHOOK_SECRET | API | necesario solo al habilitar receptor WooCommerce |
 | WEBHOOK_TENANT_ID | API | raíz a asociar al receptor; sin valor retorna 503 |
 | MEDIA_ALLOWED_HOSTS | worker | hosts explícitos adicionales para lectura de medios, no destinos arbitrarios |
-| SUITE_SERVICE_ROLE | API/worker | main para API, sync para runtime del worker; worker no arranca un servidor HTTP |
+| SUITE_SERVICE_ROLE | API/worker | main para API, sync para runtime del worker; worker_web sirve solo health HTTP y consume RQ, sin endpoints de producto/generación |
 | SUITE_DRIVE_ONLY | API/worker | true API compatible, false worker con ecommerce; credenciales permanecen servidor |
 | SYNC_SERVICE_URL / SYNC_SERVICE_SHARED_KEY | API, compatibilidad | puente al sync histórico; no es transporte de jobs de imagen nuevos |
 | BACKUP_DIRECTORY | proceso backup, opcional | default /tmp/rincon-backups; exportar dump a ubicación privada durable |

@@ -48,7 +48,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
       let json = { items: [] };
       if (pathname === "/api/session") json = { authenticated: true, email: "test@example.test", gemini_configured: true,
         folder: "TEST-INTEGRATION", image_model: asset.model, estimated_image_usd: .067 };
-      else if (pathname.endsWith("/status")) json = { ready: true, configured: true, worker_ready: true, role: "admin", message: "Prueba" };
+      else if (pathname.endsWith("/status")) json = { ready: true, configured: true, worker_ready: false, worker_can_queue: true, role: "admin", message: "Prueba" };
       else if (pathname.endsWith("/dashboard")) json = { stats: { low_stock: 1, out_of_stock: 0, sync_errors: 0, pending_jobs: 0, pending_products: 1 }, activity: [], ecommerce: null };
       else if (pathname === "/api/platform/products") json = { items: [product], total: 1 };
       else if (pathname === "/api/platform/products/" + product.id) json = { product, images: [], assets: [asset], jobs: [], variants: [], movements: [], sync_events: [] };

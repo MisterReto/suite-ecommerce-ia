@@ -1,15 +1,14 @@
 # Additive proposal. Does not replace either existing web service.
-# Provision only after approving recurring compute/storage costs.
+# Every resource is free. PostgreSQL expires after 30 days: staging only.
 previews:
   generation: "off"
 databases:
   - name: rincon-catalog-db
     databaseName: rincon_catalog
     user: rincon_app
-    plan: 0.1c-256mb
+    plan: free
     region: oregon
     postgresMajorVersion: "17"
-    diskSizeGB: 1
     ipAllowList: []
 services:
   - type: keyvalue
@@ -17,6 +16,7 @@ services:
     plan: free
     region: oregon
     maxmemoryPolicy: noeviction
+    persistenceMode: "off"
     ipAllowList: []
   - type: web
     name: rincon-frontend
@@ -52,6 +52,10 @@ services:
         fromDatabase:
           name: rincon-catalog-db
           property: connectionString
+      - key: INITIALIZE_EMPTY_DATABASE
+        value: "true"
+      - key: IMAGE_WORKER_ORIGIN
+        sync: false
       - key: REDIS_URL
         fromService:
           name: rincon-generation-queue
@@ -95,22 +99,26 @@ services:
         value: "false"
       - key: WP_MEDIA_WRITE_ENABLED
         value: "false"
-  - type: worker
+  - type: web
     name: rincon-catalog-worker
     runtime: docker
     repo: https://github.com/MisterReto/suite-ecommerce-ia
     branch: agent/stabilize-architecture-20261006
     dockerfilePath: ./Dockerfile.worker
+    dockerCommand: python -m catalog_platform.worker_web
     dockerContext: .
-    plan: 1c-2g
+    plan: free
     region: oregon
     autoDeployTrigger: checksPass
+    healthCheckPath: /service-health
     maxShutdownDelaySeconds: 300
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: rincon-catalog-db
           property: connectionString
+      - key: INITIALIZE_EMPTY_DATABASE
+        value: "true"
       - key: REDIS_URL
         fromService:
           name: rincon-generation-queue

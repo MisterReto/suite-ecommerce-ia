@@ -1,4 +1,4 @@
-"""No implicit data migrations at web startup; production requires PostgreSQL."""
+"""Transactional PostgreSQL and post-commit delivery; no implicit data migrations."""
 
 from contextlib import contextmanager
 from functools import lru_cache
@@ -58,6 +58,8 @@ def transaction():
         # the outbox: a Redis outage cannot erase an accepted job.
         ids = db.info.get("dispatch_ids", ())
         if ids:
+            from .worker_wakeup import notify
+            notify()
             from .redis_broker import publish_committed
 
             publish_committed(ids)

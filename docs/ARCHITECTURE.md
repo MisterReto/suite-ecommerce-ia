@@ -135,16 +135,25 @@ El ID de entrega RQ y el bloqueo de despacho impiden duplicar la cola. El
 timeout HTTP. Los locks de producto y los advisory locks PostgreSQL controlan
 solicitudes concurrentes. La configuración Key Value usa `noeviction` para
 no expulsar trabajos cuando falta memoria. El plan gratuito propuesto sirve
-para staging; su falta de persistencia requiere valorar un plan persistente
-antes del uso operativo. SQL conserva la recuperación aun si se vacía Redis.
+para staging; SQL conserva la recuperación aun si se vacía Redis. PostgreSQL
+free caduca a los 30 días: mantener Drive/Sheets como fuente operativa y
+conectar almacenamiento gratuito persistente autorizado antes de promover SQL.
 
 ## Qué hace el worker
 
 El worker es otro proceso, en otro servicio y con su propia RAM. Su comando es
-`python -m catalog_platform.worker`. Con `GENERATION_QUEUE_BACKEND=rq`, arranca
+`python -m catalog_platform.worker_web` en el Blueprint gratis. Abre únicamente
+un health HTTP liviano en PORT y ejecuta el supervisor en el hilo principal.
+El comando sin HTTP `python -m catalog_platform.worker` sigue disponible para
+desarrollo u otro alojamiento. Con `GENERATION_QUEUE_BACKEND=rq`, arranca
 el supervisor `redis_worker.main`, un pool RQ y un reconciliador. El heartbeat
-SQL informa a la API de que existe un worker reciente. Sin Redis/worker listo,
-una generación nueva responde con error claro sin llamar al proveedor.
+SQL informa a la API de que existe un worker reciente. En web free, la API
+puede aceptar un job SQL mientras el worker duerme y mandar una petición HTTP
+al health público para despertarlo. El origen debe ser HTTPS onrender.com y no
+se siguen redirects ni se envían secretos. Un solo hilo daemon agrupa wakeups.
+El status diferencia heartbeat real de capacidad de aceptar trabajos; el HTTP
+no ejecuta IA. Sin ese origen configurado, se conserva el rechazo cuando
+Redis/worker no están listos. Una lectura sin trabajos no despierta el worker.
 
 `IMAGE_WORKER_CONCURRENCY=1` empieza con un job simultáneo. RQ ejecuta cada
 trabajo en un proceso hijo; al finalizar libera su memoria. No se asume que

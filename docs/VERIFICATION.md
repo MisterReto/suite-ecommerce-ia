@@ -63,11 +63,30 @@ comprobación de PID al obtener una conexión y se amplió la regresión para
 crear un producto desde el padre después del job hijo. No se ocultó la prueba
 ni se deshabilitaron consultas preparadas. Ver docs/CHANGE_PLAN.md.
 
-El resultado de la repetición sobre el commit corregido está en
+La repetición sobre `b50ca516` terminó con los tres jobs verdes en el
+[run 37495343135](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37495343135):
+32 pruebas PostgreSQL17/Redis7 sin omisiones y móvil real correcto. Los cambios
+posteriores para alojamiento gratuito requieren su propio CI en
 [PR #26 → Checks](https://github.com/MisterReto/suite-ecommerce-ia/pull/26/checks).
 Exigir validate y ambos generation-contract verdes antes de desplegar; los
 dos casos PostgreSQL deben ejecutarse en ese grupo, sin omisiones. La evidencia
 operativa de IA/Drive/Woo sigue separada y pendiente aunque CI esté verde.
+
+## Adaptación a alojamiento gratuito
+
+Blueprint validado con el schema oficial: los tres servicios app son web/free,
+PG/Key Value también free; sin cambios a los servicios históricos. Se agregan
+health liviano, wake tras commit y opt-in de esquema solo en base nueva vacía.
+PG free caduca a 30 días; la fase es staging y no hay entrada a producción.
+
+Pase local después de los cambios: 41 passed, 3 skipped en free-render,
+catálogo, contrato y separación. Los tres omitidos necesitan PostgreSQL real
+(concurrencia de solicitudes y DDL), están incluidos en CI. Antes también
+pasaron 36 casos de estabilización/free-render con Redis real. Next standalone,
+TypeScript y proxy real 12 MB correctos. Chrome local vuelve a fallar al iniciar
+por SIGSEGV del binario: el pase móvil se exige en CI con Chrome del runner.
+Las rutas simuladas de ese pase ahora reportan worker dormido pero cola disponible,
+para verificar que las operaciones siguen siendo accesibles durante el cold start.
 
 ## Aceptación real todavía pendiente
 
@@ -81,7 +100,8 @@ operativa de IA/Drive/Woo sigue separada y pendiente aunque CI esté verde.
 
 El OOM de Render a 512Mi sí fue verificado; métricas no devolvieron series.
 No convertir el RSS de un test simulado en una garantía de capacidad real.
-Blueprint propone worker 2 GB/concurrency 1, sujeto a medir y revisar coste.
+Blueprint propone web free para worker, 512 MB/concurrency 1, sujeto a medir.
+No autoriza upgrades ni pagos. PostgreSQL free solo staging, caduca a 30 días.
 
 ## Explicación correcta del sistema resultante
 

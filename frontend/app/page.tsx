@@ -150,6 +150,7 @@ type Status = {
   ready: boolean;
   configured: boolean;
   worker_ready: boolean;
+  worker_can_queue?: boolean;
   role: string;
   message: string;
 };
@@ -390,6 +391,7 @@ export default function Platform() {
   const canEdit = session.authenticated && status.role !== "viewer";
   const isAdmin = status.role === "admin";
   const ready = session.authenticated && status.ready;
+  const workerCanQueue = status.worker_can_queue ?? status.worker_ready;
   const go = useCallback((target: Section) => {
     location.hash = target;
     setSection(target);
@@ -439,14 +441,16 @@ export default function Platform() {
     return { s, st };
   }, []);
   const reloadOperations = useCallback(async () => {
-    const [d, j, a] = await Promise.all([
+    const [d, j, a, st] = await Promise.all([
       api<Dashboard>("/api/platform/dashboard"),
       api<{ items: Job[] }>("/api/platform/jobs"),
       api<{ items: Asset[] }>("/api/platform/assets"),
+      api<Status>("/api/platform/status"),
     ]);
     setDashboard(d);
     setJobs(j.items);
     setAssets(a.items);
+    setStatus(st);
   }, []);
   const loadProducts = useCallback(async () => {
     const data = await api<{ items: Product[]; total: number }>(
@@ -879,8 +883,9 @@ export default function Platform() {
           <div className="p-alert">
             <CircleAlert size={20} />
             <span>
-              El worker está desconectado. Puedes consultar y editar el
-              catálogo; las nuevas operaciones en cola esperan su configuración.
+              {workerCanQueue
+                ? "El proceso de imágenes está en reposo o iniciándose. Puedes enviar una operación; quedará guardada en cola mientras arranca."
+                : "El proceso de imágenes está desconectado. Puedes consultar y editar el catálogo; las nuevas operaciones en cola esperan su configuración."}
             </span>
           </div>
         )}
@@ -1543,7 +1548,7 @@ export default function Platform() {
                                 </button>
                                 <button
                                   className="button secondary"
-                                  disabled={busy || !status.worker_ready}
+                                  disabled={busy || !workerCanQueue}
                                   onClick={() =>
                                     ask({
                                       title: "Generar datos con IA",
@@ -1576,7 +1581,7 @@ export default function Platform() {
                             {isAdmin && (
                               <button
                                 className="button primary"
-                                disabled={busy || !status.worker_ready}
+                                disabled={busy || !workerCanQueue}
                                 onClick={() =>
                                   ask({
                                     title: form.woocommerce_product_id
@@ -1778,7 +1783,7 @@ export default function Platform() {
                                 </button>
                                 <button
                                   className="button secondary"
-                                  disabled={busy || !status.worker_ready}
+                                  disabled={busy || !workerCanQueue}
                                   onClick={() =>
                                     ask({
                                       title: "Sincronizar stock",
@@ -2096,7 +2101,7 @@ export default function Platform() {
                           <p>{quote.note}</p>
                           <button
                             className="button primary p-full"
-                            disabled={busy || !status.worker_ready}
+                            disabled={busy || !workerCanQueue}
                             onClick={() =>
                               ask({
                                 title: "Confirmar generación",
@@ -2312,7 +2317,7 @@ export default function Platform() {
                   {isAdmin && ready && (
                     <button
                       className="button secondary"
-                      disabled={busy || !status.worker_ready}
+                      disabled={busy || !workerCanQueue}
                       onClick={() =>
                         ask({
                           title: "Consultar WooCommerce",
@@ -2422,7 +2427,7 @@ export default function Platform() {
                     <button
                       className="button secondary"
                       disabled={
-                        !isAdmin || !ready || !status.worker_ready || busy
+                        !isAdmin || !ready || !workerCanQueue || busy
                       }
                       onClick={() =>
                         ask({
@@ -2463,7 +2468,7 @@ export default function Platform() {
                         <button
                           className="button primary"
                           disabled={
-                            busy || !status.worker_ready || !preview.rows
+                            busy || !workerCanQueue || !preview.rows
                           }
                           onClick={() =>
                             ask({
@@ -2854,7 +2859,7 @@ export default function Platform() {
                 )}
                 <button
                   className="button secondary"
-                  disabled={busy || !status.worker_ready || !feedback.trim()}
+                  disabled={busy || !workerCanQueue || !feedback.trim()}
                   onClick={() => {
                     const asset = selectedAsset;
                     const correction = feedback;

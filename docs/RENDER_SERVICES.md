@@ -43,9 +43,9 @@ no permite atribuir un pico exacto a una función.
 | --- | --- | --- |
 | rincon-frontend | Dockerfile.frontend → node server.js, Next standalone | web free, Oregon, health `/`, sin secretos privados |
 | rincon-catalog-api | Dockerfile.api → uvicorn service_entrypoint:fastapi_app, 1 proceso | web free, health `/service-health`, SUITE_SERVE_FRONTEND=false |
-| rincon-catalog-worker | Dockerfile.worker → python -m catalog_platform.worker → RQ pool | background worker 1c-2g, concurrency 1, parada 300 s |
+| rincon-catalog-worker | Dockerfile.worker + override python -m catalog_platform.worker_web → health + RQ pool | web free, 512 MB, concurrency 1, health `/service-health`, parada 300 s |
 | rincon-generation-queue | Key Value compatible Redis | free para staging, noeviction, sin IP públicas permitidas |
-| rincon-catalog-db | PostgreSQL administrado | versión 17, 0.1c-256mb, disco 1 GB, sin IP públicas permitidas |
+| rincon-catalog-db | PostgreSQL administrado | versión 17, free, 1 GB, sin IP públicas permitidas; caduca a los 30 días |
 
 Son **tres servicios de aplicación** y dos almacenes, no cinco aplicaciones ni
 un servicio único. Todos apuntan a `agent/stabilize-architecture-20261006`, con
@@ -54,10 +54,24 @@ sin comandos personalizados aparte. El frontend necesita SUITE_API_ORIGIN en
 build; API y worker reciben DATABASE_URL/REDIS_URL mediante referencias internas.
 Las env `sync:false` se completan de forma privada en el panel, no en YAML.
 
-Worker y PostgreSQL tienen coste recurrente. El Blueprint es revisable y válido
-según el esquema oficial; no se provisionó ni se aceptó ese gasto en esta etapa.
-Free puede dormir en web y Key Value free no tiene persistencia: validar
-operación/capacidad y elegir planes operativos antes del cambio de producción.
+El presupuesto solicitado es **cero para alojamiento**: todos los recursos
+declaran `plan: free`. No registrar tarjeta ni aceptar upgrades. Render admite
+varios web services free, pero su tipo Background Worker no tiene plan gratis;
+por eso el proceso de imágenes se publica como web con un health mínimo.
+`IMAGE_WORKER_ORIGIN` en la API apunta al origen HTTPS público de ese servicio.
+Una operación aceptada despierta el worker con HTTP, sin enviar credenciales o
+datos del producto. No hay pings para mantener servicios sin trabajo.
+
+Límites oficiales: web se duerme tras 15 minutos sin tráfico, arranque en frío
+aproximadamente un minuto, 750 horas mensuales compartidas por workspace y
+512 MB por servicio. Cinco web services siempre activos excederían ese cupo;
+los dos históricos permanecen intactos durante staging. Key Value free pierde
+su cola al reiniciarse; SQL la reconstruye. PostgreSQL free **caduca a los 30
+días**, sin backup administrado: registrar fecha de caducidad, exportar datos
+de pruebas a tiempo y no convertirlo en fuente exclusiva de inventario.
+Una base PostgreSQL externa gratuita y persistente puede conectarse después,
+cuando exista una conexión autorizada; no crear cuentas ajenas automáticamente.
+Fuente: [Render Free](https://render.com/docs/free).
 
 ## Aislamiento y RAM
 
@@ -76,9 +90,12 @@ de un proveedor simulado.
 
 Registrar RSS de inicio/pico por job (`Worker: pico RSS`), métricas Render,
 memoria del pool completo, temporales y duración para pasos 5–12. Empezar con
-1 proceso; si falta margen, subir RAM del worker antes de aumentar concurrencia.
-La propuesta empieza en 2 GB tras el OOM observado a 512 MiB; sigue siendo
-**una capacidad a validar**, no una promesa para cualquier tamaño de imagen.
+1 proceso. El plan gratis tiene 512 MB: si falta margen, detener el pase y
+reducir memoria/tamaño del lote sin cambiar el pipeline protegido. No subir
+a un plan pagado automáticamente. Sigue siendo **una capacidad a validar**,
+no una promesa para cualquier tamaño de imagen. Un trabajo largo puede
+interrumpirse al dormir; los leases/checkpoints no autorizan repetir una
+llamada IA de resultado incierto.
 El worker debe poder reiniciarse mientras ambos health web siguen respondiendo.
 
 ## Configuración a comprobar antes de activar

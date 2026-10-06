@@ -1,6 +1,9 @@
 """API entrypoint with optional UI hosting for the compatible deployment."""
 import os
 from starlette.routing import Mount
+from catalog_platform.initialize import initialize_empty_database
+
+initialize_empty_database()
 
 if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":
     from sync_service import app as fastapi_app

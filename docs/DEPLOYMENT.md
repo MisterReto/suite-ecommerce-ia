@@ -26,7 +26,8 @@ simplemente existe un archivo dump sin comprobar su restauración.
 ## 2. Provisionar staging aditivo
 
 Crear mediante el Blueprint los tres nombres nuevos, PG y Key Value. Revisar
-costes recurrentes y capacidad antes de confirmar creación. No cambiar las
+que **todos los recursos sean free** antes de confirmar creación. No añadir
+tarjeta, aceptar pagos ni cambiar las
 ramas ni Dockerfiles de los dos servicios existentes. Key Value noeviction,
 sin acceso público abierto; PG conexión interna en Oregon.
 
@@ -38,7 +39,10 @@ no requiere rotar claves por iniciativa de la migración.
 
 API y worker: misma DATABASE_URL, REDIS_URL, clave Fernet, carpeta, roles y
 modelos vigentes. API usa main, no sirve frontend y no genera imágenes localmente.
-Worker usa rq, concurrency 1, runtime sync y el Dockerfile.worker. No añadir
+Worker usa rq, concurrency 1, runtime sync y Dockerfile.worker con override
+`python -m catalog_platform.worker_web`. Configurar `IMAGE_WORKER_ORIGIN` en la
+API con su origen HTTPS onrender.com; no URL privada (free web no recibe tráfico
+privado) ni credenciales en ese origen. No añadir
 Redis/Google/tienda al entorno Next; solo origen API público.
 
 Los flags WC_WRITE_ENABLED y WP_MEDIA_WRITE_ENABLED siguen false. Mantener
@@ -47,16 +51,33 @@ SYNC_SERVICE_URL al servicio viejo durante el periodo de validación.
 
 ## 3. Preparar esquema, arranque y lectura
 
-Ejecutar una vez en la conexión staging, después de backup si existe:
+La base **nueva y vacía** del Blueprint usa `INITIALIZE_EMPTY_DATABASE=true` en
+API/worker: crea el esquema con lock PostgreSQL, sin importar el Sheet. En
+reinicios solo verifica un esquema completo. Si hay otras tablas o un esquema
+incompleto, rechaza el arranque sin hacer DDL. Desactivar este flag después de
+preparar staging. No activar este opt-in en una base existente de producción.
+
+Para una base que ya existe, preparar backup y migrar explícitamente desde una
+terminal privada autorizada; el shell/pre-deploy de Render no está disponible
+en web free:
 
 ```bash
 python -m catalog_platform.migrate
 ```
 
-La migración es aditiva; no se ejecuta implícitamente con uvicorn. Verificar
+La migración de datos existentes es aditiva y manual. Verificar
 tablas, GenerationBatch y batch_id nullable. No importar el Sheet al arrancar.
 Comprobar health frontend/API y heartbeat worker/Redis desde el status autenticado.
 Los health web no deben depender de que el proveedor IA esté disponible.
+Probar wake desde dormido: aceptar job en SQL aunque el heartbeat esté vencido,
+esperar arranque en frío, comprobar una sola entrega y consumo. El status separa
+`worker_ready` real de `worker_can_queue`; no declarar ejecutándose un job queued.
+Sin trabajo pendiente, consultar status no manda tráfico al worker.
+
+Registrar la caducidad de PostgreSQL free a 30 días, exportar cualquier dato de
+pruebas antes de esa fecha y mantener Drive/Sheets como fuente operativa. No
+cambiar la entrada a producción con una base que va a caducar. Las 750 horas
+mensuales se comparten con los dos servicios históricos; no usar keepalive.
 
 Validar login, roles, móvil, Drive lectura y Sheet lectura. La estructura de
 Drive debe ser exactamente la documentada. Hasta aquí no generar ni escribir.
@@ -70,7 +91,9 @@ el endpoint responde con job queued mientras IA corre únicamente en worker.
 Si alguno falla, DETENER nuevas integraciones y conservar producción antigua.
 
 Después, escritura Drive controlada, lote 2–3 y lote ~10. Medir memoria real
-del pool completo, no solo RSS de un hijo; elegir RAM adecuada. Reiniciar worker
+del pool completo, no solo RSS de un hijo; validar el límite gratis de 512 MB.
+Si no cabe, detener el pase y optimizar dentro del presupuesto, sin upgrade.
+Reiniciar worker
 y comprobar frontend/API disponibles, checkpoints conservados y ninguna
 llamada incierta repetida. Reiniciar API, volver a login y recuperar resultados.
 

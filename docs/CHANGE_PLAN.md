@@ -46,8 +46,8 @@ de verse en la API. `worker.record_usage` conserva deltas numéricos en SQL y
 `studio_jobs.recorded_usage` los agrega sin cargar snapshots completos en RAM.
 No cambia el gateway protegido ni inventa una factura. La regresión verifica
 persistencia fuera de la memoria API; el rollback conserva esa metadata y el
-estimado de coste por job. La propuesta inicia worker en 2 GB/concurrency 1,
-con capacidad/coste pendientes de validación real.
+estimado de coste por job. El usuario requiere alojamiento gratuito; la
+propuesta usa 512 MB/concurrency 1, pendiente de medir con generación real.
 
 Cada etapa requiere pruebas verdes. Las pruebas con dobles no habilitan
 producción. Si la generación real falla en pasos 5–9 de `TEST_PLAN.md`, se
@@ -70,3 +70,26 @@ hasta reemplazar el aislamiento de conexiones. No modificar datos.
 
 Se aplica el control connect/checkout por PID de la
 [documentación oficial de SQLAlchemy](https://docs.sqlalchemy.org/en/20/core/pooling.html#using-connection-pools-with-multiprocessing-or-os-fork).
+
+## Alojamiento gratuito solicitado
+
+**Problema:** Background Worker y PostgreSQL de pago en el Blueprint contradicen
+el presupuesto de cero del usuario. Render permite varios web services gratis,
+pero no el tipo Background Worker gratuito. **Cambio:** mantener frontend, API y
+proceso de imágenes en tres servicios independientes, todos `web/free`; el
+tercero abre solamente un health HTTP liviano y sigue consumiendo RQ. La API
+envía una petición HTTP al aceptar trabajo para despertar ese servicio, sin
+pings artificiales de mantenimiento. SQL conserva los jobs si Redis se pierde.
+**Archivos:** Blueprint, supervisor/arranque HTTP, notificación tras commit,
+disponibilidad/estado del worker, interfaz y documentos operativos.
+**Riesgos:** arranque en frío, límite compartido de 750 horas, RAM 512 MB y
+PostgreSQL gratis con caducidad de 30 días. Este PostgreSQL solo sirve de staging;
+Drive/Sheets siguen operativos y no se hace entrada a producción.
+**Esquema:** opt-in `INITIALIZE_EMPTY_DATABASE=true` crea tablas únicamente en una
+base nueva vacía, con lock PostgreSQL para arranques simultáneos. Una base con
+esquema completo se verifica; esquemas ajenos/incompletos se rechazan sin DDL.
+**Pruebas:** HTTP del worker sin rutas de generación ni secretos; wake tras
+commit, fallo de wake/Redis con job SQL conservado y entrega única; inicialización
+vacía/idempotente/rechazo; contrato protegido, PostgreSQL/Redis real y móvil.
+**Rollback:** conservar URLs/rama de los dos servicios históricos, detener los
+tres nuevos; no borrar SQL ni cambiar claves, prompts, modelos o Sheet.

@@ -30,6 +30,8 @@ módulos Python en raíz y agrupa el catálogo nuevo en `catalog_platform/`.
 | catalog_platform/queue.py | idempotencia, claim, lease, checkpoint y resultado incierto |
 | catalog_platform/redis_broker.py | entrega RQ JSON después del commit; reconciliación desde SQL |
 | catalog_platform/redis_worker.py, rq_settings.py | supervisor del pool RQ, concurrencia, heartbeat y conexión privada |
+| catalog_platform/worker_web.py, worker_wakeup.py | health mínimo para web free; wake HTTP por trabajo real después de commit |
+| catalog_platform/initialize.py | opt-in de esquema en base nueva vacía; rechaza DDL automático sobre esquemas existentes incompletos |
 | catalog_platform/worker.py | ejecuta un ID; generación, publicación, guardado aprobado y limpieza temporal |
 | catalog_platform/studio_jobs.py | adaptador durable para captura, corrección, recuperación y aprobación |
 | catalog_platform/imports.py | importar explícitamente con respaldo y asociar históricos por naming |

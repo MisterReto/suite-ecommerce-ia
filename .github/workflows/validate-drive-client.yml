@@ -90,7 +90,10 @@ jobs:
               schema = json.load(response)
           blueprint = yaml.safe_load(Path("deploy/render-platform.yaml").read_text())
           Draft202012Validator(schema).validate(blueprint)
-          assert sorted(item["type"] for item in blueprint["services"] if item["type"] != "keyvalue") == ["web", "web", "worker"]
+          assert [item["type"] for item in blueprint["services"] if item["type"] != "keyvalue"] == ["web", "web", "web"]
+          assert all(item["plan"] == "free" for item in blueprint["services"] + blueprint["databases"])
+          worker = next(item for item in blueprint["services"] if item["name"] == "rincon-catalog-worker")
+          assert worker["dockerCommand"] == "python -m catalog_platform.worker_web"
           assert any(item["type"] == "keyvalue" and item["maxmemoryPolicy"] == "noeviction" for item in blueprint["services"])
           assert not any(item["name"] in {"suite-ecommerce-ia", "suite-ecommerce-ia-ai"} for item in blueprint["services"])
           print("Blueprint válido: frontend, API y worker independientes; servicios históricos preservados.")
@@ -107,7 +110,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
           TEST_REDIS_URL: redis://localhost:6379/0
-        run: python -m pytest test_catalog_platform.py test_stabilization.py -q
+        run: python -m pytest test_catalog_platform.py test_stabilization.py test_free_render.py -q
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com

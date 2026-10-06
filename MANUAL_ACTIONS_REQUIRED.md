@@ -14,8 +14,9 @@ Render al entorno de pruebas. No pegar tokens en chat o Git.
 **Por qué:** no existen PG/Redis/worker separados en el workspace observado.
 **Dónde:** Render → Blueprint de esta rama, deploy/render-platform.yaml.
 **Esperado/obtención:** rincon-frontend, rincon-catalog-api, rincon-catalog-worker;
-BD interna y Redis noeviction; revisar coste recurrente worker/PG y plan Redis
-persistente operativo. No reemplazar servicios actuales.
+BD interna y Redis noeviction; **todos free**, worker como web con health/RQ.
+No añadir tarjeta ni aceptar upgrades. PostgreSQL free caduca en 30 días: usarlo
+solo para pruebas y conservar Drive/Sheets operativos. No reemplazar servicios actuales.
 **Verificación:** Dockerfiles/rama correctos, health web, worker independiente.
 **Rollback:** detener staging, volver a URLs históricas; conservar datos nuevos.
 
@@ -31,6 +32,8 @@ Si no existe clave Fernet de plataforma, generar una vez con
 `Fernet.generate_key()`, guardarla privada y usarla en ambos. No reemplazarla
 si ya hay conexiones cifradas.
 **Verificación:** SQL/Redis, roles y persist/load sin imprimir secretos.
+Configurar en API `IMAGE_WORKER_ORIGIN=https://<worker>.onrender.com` y comprobar
+que una operación en cola despierta el proceso sin repetir la llamada IA.
 **Rollback:** conservar clave/configuración anterior; detener nuevos jobs.
 
 ## [ ] Configurar origen, callback y acceso autorizado
@@ -46,13 +49,17 @@ APP_REQUIRE_ALLOWLIST=true, APP_ROLE_MAP con admin/editor/viewer reales.
 
 ## [ ] Backup y migración aditiva SQL
 
-**Qué:** backup si existe BD con datos; ejecutar python -m catalog_platform.migrate.
-**Por qué:** tablas/lotes sin DDL al arrancar.
-**Dónde:** terminal privada del servicio con conexión staging.
+**Qué:** en la BD nueva/vacía del Blueprint, opt-in `INITIALIZE_EMPTY_DATABASE=true`;
+desactivarlo después. Para una BD existente: backup y migración manual explícita.
+**Por qué:** Render web free no tiene shell/pre-deploy; no cambiar datos existentes
+automáticamente. **Dónde:** opt-in en Environment API/worker; una migración de base
+existente exige terminal privada externa autorizada.
 **Esperado:** dump restaurable y clave Fernet; lotes/batch_id nullable.
 **Verificación:** pg_restore --list y ensayo en base nueva; tablas intactas.
 **Rollback:** dejar columnas aditivas; restaurar otra BD si hay corrupción,
 nunca DROP de la viva. Exportar dump fuera de /tmp antes de perder la instancia.
+Registrar vencimiento de PostgreSQL free y exportar datos de pruebas antes de
+30 días. No hacer entrada a producción con la base que caduca.
 
 ## [ ] Validar Drive y Sheet solo lectura
 

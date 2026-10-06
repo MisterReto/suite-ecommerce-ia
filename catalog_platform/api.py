@@ -29,7 +29,7 @@ from .models import (
 from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
 from .accounts import persist
-from .queue import available, request_lock, dispatch
+from .queue import available, worker_ready, request_lock, dispatch
 
 router = APIRouter(prefix="/api/platform")
 
@@ -193,6 +193,7 @@ def status(request: Request):
         "configured": configured(),
         "ready": False,
         "worker_ready": False,
+        "worker_can_queue": False,
         "authenticated": bool(value),
         "role": role_for(value.get("email", "")) if value else "viewer",
     }
@@ -203,8 +204,19 @@ def status(request: Request):
         with transaction() as db:
             db.scalar(select(Product.id).limit(1))
             result.update(
-                ready=True, worker_ready=available(db), message="Catálogo preparado."
+                ready=True, worker_ready=worker_ready(db),
+                worker_can_queue=available(db), message="Catálogo preparado."
             )
+            # Retry a failed cold start only while an authorized user's actual
+            # queued jobs exist. Idle status polling never keeps a worker alive.
+            if value and member(value.get("email", "")) and not result["worker_ready"]:
+                pending = db.scalar(select(GenerationJob.id).where(
+                    GenerationJob.tenant_id == value.get("platform_tenant", ""),
+                    GenerationJob.status == "queued",
+                ).limit(1))
+                if pending:
+                    from .worker_wakeup import notify
+                    notify()
     except Exception:
         result["message"] = (
             "Revisa DATABASE_URL, el esquema y CREDENTIAL_ENCRYPTION_KEY del servidor."
