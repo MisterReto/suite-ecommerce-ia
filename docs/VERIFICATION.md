@@ -78,6 +78,8 @@ Blueprint validado con el schema oficial: los tres servicios app son web/free,
 PG/Key Value también free; sin cambios a los servicios históricos. Se agregan
 health liviano, wake tras commit y opt-in de esquema solo en base nueva vacía.
 PG free caduca a 30 días; la fase es staging y no hay entrada a producción.
+El Dashboard añade validación semántica a jsonschema: rechazó el plazo extendido
+de apagado para free. Se retiró el campo y se añadió la comprobación en CI.
 
 Pase local después de los cambios: 41 passed, 3 skipped en free-render,
 catálogo, contrato y separación. Los tres omitidos necesitan PostgreSQL real

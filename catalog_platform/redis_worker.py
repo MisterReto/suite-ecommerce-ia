@@ -59,8 +59,8 @@ def main(ready=None):
             stopped.wait(5)
     finally:
         shutdown()
-        # Render gives the current job up to 300s. A second termination is left
-        # to its process manager; SQL then records any uncertain in-flight work.
+        # Render's shutdown window depends on the plan. Free does not allow an
+        # extended delay; SQL records uncertain in-flight work after interruption.
         pool.wait()
 
 

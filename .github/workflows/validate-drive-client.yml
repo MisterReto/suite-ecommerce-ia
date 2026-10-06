@@ -94,6 +94,7 @@ jobs:
           assert all(item["plan"] == "free" for item in blueprint["services"] + blueprint["databases"])
           worker = next(item for item in blueprint["services"] if item["name"] == "rincon-catalog-worker")
           assert worker["dockerCommand"] == "python -m catalog_platform.worker_web"
+          assert "maxShutdownDelaySeconds" not in worker
           assert any(item["type"] == "keyvalue" and item["maxmemoryPolicy"] == "noeviction" for item in blueprint["services"])
           assert not any(item["name"] in {"suite-ecommerce-ia", "suite-ecommerce-ia-ai"} for item in blueprint["services"])
           print("Blueprint válido: frontend, API y worker independientes; servicios históricos preservados.")

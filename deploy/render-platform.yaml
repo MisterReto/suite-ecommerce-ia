@@ -111,7 +111,6 @@ services:
     region: oregon
     autoDeployTrigger: checksPass
     healthCheckPath: /service-health
-    maxShutdownDelaySeconds: 300
     envVars:
       - key: DATABASE_URL
         fromDatabase:

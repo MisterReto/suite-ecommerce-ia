@@ -43,7 +43,7 @@ no permite atribuir un pico exacto a una función.
 | --- | --- | --- |
 | rincon-frontend | Dockerfile.frontend → node server.js, Next standalone | web free, Oregon, health `/`, sin secretos privados |
 | rincon-catalog-api | Dockerfile.api → uvicorn service_entrypoint:fastapi_app, 1 proceso | web free, health `/service-health`, SUITE_SERVE_FRONTEND=false |
-| rincon-catalog-worker | Dockerfile.worker + override python -m catalog_platform.worker_web → health + RQ pool | web free, 512 MB, concurrency 1, health `/service-health`, parada 300 s |
+| rincon-catalog-worker | Dockerfile.worker + override python -m catalog_platform.worker_web → health + RQ pool | web free, 512 MB, concurrency 1, health `/service-health`; plazo de parada predeterminado |
 | rincon-generation-queue | Key Value compatible Redis | free para staging, noeviction, sin IP públicas permitidas |
 | rincon-catalog-db | PostgreSQL administrado | versión 17, free, 1 GB, sin IP públicas permitidas; caduca a los 30 días |
 
@@ -72,6 +72,10 @@ de pruebas a tiempo y no convertirlo en fuente exclusiva de inventario.
 Una base PostgreSQL externa gratuita y persistente puede conectarse después,
 cuando exista una conexión autorizada; no crear cuentas ajenas automáticamente.
 Fuente: [Render Free](https://render.com/docs/free).
+
+La revisión del Dashboard rechazó `maxShutdownDelaySeconds` por no estar
+disponible en free. Se omite ese override; no asumir 300 segundos para terminar
+un job. El SIGTERM conserva checkpoints y las llamadas inciertas requieren revisión.
 
 ## Aislamiento y RAM
 
