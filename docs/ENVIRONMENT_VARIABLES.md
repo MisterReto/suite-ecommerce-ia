@@ -14,6 +14,8 @@ no son secretos, pero la cuenta debe tener acceso.
 | RENDER_EXTERNAL_URL | Render API automático | valida Host del servicio, no confiar en forwarded Host |
 | GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET | API + worker | OAuth actual, requeridos al cargar runtime; reutilizar sin rotar |
 | GOOGLE_REDIRECT_URI | API + worker | callback del frontend `/auth/callback`, registrado exactamente en Google |
+| GOOGLE_REDIRECT_BASE | API + worker | origen frontend enlazado por Render; deriva `/auth/callback` cuando no existe GOOGLE_REDIRECT_URI explícito |
+| PUBLIC_SERVICE_ORIGIN | tres servicios | alias del RENDER_EXTERNAL_URL propio; permite enlazar orígenes públicos sin leer secretos |
 | GOOGLE_DRIVE_FOLDER_ID | API + worker | raíz autorizada actual; puede seleccionarse en sesión sin cuenta dedicada |
 | GOOGLE_SHEET_ID | API + worker, opcional | Sheet nativo exacto dentro de raíz; si falta, búsqueda por nombre inventario_completo |
 | GOOGLE_SERVICE_ACCOUNT_JSON | API + worker, opcional | JSON en env privada; cuenta dedicada compartida con raíz; no necesario ahora |
@@ -21,7 +23,7 @@ no son secretos, pero la cuenta debe tener acceso.
 | REDIS_URL | API + worker | conexión interna Redis/rediss; obligatoria en modo rq |
 | GENERATION_QUEUE_BACKEND | API + worker | rq en propuesta; postgres conserva mecanismo SQL anterior |
 | STUDIO_IMAGE_JOBS | API + worker | worker aísla generación de captura; local es fallback compatible, no aislamiento |
-| CREDENTIAL_ENCRYPTION_KEY | API + worker | Fernet válida e idéntica; protege conexiones persistidas |
+| CREDENTIAL_ENCRYPTION_KEY | API + worker | Fernet válida e idéntica; Render genera 256 bits base64 nuevos en API y worker referencia ese valor; no rota claves históricas |
 | IMAGE_WORKER_CONCURRENCY | worker | entero 1–8, default 1; cambiar solo tras medir RAM |
 | IMAGE_JOB_TIMEOUT_SECONDS | API + worker | timeout RQ, default 1800; resultado incierto no se repite solo |
 | IMAGE_WORKER_ORIGIN | API | origen HTTPS exacto `https://<worker>.onrender.com`, sin path/credenciales; despierta web free después de aceptar un job SQL |

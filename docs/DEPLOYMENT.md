@@ -31,17 +31,21 @@ tarjeta, aceptar pagos ni cambiar las
 ramas ni Dockerfiles de los dos servicios existentes. Key Value noeviction,
 sin acceso público abierto; PG conexión interna en Oregon.
 
-Completar env `sync:false` en el panel. Primero obtener URL API para
-SUITE_API_ORIGIN del build frontend; después obtener URL frontend para
-APP_PUBLIC_ORIGIN y GOOGLE_REDIRECT_URI. Añadir ese callback a Google Console
+Los orígenes se enlazan por `PUBLIC_SERVICE_ORIGIN`, alias self-reference del
+`RENDER_EXTERNAL_URL` de cada servicio. Google/tienda se reutilizan mediante
+`fromService` del servicio histórico; sus valores no se leen ni se copian al chat.
+Render genera la nueva Fernet base64 de 256 bits en API y worker la referencia.
+Completar roles/correos `sync:false` en privado; allowlist permanece cerrada.
+`GOOGLE_REDIRECT_BASE` deriva el callback frontend `/auth/callback` al arrancar,
+si no existe un GOOGLE_REDIRECT_URI explícito. Añadir ese callback a Google Console
 conservando el callback antiguo. Esto reutiliza cliente/secret existentes;
 no requiere rotar claves por iniciativa de la migración.
 
 API y worker: misma DATABASE_URL, REDIS_URL, clave Fernet, carpeta, roles y
 modelos vigentes. API usa main, no sirve frontend y no genera imágenes localmente.
 Worker usa rq, concurrency 1, runtime sync y Dockerfile.worker con override
-`python -m catalog_platform.worker_web`. Configurar `IMAGE_WORKER_ORIGIN` en la
-API con su origen HTTPS onrender.com; no URL privada (free web no recibe tráfico
+`python -m catalog_platform.worker_web`. `IMAGE_WORKER_ORIGIN` referencia el
+origen HTTPS público del worker; no URL privada (free web no recibe tráfico
 privado) ni credenciales en ese origen. No añadir
 Redis/Google/tienda al entorno Next; solo origen API público.
 

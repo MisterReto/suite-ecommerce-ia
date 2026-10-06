@@ -1,8 +1,10 @@
 """API entrypoint with optional UI hosting for the compatible deployment."""
 import os
 from starlette.routing import Mount
+from catalog_platform.render_config import configure_redirect
 from catalog_platform.initialize import initialize_empty_database
 
+configure_redirect()
 initialize_empty_database()
 
 if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":

@@ -1,6 +1,7 @@
 """Free Render cold starts and empty-schema safety; no live provider or spend."""
 
 from concurrent.futures import ThreadPoolExecutor
+import base64
 import os
 import subprocess
 import sys
@@ -17,6 +18,33 @@ from catalog_platform.initialize import initialize_empty_database
 from catalog_platform.models import Base, GenerationJob, WorkerHeartbeat, uid
 from test_catalog_platform import setup, create, reference, fake_provider, ORIGIN
 from test_stabilization import redis_mode, consume
+
+
+def test_render_generated_standard_base64_key_is_valid_fernet(monkeypatch):
+    from catalog_platform.security import seal, unseal
+    key = base64.b64encode(bytes([251, 255]) * 16).decode()
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", key)
+    assert unseal(seal({"provider": "test"})) == {"provider": "test"}
+
+
+def test_render_frontend_callback_is_derived_without_changing_explicit_callback(monkeypatch):
+    from catalog_platform.render_config import configure_redirect
+    monkeypatch.delenv("GOOGLE_REDIRECT_URI", raising=False)
+    monkeypatch.setenv("GOOGLE_REDIRECT_BASE", "https://rincon-frontend.onrender.com/")
+    configure_redirect()
+    assert os.environ["GOOGLE_REDIRECT_URI"] == "https://rincon-frontend.onrender.com/auth/callback"
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://previous.example/auth/callback")
+    configure_redirect()
+    assert os.environ["GOOGLE_REDIRECT_URI"] == "https://previous.example/auth/callback"
+
+
+def test_render_callback_never_uses_untrusted_origin(monkeypatch):
+    from catalog_platform.render_config import configure_redirect
+    monkeypatch.delenv("GOOGLE_REDIRECT_URI", raising=False)
+    monkeypatch.setenv("GOOGLE_REDIRECT_BASE", "https://rincon.onrender.com@evil.example")
+    with pytest.raises(RuntimeError, match="origen HTTPS"):
+        configure_redirect()
+    assert not os.getenv("GOOGLE_REDIRECT_URI")
 
 
 def test_worker_http_has_health_only_and_no_sensitive_values(monkeypatch):

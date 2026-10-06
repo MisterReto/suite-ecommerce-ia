@@ -23,6 +23,8 @@ def concurrency():
 
 
 def main(ready=None):
+    from .render_config import configure_redirect
+    configure_redirect()
     cipher()
     if not os.getenv("DATABASE_URL"):
         raise RuntimeError("Falta DATABASE_URL; no se inició el worker.")

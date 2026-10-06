@@ -25,14 +25,15 @@ solo para pruebas y conservar Drive/Sheets operativos. No reemplazar servicios a
 **Qué:** DATABASE_URL/REDIS_URL internas, Google vigente, raíz, roles y Fernet.
 **Por qué:** worker sin navegador necesita conexiones durables cifradas.
 **Dónde:** Render Environment API/worker, nunca Next. **Esperado/obtención:**
-referencias PG/Key Value del Blueprint; raíz
+referencias PG/Key Value y variables del servicio histórico del Blueprint; raíz
 1WNDrC4rMfeg066uciiS5VVOYuTvqoAPT; GOOGLE_SHEET_ID opcional
-1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE. Copiar claves vigentes en privado.
-Si no existe clave Fernet de plataforma, generar una vez con
-`Fernet.generate_key()`, guardarla privada y usarla en ambos. No reemplazarla
-si ya hay conexiones cifradas.
+1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE. Render reutiliza claves Google/tienda
+mediante referencias privadas, sin copiarlas al chat. Genera una Fernet nueva
+base64 de 256 bits en API; worker referencia ese valor. No reemplazar ninguna
+clave si ya hay conexiones cifradas; exportarla en privado con sus datos al
+preparar backup/restauración.
 **Verificación:** SQL/Redis, roles y persist/load sin imprimir secretos.
-Configurar en API `IMAGE_WORKER_ORIGIN=https://<worker>.onrender.com` y comprobar
+Verificar en API `IMAGE_WORKER_ORIGIN=https://<worker>.onrender.com` enlazado y comprobar
 que una operación en cola despierta el proceso sin repetir la llamada IA.
 **Rollback:** conservar clave/configuración anterior; detener nuevos jobs.
 
@@ -40,6 +41,8 @@ que una operación en cola despierta el proceso sin repetir la llamada IA.
 
 **Qué:** SUITE_API_ORIGIN de build, APP_PUBLIC_ORIGIN API, GOOGLE_REDIRECT_URI
 y allowlist/roles. **Por qué:** cookies/CSRF/OAuth deben coincidir con staging.
+Los orígenes se enlazan automáticamente y `GOOGLE_REDIRECT_BASE` deriva el callback;
+el registro autorizado de ese callback en Google sigue requiriendo revisión.
 **Dónde:** Render y Google Cloud Console → OAuth client.
 **Esperado:** orígenes HTTPS sin path/secreto; callback
 https://<frontend>/auth/callback añadido conservando el antiguo;

@@ -1,167 +1,249 @@
-# Additive proposal. Does not replace either existing web service.
+# Additive staging. Existing services are referenced, never managed or modified.
 # Every resource is free. PostgreSQL expires after 30 days: staging only.
 previews:
-  generation: "off"
+  generation: 'off'
 databases:
-  - name: rincon-catalog-db
-    databaseName: rincon_catalog
-    user: rincon_app
-    plan: free
-    region: oregon
-    postgresMajorVersion: "17"
-    ipAllowList: []
+- name: rincon-catalog-db
+  databaseName: rincon_catalog
+  user: rincon_app
+  plan: free
+  region: oregon
+  postgresMajorVersion: '17'
+  ipAllowList: []
 services:
-  - type: keyvalue
-    name: rincon-generation-queue
-    plan: free
-    region: oregon
-    maxmemoryPolicy: noeviction
-    persistenceMode: "off"
-    ipAllowList: []
-  - type: web
-    name: rincon-frontend
-    runtime: docker
-    repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/stabilize-architecture-20261006
-    dockerfilePath: ./Dockerfile.frontend
-    dockerContext: .
-    plan: free
-    region: oregon
-    autoDeployTrigger: checksPass
-    healthCheckPath: /
-    envVars:
-      - key: SUITE_API_ORIGIN
-        sync: false
-  - type: web
-    name: rincon-catalog-api
-    runtime: docker
-    repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/stabilize-architecture-20261006
-    dockerfilePath: ./Dockerfile.api
-    dockerContext: .
-    plan: free
-    region: oregon
-    autoDeployTrigger: checksPass
-    healthCheckPath: /service-health
-    envVars:
-      - key: SUITE_SERVE_FRONTEND
-        value: "false"
-      - key: APP_PUBLIC_ORIGIN
-        sync: false
-      - key: DATABASE_URL
-        fromDatabase:
-          name: rincon-catalog-db
-          property: connectionString
-      - key: INITIALIZE_EMPTY_DATABASE
-        value: "true"
-      - key: IMAGE_WORKER_ORIGIN
-        sync: false
-      - key: REDIS_URL
-        fromService:
-          name: rincon-generation-queue
-          type: keyvalue
-          property: connectionString
-      - key: GENERATION_QUEUE_BACKEND
-        value: rq
-      - key: STUDIO_IMAGE_JOBS
-        value: worker
-      - key: APP_REQUIRE_ALLOWLIST
-        value: "true"
-      - key: MAX_IMAGES_PER_BATCH
-        value: "30"
-      - key: MAX_ESTIMATED_BATCH_COST
-        sync: false
-      - key: CREDENTIAL_ENCRYPTION_KEY
-        sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
-        sync: false
-      - key: GOOGLE_DRIVE_FOLDER_ID
-        sync: false
-      - key: APP_ALLOWED_EMAILS
-        sync: false
-      - key: APP_ROLE_MAP
-        sync: false
-      - key: APP_DEFAULT_ROLE
-        value: viewer
-      - key: SUITE_SERVICE_ROLE
-        value: main
-      - key: SUITE_DRIVE_ONLY
-        value: "true"
-      - key: SYNC_SERVICE_URL
-        sync: false
-      - key: SYNC_SERVICE_SHARED_KEY
-        sync: false
-      - key: WC_WRITE_ENABLED
-        value: "false"
-      - key: WP_MEDIA_WRITE_ENABLED
-        value: "false"
-  - type: web
-    name: rincon-catalog-worker
-    runtime: docker
-    repo: https://github.com/MisterReto/suite-ecommerce-ia
-    branch: agent/stabilize-architecture-20261006
-    dockerfilePath: ./Dockerfile.worker
-    dockerCommand: python -m catalog_platform.worker_web
-    dockerContext: .
-    plan: free
-    region: oregon
-    autoDeployTrigger: checksPass
-    healthCheckPath: /service-health
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: rincon-catalog-db
-          property: connectionString
-      - key: INITIALIZE_EMPTY_DATABASE
-        value: "true"
-      - key: REDIS_URL
-        fromService:
-          name: rincon-generation-queue
-          type: keyvalue
-          property: connectionString
-      - key: GENERATION_QUEUE_BACKEND
-        value: rq
-      - key: IMAGE_WORKER_CONCURRENCY
-        value: "1"
-      - key: STUDIO_IMAGE_JOBS
-        value: worker
-      - key: CREDENTIAL_ENCRYPTION_KEY
-        sync: false
-      - key: GOOGLE_CLIENT_ID
-        sync: false
-      - key: GOOGLE_CLIENT_SECRET
-        sync: false
-      - key: GOOGLE_REDIRECT_URI
-        sync: false
-      - key: GOOGLE_DRIVE_FOLDER_ID
-        sync: false
-      - key: APP_ROLE_MAP
-        sync: false
-      - key: APP_DEFAULT_ROLE
-        value: viewer
-      - key: SUITE_SERVICE_ROLE
-        value: sync
-      - key: SUITE_DRIVE_ONLY
-        value: "false"
-      - key: STOCK_AUTHORITY
-        value: app
-      - key: WOOCOMMERCE_URL
-        sync: false
-      - key: WOOCOMMERCE_CONSUMER_KEY
-        sync: false
-      - key: WOOCOMMERCE_CONSUMER_SECRET
-        sync: false
-      - key: WORDPRESS_URL
-        sync: false
-      - key: WP_USERNAME
-        sync: false
-      - key: WP_APP_PASSWORD
-        sync: false
-      - key: WC_WRITE_ENABLED
-        value: "false"
-      - key: WP_MEDIA_WRITE_ENABLED
-        value: "false"
+- type: keyvalue
+  name: rincon-generation-queue
+  plan: free
+  region: oregon
+  maxmemoryPolicy: noeviction
+  persistenceMode: 'off'
+  ipAllowList: []
+- type: web
+  name: rincon-frontend
+  runtime: docker
+  repo: https://github.com/MisterReto/suite-ecommerce-ia
+  branch: agent/stabilize-architecture-20261006
+  dockerfilePath: ./Dockerfile.frontend
+  dockerContext: .
+  plan: free
+  region: oregon
+  autoDeployTrigger: checksPass
+  healthCheckPath: /
+  envVars:
+  - key: SUITE_API_ORIGIN
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: PUBLIC_SERVICE_ORIGIN
+  - key: PUBLIC_SERVICE_ORIGIN
+    fromService:
+      type: web
+      name: rincon-frontend
+      envVarKey: RENDER_EXTERNAL_URL
+- type: web
+  name: rincon-catalog-api
+  runtime: docker
+  repo: https://github.com/MisterReto/suite-ecommerce-ia
+  branch: agent/stabilize-architecture-20261006
+  dockerfilePath: ./Dockerfile.api
+  dockerContext: .
+  plan: free
+  region: oregon
+  autoDeployTrigger: checksPass
+  healthCheckPath: /service-health
+  envVars:
+  - key: SUITE_SERVE_FRONTEND
+    value: 'false'
+  - key: APP_PUBLIC_ORIGIN
+    fromService:
+      type: web
+      name: rincon-frontend
+      envVarKey: PUBLIC_SERVICE_ORIGIN
+  - key: DATABASE_URL
+    fromDatabase:
+      name: rincon-catalog-db
+      property: connectionString
+  - key: INITIALIZE_EMPTY_DATABASE
+    value: 'true'
+  - key: IMAGE_WORKER_ORIGIN
+    fromService:
+      type: web
+      name: rincon-catalog-worker
+      envVarKey: PUBLIC_SERVICE_ORIGIN
+  - key: REDIS_URL
+    fromService:
+      name: rincon-generation-queue
+      type: keyvalue
+      property: connectionString
+  - key: GENERATION_QUEUE_BACKEND
+    value: rq
+  - key: STUDIO_IMAGE_JOBS
+    value: worker
+  - key: APP_REQUIRE_ALLOWLIST
+    value: 'true'
+  - key: MAX_IMAGES_PER_BATCH
+    value: '30'
+  - key: MAX_ESTIMATED_BATCH_COST
+    sync: false
+  - key: CREDENTIAL_ENCRYPTION_KEY
+    generateValue: true
+  - key: GOOGLE_CLIENT_ID
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: GOOGLE_CLIENT_ID
+  - key: GOOGLE_CLIENT_SECRET
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: GOOGLE_CLIENT_SECRET
+  - key: GOOGLE_DRIVE_FOLDER_ID
+    value: 1WNDrC4rMfeg066uciiS5VVOYuTvqoAPT
+  - key: APP_ALLOWED_EMAILS
+    sync: false
+  - key: APP_ROLE_MAP
+    sync: false
+  - key: APP_DEFAULT_ROLE
+    value: viewer
+  - key: SUITE_SERVICE_ROLE
+    value: main
+  - key: SUITE_DRIVE_ONLY
+    value: 'true'
+  - key: SYNC_SERVICE_URL
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: SYNC_SERVICE_URL
+  - key: SYNC_SERVICE_SHARED_KEY
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: SYNC_SERVICE_SHARED_KEY
+  - key: WC_WRITE_ENABLED
+    value: 'false'
+  - key: WP_MEDIA_WRITE_ENABLED
+    value: 'false'
+  - key: PUBLIC_SERVICE_ORIGIN
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: RENDER_EXTERNAL_URL
+  - key: GOOGLE_SHEET_ID
+    value: 1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE
+  - key: GOOGLE_REDIRECT_BASE
+    fromService:
+      type: web
+      name: rincon-frontend
+      envVarKey: PUBLIC_SERVICE_ORIGIN
+- type: web
+  name: rincon-catalog-worker
+  runtime: docker
+  repo: https://github.com/MisterReto/suite-ecommerce-ia
+  branch: agent/stabilize-architecture-20261006
+  dockerfilePath: ./Dockerfile.worker
+  dockerCommand: python -m catalog_platform.worker_web
+  dockerContext: .
+  plan: free
+  region: oregon
+  autoDeployTrigger: checksPass
+  healthCheckPath: /service-health
+  envVars:
+  - key: DATABASE_URL
+    fromDatabase:
+      name: rincon-catalog-db
+      property: connectionString
+  - key: INITIALIZE_EMPTY_DATABASE
+    value: 'true'
+  - key: REDIS_URL
+    fromService:
+      name: rincon-generation-queue
+      type: keyvalue
+      property: connectionString
+  - key: GENERATION_QUEUE_BACKEND
+    value: rq
+  - key: IMAGE_WORKER_CONCURRENCY
+    value: '1'
+  - key: STUDIO_IMAGE_JOBS
+    value: worker
+  - key: CREDENTIAL_ENCRYPTION_KEY
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: CREDENTIAL_ENCRYPTION_KEY
+  - key: GOOGLE_CLIENT_ID
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: GOOGLE_CLIENT_ID
+  - key: GOOGLE_CLIENT_SECRET
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: GOOGLE_CLIENT_SECRET
+  - key: GOOGLE_DRIVE_FOLDER_ID
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: GOOGLE_DRIVE_FOLDER_ID
+  - key: APP_ROLE_MAP
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: APP_ROLE_MAP
+  - key: APP_DEFAULT_ROLE
+    value: viewer
+  - key: SUITE_SERVICE_ROLE
+    value: sync
+  - key: SUITE_DRIVE_ONLY
+    value: 'false'
+  - key: STOCK_AUTHORITY
+    value: app
+  - key: WOOCOMMERCE_URL
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_URL
+  - key: WOOCOMMERCE_CONSUMER_KEY
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_KEY
+  - key: WOOCOMMERCE_CONSUMER_SECRET
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_SECRET
+  - key: WORDPRESS_URL
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_URL
+  - key: WP_USERNAME
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_USERNAME
+  - key: WP_APP_PASSWORD
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_APP_PASSWORD
+  - key: WC_WRITE_ENABLED
+    value: 'false'
+  - key: WP_MEDIA_WRITE_ENABLED
+    value: 'false'
+  - key: PUBLIC_SERVICE_ORIGIN
+    fromService:
+      type: web
+      name: rincon-catalog-worker
+      envVarKey: RENDER_EXTERNAL_URL
+  - key: GOOGLE_SHEET_ID
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: GOOGLE_SHEET_ID
+  - key: GOOGLE_REDIRECT_BASE
+    fromService:
+      type: web
+      name: rincon-frontend
+      envVarKey: PUBLIC_SERVICE_ORIGIN

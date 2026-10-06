@@ -52,7 +52,12 @@ un servicio único. Todos apuntan a `agent/stabilize-architecture-20261006`, con
 Docker context `.` y autodeploy solo tras checks verdes. Builds: Dockerfiles,
 sin comandos personalizados aparte. El frontend necesita SUITE_API_ORIGIN en
 build; API y worker reciben DATABASE_URL/REDIS_URL mediante referencias internas.
-Las env `sync:false` se completan de forma privada en el panel, no en YAML.
+Los orígenes públicos se enlazan mediante alias `PUBLIC_SERVICE_ORIGIN` de
+`RENDER_EXTERNAL_URL`; no se usan hosts privados para recibir tráfico web free.
+Las claves Google/tienda se referencian dentro de Render desde el servicio
+histórico, sin leer valores ni modificarlo. Render genera la clave Fernet nueva
+en API y worker la comparte por referencia. Las env `sync:false` restantes
+(roles/correos/límite de coste) se completan en privado.
 
 El presupuesto solicitado es **cero para alojamiento**: todos los recursos
 declaran `plan: free`. No registrar tarjeta ni aceptar upgrades. Render admite
