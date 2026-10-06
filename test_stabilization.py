@@ -191,7 +191,7 @@ def test_capture_worker_correction_and_recovery_use_original_pipeline(redis_mode
 
 
 def test_forked_rq_worker_completes_signed_sql_event(redis_mode):
-    _, value, _ = redis_mode
+    client, value, _ = redis_mode
     with transaction() as db:
         event = WebhookEvent(tenant_id=value["platform_tenant"], provider="woocommerce", event_id=uid(), event_type="test", payload_hash=uid(), encrypted_payload=seal({}))
         db.add(event); db.flush()
@@ -199,6 +199,8 @@ def test_forked_rq_worker_completes_signed_sql_event(redis_mode):
         db.add(job); queue.dispatch(db, job); job_id = job.id
     consume(fork=True)
     with transaction() as db: assert db.get(GenerationJob, job_id).status == "completed"
+    # A fork must not corrupt the parent's psycopg prepared-statement state.
+    assert create(client, sku="TEST-INTEGRATION-AFTER-FORK")["stock"] == 10
 
 
 def test_regenerate_keeps_old_asset_and_removes_previous_edit_reference(setup, monkeypatch):

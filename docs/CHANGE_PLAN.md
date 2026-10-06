@@ -52,3 +52,21 @@ con capacidad/coste pendientes de validación real.
 Cada etapa requiere pruebas verdes. Las pruebas con dobles no habilitan
 producción. Si la generación real falla en pasos 5–9 de `TEST_PLAN.md`, se
 detienen las nuevas integraciones. No se ejecutan migraciones destructivas.
+## Aislamiento SQL detectado en CI
+
+**Problema actual:** el primer pase PostgreSQL/Redis ejecutó 31 pruebas, pero
+la operación posterior a un fork RQ falló por una consulta preparada duplicada
+de psycopg. El hijo heredaba una conexión abierta del padre.
+**Por qué cambiar:** cada proceso debe usar su propio socket SQL; compartirlo
+puede corromper el protocolo y el estado de las consultas preparadas.
+**Archivos afectados:** catalog_platform/database.py, test_stabilization.py y
+el health check PostgreSQL de CI.
+**Riesgo:** el pool reconectará después de detectar un PID distinto; no altera
+tablas, prompts, proveedor ni el pipeline.
+**Cómo probar:** job RQ con fork, lectura de su estado y creación posterior
+desde el proceso padre; batería completa en PostgreSQL17/Redis7.
+**Cómo revertir:** revertir este commit y mantener detenido el worker nuevo
+hasta reemplazar el aislamiento de conexiones. No modificar datos.
+
+Se aplica el control connect/checkout por PID de la
+[documentación oficial de SQLAlchemy](https://docs.sqlalchemy.org/en/20/core/pooling.html#using-connection-pools-with-multiprocessing-or-os-fork).

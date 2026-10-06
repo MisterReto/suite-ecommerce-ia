@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from functools import lru_cache
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, exc
 from sqlalchemy.orm import sessionmaker
 
 
@@ -29,7 +29,21 @@ def engine_for(url):
             pool_timeout=15,
             connect_args={"connect_timeout": 10},
         )
-    return create_engine(url, **options)
+    engine = create_engine(url, **options)
+
+    @event.listens_for(engine, "connect")
+    def mark_process(connection, record):
+        record.info["pid"] = os.getpid()
+
+    @event.listens_for(engine, "checkout")
+    def require_own_connection(connection, record, proxy):
+        # RQ forks jobs. A child must open its own socket, leaving the parent's
+        # connection and psycopg prepared statements untouched.
+        if record.info.get("pid") != os.getpid():
+            record.dbapi_connection = proxy.dbapi_connection = None
+            raise exc.DisconnectionError("Conexión SQL heredada; abrir una propia.")
+
+    return engine
 
 
 @contextmanager
