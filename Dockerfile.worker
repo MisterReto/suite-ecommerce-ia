@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade "pip>=26.2" "setuptools>=83" && pip install --no-cache-dir -r requirements.txt
+COPY *.py ./
+COPY catalog_platform/ ./catalog_platform/
+COPY static/ ./static/
+RUN useradd --create-home --uid 10001 suite
+USER suite
+ENV MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONUNBUFFERED=1
+CMD ["python", "-m", "catalog_platform.worker"]

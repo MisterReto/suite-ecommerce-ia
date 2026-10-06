@@ -5,6 +5,8 @@ on:
     branches:
       - codex/drive-client-handoff
       - agent/woocommerce-inventory-foundation
+      - agent/fastapi-next-delivery
+      - agent/catalog-platform
   pull_request:
     branches:
       - agent/woocommerce-inventory-foundation
@@ -14,13 +16,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GRADIO_ANALYTICS_ENABLED: "False"
+      NEXT_TELEMETRY_DISABLED: "1"
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rincon_test
+          POSTGRES_PASSWORD: test-only-not-a-secret
+          POSTGRES_DB: rincon_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Compilar interfaz Next.js
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+          npm run build
       - name: Instalar dependencias
         run: |
           pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest
@@ -28,15 +55,19 @@ jobs:
       - name: Revisar dependencias vulnerables
         run: pip-audit --progress-spinner off
       - name: Compilar Python
-        run: python -m compileall -q .
+        run: python -m compileall -q -x 'node_modules|\.next|\.venv' .
       - name: Verificar aislamiento y delegación entre servicios
         run: |
           python -m unittest test_store_connection test_stability test_sync_changes test_generation_content test_catalog_capture test_variation_stock -q
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
           python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
-          python -m pytest test_gradio_security.py -q
+          python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py -q
           node test_loyverse_ui.js
+      - name: Cola y solicitudes concurrentes en PostgreSQL real
+        env:
+          TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
+        run: python -m pytest test_catalog_platform.py -q
       - name: Verificar arranque y adaptadores
         env:
           GOOGLE_CLIENT_ID: test-client.apps.googleusercontent.com
@@ -44,14 +75,17 @@ jobs:
           GOOGLE_REDIRECT_URI: https://example.com/auth/callback
         run: |
           python - <<'PY'
-          import product_web_ai
+          import service_entrypoint
           import app
+          import sys
 
-          assert product_web_ai.fastapi_app is not None
+          assert service_entrypoint.fastapi_app is not None
+          assert "gradio" not in sys.modules
           assert app.NOMBRE_HOJA_INVENTARIO == "Lista completa"
           assert app.NOMBRE_GOOGLE_SHEET == "inventario_completo"
           assert hasattr(app, "_convertir_inventario_importable")
           assert hasattr(app, "_validar_inventario_preparado")
           assert app.MODELO_IMAGEN == "gemini-3.1-flash-image"
-          print("Arranque canónico correcto.")
+          assert any(getattr(route, "path", "") == "/api/generate" for route in service_entrypoint.fastapi_app.routes)
+          print("Arranque FastAPI/Next.js canónico correcto.")
           PY

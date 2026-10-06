@@ -1,0 +1,138 @@
+"""Transactional queue with leases and explicit handling of uncertain paid writes."""
+
+import os
+import time
+import hashlib
+from sqlalchemy import select, func
+from .database import transaction
+from .models import GenerationJob, WorkerHeartbeat, now
+
+
+def request_lock(db, tenant, key):
+    # Serializes duplicate HTTP submissions, including jobs without product_id.
+    if db.bind.dialect.name == "postgresql":
+        number = int.from_bytes(
+            hashlib.sha256((tenant + ":" + key).encode()).digest()[:8],
+            "big",
+            signed=True,
+        )
+        db.execute(select(func.pg_advisory_xact_lock(number)))
+
+
+def heartbeat(owner):
+    with transaction() as db:
+        record = db.get(WorkerHeartbeat, owner)
+        if record:
+            record.updated = time.time()
+        else:
+            db.add(
+                WorkerHeartbeat(
+                    id=owner,
+                    updated=time.time(),
+                    version=os.getenv("RENDER_GIT_COMMIT", "local"),
+                )
+            )
+
+
+def available(db):
+    return (
+        db.scalar(
+            select(WorkerHeartbeat.id)
+            .where(WorkerHeartbeat.updated > time.time() - 90)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def claim(owner):
+    stamp = time.time()
+    with transaction() as db:
+        expired = db.scalars(
+            select(GenerationJob)
+            .where(
+                GenerationJob.status == "processing", GenerationJob.lease_until < stamp
+            )
+            .with_for_update(skip_locked=True)
+        ).all()
+        for job in expired:
+            if job.payload.get("in_flight"):
+                job.status = "failed"
+                job.finished_at = now()
+                job.message = "Operación interrumpida con resultado incierto. Revisa los archivos antes de autorizar otro intento."
+            else:
+                job.status = "queued"
+                job.message = (
+                    "Recuperado después de reinicio; conserva las imágenes terminadas."
+                )
+            job.lease_owner = None
+            job.lease_until = None
+        db.flush()
+        job = db.scalar(
+            select(GenerationJob)
+            .where(GenerationJob.status == "queued")
+            .order_by(GenerationJob.created_at)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if not job:
+            return None
+        job.status = "processing"
+        job.lease_owner = owner
+        job.lease_until = stamp + 300
+        job.started_at = job.started_at or now()
+        db.flush()
+        return {
+            key: getattr(job, key)
+            for key in (
+                "id",
+                "tenant_id",
+                "actor",
+                "kind",
+                "product_id",
+                "payload",
+                "model",
+            )
+        }
+
+
+def checkpoint(job_id, owner, *, payload=None, progress=None, message=None):
+    with transaction() as db:
+        job = db.scalar(
+            select(GenerationJob).where(GenerationJob.id == job_id).with_for_update()
+        )
+        if (
+            not job
+            or job.status != "processing"
+            or job.lease_owner != owner
+            or job.lease_until < time.time()
+        ):
+            raise RuntimeError(
+                "El trabajo ya no pertenece a este worker. No se inició otra operación."
+            )
+        job.lease_until = time.time() + 300
+        if payload is not None:
+            job.payload = payload
+        if progress is not None:
+            job.progress = progress
+        if message is not None:
+            job.message = str(message)[:500]
+
+
+def finish(job_id, owner, success, message):
+    with transaction() as db:
+        job = db.scalar(
+            select(GenerationJob).where(GenerationJob.id == job_id).with_for_update()
+        )
+        if job and job.lease_owner == owner and job.status == "processing":
+            job.status = (
+                ("published" if job.kind == "publication" else "completed")
+                if success
+                else "failed"
+            )
+            job.message = message[:500]
+            if success:
+                job.progress = 100
+            job.lease_owner = None
+            job.lease_until = None
+            job.finished_at = now()

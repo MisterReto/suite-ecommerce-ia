@@ -5,7 +5,7 @@ import time
 from threading import RLock
 from pathlib import Path
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 import app as runtime
 from inventory_web import _context
@@ -57,10 +57,12 @@ def _operate(request, action, data):
         api = LoyverseClient(data.get('token'))
         stores = api.list('stores')
         value['loyverse_token'] = api.token
+        value['loyverse_stores'] = [{'id': s['id'], 'name': s['name']} for s in stores if not s.get('deleted_at')]
         value.pop('loyverse_preview', None)
-        return {'stores': [{'id': s['id'], 'name': s['name']} for s in stores if not s.get('deleted_at')]}
+        return {'stores': value['loyverse_stores']}
     if action == 'disconnect':
         value.pop('loyverse_token', None)
+        value.pop('loyverse_stores', None)
         value.pop('loyverse_preview', None)
         return {'ok': True}
     if action == 'preview':
@@ -194,7 +196,7 @@ def register(app):
             session(request)
         except PermissionError:
             return HTMLResponse('<h2>Conecta Google Drive en la Suite para acceder.</h2><a href="/">Volver</a>', status_code=401)
-        return HTMLResponse(Path('static/loyverse.html').read_text())
+        return RedirectResponse('/#loyverse', status_code=303)
 
     @app.get('/loyverse-upload-status')
     def upload_status(request: Request, job_id: str = ''):

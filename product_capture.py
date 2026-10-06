@@ -1,4 +1,4 @@
-"""Gradio capture workflow, scoped to the connected customer's inventory."""
+"""Product capture and family covers scoped to the connected customer."""
 import hashlib
 import io
 from pathlib import Path
@@ -7,7 +7,11 @@ import secrets
 import textwrap
 import time
 
-import gradio as gr
+from fastapi import Request
+
+
+def field_update(**values):
+    return values
 from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -85,7 +89,7 @@ class ProductCapture:
         session["capture_snapshot"] = (time.monotonic(), snapshot)
         return snapshot
 
-    def check(self, sku, name, brand, size, code, parent, attribute, value, request: gr.Request):
+    def check(self, sku, name, brand, size, code, parent, attribute, value, request: Request):
         try:
             session = self.session(request)
             _, _, rows = self.snapshot(session)
@@ -107,7 +111,7 @@ class ProductCapture:
         except Exception as error:
             return f"⚠️ No pude verificar: {error}"
 
-    def scan(self, photo, current_code, request: gr.Request):
+    def scan(self, photo, current_code, request: Request):
         try:
             self.session(request)
             codes = read_barcodes(photo)
@@ -118,7 +122,7 @@ class ProductCapture:
         except Exception:
             return current_code, "⚠️ No pude leer la foto; captura el código manualmente."
 
-    def detect_from_product(self, front, back, current_code, request: gr.Request):
+    def detect_from_product(self, front, back, current_code, request: Request):
         try:
             session = self.session(request)
             codes = list(dict.fromkeys(read_barcodes(back) + read_barcodes(front)))
@@ -129,7 +133,7 @@ class ProductCapture:
         except Exception:
             return ""
 
-    def load_parents(self, kind, mode, name, brand, sku, selected, request: gr.Request):
+    def load_parents(self, kind, mode, name, brand, sku, selected, request: Request):
         visible = kind == "Variable"
         try:
             session = self.session(request)
@@ -148,21 +152,21 @@ class ProductCapture:
             if mode == NEW_PARENT:
                 parent_sku = next_parent_sku(name, brand, rows) if name else ""
                 title = family_name(name)
-            return (gr.update(choices=choices, value=selected, visible=visible and mode == EXISTING_PARENT),
-                    gr.update(visible=visible, value=parent_sku, interactive=mode == NEW_PARENT),
-                    gr.update(visible=visible), gr.update(value=title, interactive=mode == NEW_PARENT),
-                    gr.update(value=attribute), gr.update(value=mode))
+            return (field_update(choices=choices, value=selected, visible=visible and mode == EXISTING_PARENT),
+                    field_update(visible=visible, value=parent_sku, interactive=mode == NEW_PARENT),
+                    field_update(visible=visible), field_update(value=title, interactive=mode == NEW_PARENT),
+                    field_update(value=attribute), field_update(value=mode))
         except Exception:
-            return (gr.update(choices=[], value=None, visible=visible), gr.update(visible=visible, value=""),
-                    gr.update(visible=visible), gr.update(value=family_name(name)), gr.update(), gr.update())
+            return (field_update(choices=[], value=None, visible=visible), field_update(visible=visible, value=""),
+                    field_update(visible=visible), field_update(value=family_name(name)), field_update(), field_update())
 
-    def select_parent(self, selected, request: gr.Request):
+    def select_parent(self, selected, request: Request):
         try:
             _, _, rows = self.snapshot(self.session(request))
             parent = next(r for r in rows if text(r.get("sku")) == selected and is_variable_parent(r))
             return selected, text(parent.get("nombre_producto")), text(parent.get("atributo_nombre")) or "Tamaño"
         except Exception:
-            return "", "", gr.update()
+            return "", "", field_update()
 
     def _namespace(self, session):
         return re.sub(r"[^a-zA-Z0-9_-]", "", session.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
@@ -221,7 +225,7 @@ class ProductCapture:
             image.thumbnail((1200, 1200))
             return image
 
-    def cover(self, kind, mode, parent, title, sku, reference, request: gr.Request):
+    def cover(self, kind, mode, parent, title, sku, reference, request: Request):
         if kind != "Variable":
             return None, "", None
         try:
@@ -281,7 +285,7 @@ class ProductCapture:
         except Exception:
             return None, "⚠️ No pude preparar la portada. Revisa la conexión y pulsa Actualizar portada.", None
 
-    def regenerate_cover(self, kind, mode, parent, title, sku, reference, request: gr.Request):
+    def regenerate_cover(self, kind, mode, parent, title, sku, reference, request: Request):
         try:
             session = self.session(request)
             for info in session.get("family_covers", {}).values():
@@ -293,7 +297,7 @@ class ProductCapture:
 
     def save(self, sku, kind, parent, name, brand, size, attribute, value, price,
              category, subcategory, tags, short, long, code, mode, title, cover_token,
-             request: gr.Request):
+             request: Request):
         try:
             session = self.session(request)
             if not text(name):
