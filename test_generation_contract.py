@@ -1,33 +1,34 @@
-"""User-requested freeze of the creative pipeline accepted before platform migration."""
+"""Freeze the accepted pipeline against an immutable repository snapshot."""
 import ast
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 
-def _stable_ast_dump(node):
-    """Use the recorded compact representation across supported Python versions.
-
-    Python 3.13 changed ast.dump's default handling of empty list fields.
-    Empty fields added by newer parsers (for example type_params) do not
-    represent a change to the accepted generation code.
-    """
-    if isinstance(node, ast.AST):
-        fields = []
-        for name, value in ast.iter_fields(node):
-            if value is None and getattr(type(node), name, ...) is None:
-                continue
-            if isinstance(value, list) and not value:
-                continue
-            fields.append(f"{name}={_stable_ast_dump(value)}")
-        return f"{type(node).__name__}({', '.join(fields)})"
-    if isinstance(node, list):
-        return f"[{', '.join(_stable_ast_dump(item) for item in node)}]"
-    return repr(node)
+def _selected_tree(source, selected):
+    tree = ast.parse(source)
+    nodes = tree.body if selected is None else [
+        node for node in tree.body
+        if getattr(node, "name", None) in selected or isinstance(node, ast.Assign)
+        and any(getattr(target, "id", "") in selected for target in node.targets)
+    ]
+    if selected is not None:
+        found = {getattr(node, "name", None) for node in nodes}
+        found.update(
+            getattr(target, "id", None)
+            for node in nodes if isinstance(node, ast.Assign)
+            for target in node.targets
+        )
+        assert set(selected) <= found, "A protected definition is missing"
+    return ast.Module(body=nodes, type_ignores=[])
 
 
-def _fingerprint(node):
-    return hashlib.sha256(_stable_ast_dump(node).encode()).hexdigest()
+def _fingerprint(tree):
+    # Both snapshots are parsed and serialized by this same interpreter.
+    return hashlib.sha256(
+        ast.dump(tree, include_attributes=False).encode()
+    ).hexdigest()
 
 
 def test_accepted_generation_pipeline_has_not_changed():
@@ -35,27 +36,22 @@ def test_accepted_generation_pipeline_has_not_changed():
     contract = json.loads(
         (root / "tests/fixtures/generation_contract.json").read_text(encoding="utf-8")
     )
+    accepted = contract["accepted_commit"]
+    assert len(accepted) == 40 and all(c in "0123456789abcdef" for c in accepted)
     for filename, selected in contract["protected"].items():
-        tree = ast.parse((root / filename).read_text(encoding="utf-8"))
-        nodes = tree.body if selected is None else [
-            node for node in tree.body
-            if getattr(node, "name", None) in selected or isinstance(node, ast.Assign)
-            and any(getattr(target, "id", "") in selected for target in node.targets)
-        ]
-        digest = _fingerprint(ast.Module(body=nodes, type_ignores=[]))
-        assert digest == contract["sha256"][filename], (
+        snapshot = subprocess.run(
+            ["git", "show", f"{accepted}:{filename}"],
+            cwd=root, capture_output=True, text=True, encoding="utf-8",
+        )
+        assert snapshot.returncode == 0, (
+            f"Accepted generation snapshot unavailable: {accepted}:{filename}. "
+            "Fetch repository history before running the contract test."
+        )
+        baseline = _selected_tree(snapshot.stdout, selected)
+        current = _selected_tree((root / filename).read_text(encoding="utf-8"), selected)
+        assert _fingerprint(current) == _fingerprint(baseline), (
             f"Protected generation changed: {filename}"
         )
-
-
-def test_freeze_ignores_empty_parser_fields_added_between_python_versions():
-    tree = ast.parse("def generate(prompt):\n    return prompt\n")
-    function = tree.body[0]
-    original = _fingerprint(tree)
-    if "type_params" not in function._fields:
-        function._fields = (*function._fields, "type_params")
-    function.type_params = []
-    assert _fingerprint(tree) == original
 
 
 def test_freeze_detects_prompt_changes_and_collection_changes():
@@ -65,3 +61,11 @@ def test_freeze_detects_prompt_changes_and_collection_changes():
     assert _fingerprint(ast.parse("references = []")) != _fingerprint(
         ast.parse("references = {}")
     )
+
+
+def test_freeze_rejects_missing_protected_definition():
+    try:
+        _selected_tree("def unrelated():\n    pass\n", ["generate"])
+    except AssertionError:
+        return
+    raise AssertionError("Removing a protected function must invalidate the contract")
