@@ -19,6 +19,18 @@ cambian automáticamente proveedor, modelo, prompts ni referencias.
 [Auditoría](ARCHITECTURE_AUDIT.md) · [Flujo protegido](docs/current-image-generation-flow.md)
 · [Despliegue y validación](docs/platform-rollout.md) · [Backups](docs/backups.md)
 
+## Entender y controlar la aplicación
+
+[Arquitectura](ARCHITECTURE.md) · [Solicitudes paso a paso](REQUEST_FLOWS.md) · [Generación](IMAGE_GENERATION_FLOW.md) · [Glosario](GLOSSARY.md)
+
+[Modelo de datos](DATA_MODEL.md) · [Drive/Sheets](DRIVE_AND_SHEETS.md) · [Servicios Render](RENDER_SERVICES.md) · [Variables](ENVIRONMENT_VARIABLES.md)
+
+[Despliegue](DEPLOYMENT.md) · [Recuperación](ROLLBACK.md) · [Estado de seguridad](SECURITY_AUDIT.md) · [Pendientes operativos](MANUAL_ACTIONS_REQUIRED.md)
+
+El Blueprint ahora prepara frontend, API y worker separados. El Dockerfile compatible conserva el modo exportado. La separación aún requiere activación en Render y pase real.
+
+Para ejecutar la protección del generador, conservar el historial git del commit aceptado; CI hace checkout con `fetch-depth: 0`.
+
 ## Desarrollo
 
 Python 3.11 y Node 22.

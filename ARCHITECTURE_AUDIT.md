@@ -124,3 +124,11 @@ iniciada termina o queda incierta, sin duplicar un gasto automáticamente.
   nueva obtiene equivalencia verificable. No sustituirlas por datos ficticios.
 - No declarar la actualización completa hasta validar generación real,
   publicación autorizada, medios y recuperación en Render.
+
+## Actualización de esta continuación
+
+La arquitectura de tres servicios y su mapa de código están en [ARCHITECTURE.md](ARCHITECTURE.md). `Dockerfile.frontend`, `Dockerfile.api` y el worker hacen explícita la separación. Se conserva el despliegue compatible para recuperar el servicio anterior.
+
+El contrato AST compara directamente con `3ba6a2f9aeb65265a6165ee6c48b7ab273256d7f`; no se modificaron funciones ni prompts protegidos. Se añadieron regresiones de proxy y validación del origen público.
+
+Consultar [SECURITY_AUDIT.md](SECURITY_AUDIT.md) para distinguir evidencia de CI, configuración pendiente y auditoría formal todavía no ejecutada. La documentación no implica que los nuevos servicios estén activos.

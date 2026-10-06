@@ -12,7 +12,7 @@ const { spawn, spawnSync } = require("node:child_process");
   const key = path.join(temporary, "key.pem"), certificate = path.join(temporary, "cert.pem");
   const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048",
     "-nodes", "-keyout", key, "-out", certificate, "-days", "1",
-    "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+    "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
     { stdio: ["ignore", "ignore", "pipe"] });
   assert.equal(generated.status, 0, "Generate the local test certificate");
   const origin = "http://127.0.0.1:23000";
@@ -38,7 +38,7 @@ const { spawn, spawnSync } = require("node:child_process");
           cookie: request.headers.cookie, origin: request.headers.origin }));
       });
     });
-  await new Promise(resolve => backend.listen(24443, "127.0.0.1", resolve));
+  await new Promise(resolve => backend.listen(24443, resolve));
   let output = "", process;
   try {
     process = spawn(global.process.execPath, ["frontend/.next/standalone/server.js"], {
@@ -61,13 +61,13 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.ok(ready, "Next.js should start: " + output);
     const cookie = "session_id=opaque-test-session";
     const session = await fetch(origin + "/api/session", { headers: { Cookie: cookie } });
-    assert.equal(session.status, 200);
+    assert.equal(session.status, 200, "Proxy response: " + output);
     assert.equal(session.headers.get("cache-control"), "no-store");
     assert.equal((await session.json()).cookie, cookie);
     const image = Buffer.alloc(12_020_000, 42);
     const upload = await fetch(origin + "/api/uploads", { method: "POST", body: image,
       headers: { Origin: origin, Cookie: cookie, "Content-Type": "application/octet-stream" } });
-    assert.equal(upload.status, 200);
+    assert.equal(upload.status, 200, "Upload response: " + output);
     const received = await upload.json();
     assert.equal(received.path, "/api/uploads", "Preserve API path without slash redirects");
     assert.equal(received.size, image.length, "Preserve a supported 12 MB upload");
@@ -86,6 +86,9 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(logout.status, 200);
     assert.equal((await logout.json()).path, "/logout");
     console.log("Next.js proxy: paths, cookies, OAuth redirects and full 12 MB uploads passed.");
+  } catch (error) {
+    console.error("Next.js server diagnostics: " + output);
+    throw error;
   } finally {
     if (process) {
       const closed = new Promise(resolve => process.once("exit", resolve));

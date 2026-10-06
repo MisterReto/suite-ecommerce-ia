@@ -22,7 +22,7 @@ const config: NextConfig = {
     async rewrites() {
       return { beforeFiles: [
         ...["/api/:path*", "/auth/:path*", "/suite-static/:path*", "/webhooks/:path*",
-            "/login", "/logout", "/service-health", "/sync-connect", "/sync-handoff/:path*"]
+            "/login", "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*"]
           .map(source => ({ source, destination: upstream + source })),
       ], afterFiles: [], fallback: [] };
     },

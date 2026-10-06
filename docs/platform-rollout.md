@@ -10,9 +10,11 @@ con auto deploy por commit y sin override del CMD. La inspección encontró **ce
 PostgreSQL y cero Key Value** en el workspace ProyectoInventario. No se obtuvo
 un listado legible de variables desde el conector; no se inventaron credenciales.
 
-La entrega propone mantener frontend exportado y API en el mismo servicio
-principal. Esto evita CORS, cookies entre dominios y un tercer servidor web. El
-worker nuevo sí es un background worker; el web sync existente se conserva.
+La continuación incorpora la instrucción de tres servicios: frontend Next.js
+standalone, API FastAPI y worker Python. El frontend hace proxy de API/OAuth en
+un mismo origen visible. La API autoriza APP_PUBLIC_ORIGIN y mantiene Host.
+El Dockerfile compatible conserva la exportación durante la transición; los
+servicios históricos no se retiran. Ver ../RENDER_SERVICES.md y ../DEPLOYMENT.md.
 
 ## Paso 1: revisión y respaldo
 
@@ -54,7 +56,7 @@ No activar ni revocar los scopes históricos sin validar acceso a las referencia
 
 1. Confirmar que la rama de producción no avanzó respecto al PR; integrar sin force.
 2. Render auto deploya al actualizar la rama: no disparar un segundo deploy manual.
-3. Comprobar build Docker (frontend + API), URL principal, `/api/session`,
+3. Comprobar los builds Docker separados, proxy del frontend y URL principal, `/api/session`,
    manifest, iconos, service worker y herramientas sync.
 4. Ejecutar **una sola vez** `python -m catalog_platform.migrate` contra una base
    nueva. Crea tablas `rincon_*`; no borra ni sobrescribe datos anteriores.

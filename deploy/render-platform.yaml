@@ -68,7 +68,7 @@ services:
         value: "true"
       - key: SYNC_SERVICE_URL
         sync: false
-      - key: SYNC_BRIDGE_SECRET
+      - key: SYNC_SERVICE_SHARED_KEY
         sync: false
       - key: WC_WRITE_ENABLED
         value: "false"
