@@ -969,6 +969,7 @@ export default function CaptureStudio({
                     </Field>
                     <Field label="SKU" hint="Código de barras legible; sin código se crean 10 caracteres.">
                       <input
+                        aria-label="SKU"
                         autoCapitalize="characters"
                         autoCorrect="off"
                         spellCheck={false}
