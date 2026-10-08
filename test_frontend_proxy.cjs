@@ -21,8 +21,13 @@ const { spawn, spawnSync } = require("node:child_process");
       const url = new URL(request.url, "https://127.0.0.1:24443");
       if (url.pathname === "/login") {
         response.writeHead(307, { Location: "https://accounts.google.com/o/oauth2/v2/auth",
-          "Set-Cookie": "oauth_state=test; Secure; HttpOnly; SameSite=Lax; Path=/" });
+          "Set-Cookie": ["oauth_state=test; Secure; HttpOnly; SameSite=Lax; Path=/",
+            "oauth_code_verifier=test-verifier; Secure; HttpOnly; SameSite=Lax; Path=/"] });
         return response.end();
+      }
+      if (url.pathname === "/service-health") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ ok: true, backend: "fastapi" }));
       }
       if (url.pathname === "/auth/callback") {
         assert.equal(url.searchParams.get("state"), "test");
@@ -75,9 +80,18 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(received.cookie, cookie);
     assert.equal(received.origin, origin);
     const login = await fetch(origin + "/login", { redirect: "manual" });
-    assert.equal(login.status, 307);
-    assert.match(login.headers.get("set-cookie"), /Secure; HttpOnly; SameSite=Lax/);
-    assert.equal(login.headers.get("location"), "https://accounts.google.com/o/oauth2/v2/auth");
+    assert.equal(login.status, 200, "Login waiting screen is local, even before API startup");
+    assert.match(await login.text(), /Iniciando servidor/);
+    assert.equal(login.headers.get("cache-control"), "no-store");
+    assert.equal(login.headers.get("set-cookie"), null, "Do not create OAuth state while waiting");
+    const health = await fetch(origin + "/service-health");
+    assert.deepEqual(await health.json(), { ok: true, backend: "fastapi" });
+    const start = await fetch(origin + "/auth/start", { redirect: "manual" });
+    assert.equal(start.status, 307);
+    const pendingCookies = start.headers.getSetCookie();
+    assert.equal(pendingCookies.length, 2, "Preserve separate state and PKCE cookies");
+    assert.ok(pendingCookies.every(cookie => /Secure; HttpOnly; SameSite=Lax/.test(cookie)));
+    assert.equal(start.headers.get("location"), "https://accounts.google.com/o/oauth2/v2/auth");
     const callback = await fetch(origin + "/auth/callback?state=test", { redirect: "manual" });
     assert.equal(callback.status, 303);
     assert.equal(callback.headers.get("location"), "/");

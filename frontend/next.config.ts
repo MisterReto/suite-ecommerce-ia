@@ -23,8 +23,11 @@ const config: NextConfig = {
     experimental: { proxyClientMaxBodySize: 13_000_000 },
     async rewrites() {
       return { beforeFiles: [
+        // Serve the waiting screen locally; issue OAuth state only after API readiness.
+        { source: "/login", destination: "/connect-google" },
+        { source: "/auth/start", destination: upstream + "/login" },
         ...["/api/:path*", "/auth/:path*", "/suite-static/:path*", "/webhooks/:path*",
-            "/login", "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*",
+            "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*",
             "/inventory-hub", "/inventory-manager", "/inventory-count", "/inventory-history",
             "/inventory-count-bulk", "/inventory-movement", "/inventory-review",
             "/woocommerce-image-preview", "/wp-media-health", "/image-sync-one",
@@ -43,7 +46,10 @@ const config: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=()" },
           { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" },
         ],
-      }];
+      }, ...["/login", "/connect-google"].map(source => ({
+        source,
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      }))];
     },
   } : {}),
 };

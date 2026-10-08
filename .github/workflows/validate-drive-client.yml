@@ -72,6 +72,7 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/rincon-browser-test" --no-audit --no-fund playwright@1.62.1
           NODE_PATH="$RUNNER_TEMP/rincon-browser-test/node_modules" TEST_CHROMIUM_PATH="$(command -v google-chrome)" node test_frontend_mobile.cjs
+          NODE_PATH="$RUNNER_TEMP/rincon-browser-test/node_modules" TEST_CHROMIUM_PATH="$(command -v google-chrome)" node test_oauth_wakeup.cjs
           "$RUNNER_TEMP/rincon-browser-test/node_modules/.bin/playwright" install --with-deps webkit
           NODE_PATH="$RUNNER_TEMP/rincon-browser-test/node_modules" TEST_CHROMIUM_PATH="$(command -v google-chrome)" TEST_WEBKIT=true node test_capture_mobile.cjs
       - name: Instalar dependencias
