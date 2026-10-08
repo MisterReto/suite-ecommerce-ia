@@ -115,14 +115,17 @@ async function exercise(browser, engine, width) {
     await capture.getByAltText("Reverso del producto").waitFor({state:"hidden"});
     await capture.getByRole("button",{name:"Analizar producto",exact:true}).tap();
     for (const label of ["Nombre del producto", "SKU", "Código de barras", "Precio de venta · MXN"]) {
-      const input = capture.getByLabel(label,{exact:true});
+      const input = label === "Precio de venta · MXN"
+        ? capture.getByRole("spinbutton",{name:/^Precio de venta · MXN/})
+        : capture.getByLabel(label,{exact:true});
       assert.ok(await input.evaluate(element=>parseFloat(getComputedStyle(element).fontSize)>=16),label+" uses readable phone text");
     }
     assert.equal(await capture.getByLabel("SKU",{exact:true}).getAttribute("autocorrect"),"off");
     assert.equal(await capture.getByLabel("Código de barras",{exact:true}).getAttribute("inputmode"),"numeric");
-    assert.equal(await capture.getByLabel("Precio de venta · MXN",{exact:true}).getAttribute("inputmode"),"decimal");
+    const price = capture.getByRole("spinbutton",{name:/^Precio de venta · MXN/});
+    assert.equal(await price.getAttribute("inputmode"),"decimal");
     await page.setViewportSize({width,height:480});
-    await touchTarget(capture.getByLabel("Precio de venta · MXN",{exact:true}),"Price in a short viewport");
+    await touchTarget(price,"Price in a short viewport");
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"Short phone viewport stays within the screen");
     await page.setViewportSize({width,height:844});
     await capture.getByLabel("Nombre del producto",{exact:true}).fill("Pocky Chocolate 40 g revisado");
