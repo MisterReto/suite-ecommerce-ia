@@ -25,13 +25,23 @@ async function exercise(browser, engine, width) {
   let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true;
   const generations = [], corrections = [];
   async function touchTarget(locator, label) {
-    await locator.scrollIntoViewIfNeeded();
-    // WebKit honors the page's smooth scrolling: verify the target after it settles.
-    await page.waitForFunction(element => {
-      const bounds = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-      return hit === element || element.contains(hit);
-    }, await locator.elementHandle(), {timeout:3000});
+    // Bring the control to the usable center, as a phone swipe would. WebKit's
+    // nearest-edge scroll can leave an otherwise reachable target under the fixed nav.
+    await locator.evaluate(element => element.scrollIntoView({block:"center",inline:"nearest",behavior:"instant"}));
+    try {
+      await page.waitForFunction(element => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        return hit === element || element.contains(hit);
+      }, await locator.elementHandle(), {timeout:3000});
+    } catch {
+      const diagnostic = await locator.evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        return {bounds:bounds.toJSON(),width:innerWidth,height:innerHeight,hit:hit?.outerHTML.slice(0,250)};
+      });
+      assert.fail(`${engine}/${width}: ${label} is unreachable: ${JSON.stringify(diagnostic)}`);
+    }
     const bounds = await locator.boundingBox();
     assert.ok(bounds && bounds.width >= 44 && bounds.height >= 44, `${engine}/${width}: ${label} has a 44px touch target`);
     assert.ok(await locator.evaluate(element => {
