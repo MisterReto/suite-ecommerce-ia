@@ -181,7 +181,12 @@ async function exercise(browser, engine, width) {
     assert.equal(corrections[0].confirm_cost,true);
     assert.equal(draft.images["1_hd"].id,preserved["1_hd"].id);
     assert.equal(draft.images["3_comercial"].id,preserved["3_comercial"].id);
-    for (let i=0;i<3;i++) await capture.getByLabel("Aprobar imagen",{exact:true}).first().check();
+    for (let i=0;i<3;i++) {
+      const approve = capture.locator("label.approve-check").filter({hasText:"Aprobar imagen"}).first();
+      await touchTarget(approve,"Approve image "+(i+1));
+      await approve.tap();
+      await page.waitForFunction(count => document.querySelectorAll(".capture-embedded .approve-check input:checked").length === count, i+1);
+    }
     await capture.getByRole("button",{name:"Guardar producto en Drive",exact:true}).tap();
     await capture.getByRole("button",{name:"Reparar catálogo maestro",exact:true}).tap();
     await page.waitForTimeout(250);assert.equal(saves,1,"Repair does not write the primary store twice");
