@@ -5,6 +5,8 @@ import re
 import secrets
 import time
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -151,6 +153,34 @@ def test_worker_reloads_updated_key_and_stale_google_snapshot_cannot_undo_it(cap
         accounts.delete_gemini(db, value["platform_tenant"], value["email"])
     with transaction() as db:
         assert "gemini_key" not in accounts.load(db, value["platform_tenant"], value["email"])
+
+
+def test_slow_credential_refresh_keeps_inflight_key_and_deletion_still_clears_it(capture_store, monkeypatch):
+    client, value, *_ = capture_store
+    start(client)
+    expected = value["gemini_key"]
+    reading, release = Event(), Event()
+    original = accounts.gemini_for
+    def delayed(db, tenant, actor):
+        key = original(db, tenant, actor)
+        reading.set()
+        assert release.wait(5), "Timed out waiting for the concurrent key reader"
+        return key
+    monkeypatch.setattr(accounts, "gemini_for", delayed)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        refresh = pool.submit(accounts.restore, value)
+        try:
+            assert reading.wait(2), "The database refresh did not start"
+            assert value.get("gemini_key") == expected, "A polling refresh erased the key used by an active operation"
+            assert value["gemini_source"] == "user_settings"
+        finally:
+            release.set()
+        refresh.result(timeout=5)
+    monkeypatch.setattr(accounts, "gemini_for", original)
+    with transaction() as db:
+        accounts.delete_gemini(db, value["platform_tenant"], value["email"])
+    accounts.restore(value)
+    assert "gemini_key" not in value and value["gemini_source"] == "not_configured"
 
 
 def test_credentials_are_isolated_by_actor_and_store(capture_store):

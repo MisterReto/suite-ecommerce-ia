@@ -60,10 +60,11 @@ def restore(value):
     if not configured():
         return  # Compatibility with the historical session-only service.
     actor = value.get("email", "")
-    value.pop("gemini_key", None)
-    value["gemini_source"] = "not_configured"
     if not actor or not member(actor):
+        value.pop("gemini_key", None)
+        value["gemini_source"] = "not_configured"
         return
+    key = None
     with transaction() as db:
         root = value.get("platform_tenant") or value.get("carpeta_raiz_id_manual")
         if not root:
@@ -77,8 +78,13 @@ def restore(value):
         root = root or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         if root:
             key = gemini_for(db, root, actor)
-            if key:
-                value.update(gemini_key=key, gemini_source="user_settings")
+    # Requests and the analysis thread share this dictionary. A slow refresh
+    # must not remove a valid key while an already authorized operation reads it.
+    if key:
+        value.update(gemini_key=key, gemini_source="user_settings")
+    else:
+        value.pop("gemini_key", None)
+        value["gemini_source"] = "not_configured"
 
 
 def persist(db, tenant, actor, value):

@@ -62,10 +62,17 @@ Las pruebas de navegador usan datos sintéticos en Chromium y WebKit a 360,
 La CI también comprueba PostgreSQL real y el contrato de generación protegido.
 No se generan imágenes de pago ni se escriben productos reales para validar.
 
-Validación local completada: 132 pruebas Pytest, 74 pruebas unittest, compilación
+Validación local completada: 133 pruebas Pytest, 74 pruebas unittest, compilación
 Next.js/TypeScript, proxy/cookies/redirecciones/cargas de 12 MB y pruebas de
 transiciones de audio. Diez casos requieren PostgreSQL/Redis de prueba y se
 verifican en CI, junto con los navegadores móviles.
+
+La suite de PostgreSQL detectó además una carrera existente: cada consulta de
+progreso borraba la clave de Gemini de la sesión antes de terminar su lectura SQL;
+el análisis concurrente podía fallar con `KeyError`. La restauración ahora resuelve
+la credencial antes de actualizar la sesión compartida. Una prueba con lectura
+SQL bloqueada garantiza disponibilidad para la operación en curso y comprueba
+que eliminar la clave sigue dejándola desconectada. No se cambian credenciales.
 
 Los modelos, prompts y funciones protegidas del generador quedan intactos.
 No se cambian credenciales, planes ni los dos servicios históricos de Render.
