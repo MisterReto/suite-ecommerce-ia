@@ -17,6 +17,10 @@ async function exercise(browser, engine, width) {
   const device = playwright.devices[engine === "webkit" ? "iPhone 13" : "Pixel 5"];
   const context = await browser.newContext({...device, viewport:{width, height:844}, screen:{width,height:844}, serviceWorkers:"block"});
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    window.__captureTestTouches = 0;
+    document.addEventListener("touchstart", () => { window.__captureTestTouches++; }, {passive:true});
+  });
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true;
   const generations = [], corrections = [];
@@ -87,9 +91,9 @@ async function exercise(browser, engine, width) {
   });
   try {
     await page.goto(origin,{waitUntil:"networkidle"});
-    assert.ok(await page.evaluate(() => navigator.maxTouchPoints > 0 && matchMedia("(pointer: coarse)").matches), "Browser emulates phone touch input");
     const nav=page.getByRole("navigation",{name:"Navegación principal"});
     await nav.getByRole("link",{name:"Productos",exact:true}).tap();
+    assert.ok(await page.evaluate(() => window.__captureTestTouches > 0), "Phone touch events reach the page");
     await page.getByRole("button",{name:"Nuevo producto con IA",exact:true}).tap();
     const capture=page.locator(".capture-embedded");
     await capture.getByRole("heading",{name:"Estudio de productos"}).waitFor();
