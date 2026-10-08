@@ -88,3 +88,29 @@ Para un rollback inmediato de Render, seleccionar únicamente **rincon-frontend*
 y restaurar el deploy anterior `dep-db3mf7ei0phs73ap8b00`, correspondiente a
 `568c2a38d8f03c12073fed24b4f5e66be2c6ec67`. El 502 durante un arranque en frío
 volverá a ser posible. Los servicios históricos no forman parte del rollback.
+
+## Rechazo del formato de la clave personal de Gemini
+
+El endpoint `/api/settings` solo admitía 20–256 caracteres de
+`A-Za-z0-9_-`. Una clave larga o con puntuación era rechazada antes de consultar
+a Google. La documentación oficial admite claves estándar y de autorización:
+<https://ai.google.dev/gemini-api/docs/api-key>. No se leyó la clave del usuario
+ni se comprobó su validez real como parte del diagnóstico.
+
+La validación ahora trata la clave como un valor opaco de 20–4096 caracteres
+ASCII imprimibles sin espacios internos. Recorta únicamente los espacios y
+saltos de línea de los extremos al pegar. El cifrado, aislamiento por cuenta y
+persistencia permanecen iguales. El botón existente **Comprobar clave** consulta
+los modelos disponibles sin generar contenido. Aceptar el texto no garantiza
+que Google autorice la clave.
+
+Las pruebas HTTP usan claves sintéticas estándar y largas con puntuación:
+verifican guardado cifrado, restauración exacta en una nueva sesión, ausencia
+de la clave en la respuesta y eliminación. Las entradas vacías, incompletas,
+con espacios internos, caracteres de control/invisibles o tamaño excesivo se
+rechazan sin reemplazar la clave ya guardada. No hay llamadas de pago.
+
+Para revertir este ajuste, restaurar únicamente la condición y mensaje de
+validación de `/api/settings` en `studio_api.py` desde el commit
+`d885596bc7fa3bda30567e1291d75311f269b829`. No requiere cambiar claves,
+variables, Drive ni el esquema de base de datos.

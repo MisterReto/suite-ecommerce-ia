@@ -86,11 +86,15 @@ def sheet_row(values, sku="POCKFR40", name="Pocky Fresa 40 g", kind="simple", pa
     values.append([record.get(k, "") for k in MASTER_COLUMNS] + ["", "", "", "", "Sabor", "Fresa", code])
 
 
-def test_key_is_encrypted_persistent_and_never_uses_render(capture_store, monkeypatch):
+@pytest.mark.parametrize("pasted,personal", [
+    pytest.param("AIza" + "P" * 35, "AIza" + "P" * 35, id="standard"),
+    pytest.param("AQ." + "Ab0_-/+=" * 64, "AQ." + "Ab0_-/+=" * 64, id="long-opaque"),
+    pytest.param(" \nAQ." + "Ab0_-/+=" * 64 + "\r\n", "AQ." + "Ab0_-/+=" * 64, id="clipboard-whitespace"),
+])
+def test_key_is_encrypted_persistent_and_never_uses_render(capture_store, monkeypatch, pasted, personal):
     client, value, *_ = capture_store
     monkeypatch.setenv("AI_API_KEY", "R" * 25)
-    personal = "P" * 25
-    assert client.post("/api/settings", json={"api_key": personal}, headers=ORIGIN).status_code == 200
+    assert client.post("/api/settings", json={"api_key": pasted}, headers=ORIGIN).status_code == 200
     with transaction() as db:
         row = accounts.account(db, value["platform_tenant"], value["email"], "gemini")
         assert personal not in row.encrypted_credentials
@@ -111,6 +115,26 @@ def test_key_is_encrypted_persistent_and_never_uses_render(capture_store, monkey
     finally:
         studio.runtime._eliminar_sesion(sid)
         client.cookies.set("session_id", value["session_id"])
+
+
+@pytest.mark.parametrize("pasted", [
+    pytest.param("", id="empty"),
+    pytest.param("AIza-short", id="incomplete"),
+    pytest.param("P" * 25 + " " + "P" * 25, id="internal-space"),
+    pytest.param("P" * 25 + "\n" + "P" * 25, id="internal-newline"),
+    pytest.param("P" * 25 + "\x00", id="control"),
+    pytest.param("P" * 25 + "\u200b", id="invisible-unicode"),
+    pytest.param("P" * 4097, id="oversized"),
+])
+def test_bad_key_paste_does_not_replace_saved_credentials(capture_store, pasted):
+    client, value, *_ = capture_store
+    response = client.post("/api/settings", json={"api_key": pasted}, headers=ORIGIN)
+    assert response.status_code == 422
+    assert value["gemini_key"] == "test-key-no-spend"
+    with transaction() as db:
+        assert accounts.gemini_for(db, value["platform_tenant"], value["email"]) == "test-key-no-spend"
+    if len(pasted) >= 20:
+        assert pasted not in response.text
 
 
 def test_worker_reloads_updated_key_and_stale_google_snapshot_cannot_undo_it(capture_store):

@@ -288,8 +288,11 @@ def settings(data: Settings, request: Request, value=Depends(editor)):
     key = None
     if data.api_key is not None:
         key = data.api_key.get_secret_value().strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", key):
-            raise HTTPException(422, "La clave de Gemini tiene un formato inválido.")
+        # Provider keys are opaque: authorization keys can exceed the old
+        # 256-character limit and use punctuation. Reject paste errors only;
+        # /api/settings/gemini/test checks validity with Google without generating.
+        if not re.fullmatch(r"[!-~]{20,4096}", key):
+            raise HTTPException(422, "Pega la clave completa de Gemini, sin espacios internos ni saltos de línea.")
         if not configured():
             raise HTTPException(503, "Activa PostgreSQL y el cifrado del servidor para guardar tu clave de forma persistente.")
     if data.folder is not None:
