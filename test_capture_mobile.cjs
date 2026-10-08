@@ -22,10 +22,16 @@ async function exercise(browser, engine, width) {
     document.addEventListener("touchstart", () => { window.__captureTestTouches++; }, {passive:true});
   });
   const errors = []; page.on("pageerror", e => errors.push(e.message));
-  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true;
+  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true;
   const generations = [], corrections = [];
   async function touchTarget(locator, label) {
     await locator.scrollIntoViewIfNeeded();
+    // WebKit honors the page's smooth scrolling: verify the target after it settles.
+    await page.waitForFunction(element => {
+      const bounds = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+      return hit === element || element.contains(hit);
+    }, await locator.elementHandle(), {timeout:3000});
     const bounds = await locator.boundingBox();
     assert.ok(bounds && bounds.width >= 44 && bounds.height >= 44, `${engine}/${width}: ${label} has a 44px touch target`);
     assert.ok(await locator.evaluate(element => {
@@ -39,6 +45,8 @@ async function exercise(browser, engine, width) {
     const request = route.request(), p = new URL(request.url()).pathname, method = request.method();
     let json = {items:[]};
     const body = () => request.postDataJSON() || {};
+    if (p === "/api/session" && warming)
+      return route.fulfill({status:503,contentType:"text/html",body:"<!DOCTYPE html><title>Service starting</title>"});
     if (p === "/api/session") json = {authenticated:true, email:"admin@example.test", gemini_configured:configured,
       gemini_source:configured ? "user_settings" : "not_configured", folder:"Tienda sintética", image_model:"gemini-3.1-flash-image",
       text_model:"gemini-3.1-flash-lite-preview", estimated_image_usd:.067, draft};
@@ -91,6 +99,9 @@ async function exercise(browser, engine, width) {
   });
   try {
     await page.goto(origin,{waitUntil:"networkidle"});
+    await page.locator(".p-alert.error").getByText("El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",{exact:true}).waitFor();
+    warming = false;
+    await page.reload({waitUntil:"networkidle"});
     const nav=page.getByRole("navigation",{name:"Navegación principal"});
     await nav.getByRole("link",{name:"Productos",exact:true}).tap();
     assert.ok(await page.evaluate(() => window.__captureTestTouches > 0), "Phone touch events reach the page");
@@ -200,7 +211,7 @@ async function exercise(browser, engine, width) {
     await capture.getByAltText("Frente del producto").waitFor({state:"hidden"});
     assert.equal(draft,null);
     assert.deepEqual(errors,[]);
-    console.log(`Capture ${engine} ${width}px: phone touch, reachable controls, camera/gallery inputs, upload retry, edits, navigation/reload, private settings, family, three slots, individual correction and repair passed.`);
+    console.log(`Capture ${engine} ${width}px: service cold start, phone touch, reachable controls, camera/gallery inputs, upload retry, edits, navigation/reload, private settings, family, three slots, individual correction and repair passed.`);
   } catch (error) {
     fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
     await page.screenshot({path:path.join(__dirname,"test-results",`capture-${engine}-${width}.png`),fullPage:true});

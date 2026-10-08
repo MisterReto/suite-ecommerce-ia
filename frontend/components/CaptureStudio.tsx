@@ -240,7 +240,12 @@ async function api<T>(
             }
           : {}),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => {
+      throw new ApiError(
+        "El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",
+        response.ok ? 503 : response.status,
+      );
+    });
     if (!response.ok)
       throw new ApiError(
         typeof result.detail === "string"
