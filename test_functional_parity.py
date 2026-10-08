@@ -302,13 +302,19 @@ def test_exact_barcode_skips_ai_and_refuses_a_duplicate(capture_store, monkeypat
 def test_analysis_uses_readable_gtin_or_the_existing_ten_character_logic(capture_store, monkeypatch, scanned, seen, expected):
     client, *_ = capture_store
     start(client)
+    errors = []
+    original_error = studio.error_message
+    def report_error(exc, value):
+        errors.append(f"{type(exc).__name__}: {exc}")
+        return original_error(exc, value)
+    monkeypatch.setattr(studio, "error_message", report_error)
     model = Mock()
     model.models.generate_content.return_value = SimpleNamespace(text=json.dumps({
         "nombre": "Pocky Chocolate", "marca": "Glico", "gramaje": "40 g", "codigo_barras": seen}))
     monkeypatch.setattr(studio, "GeminiClient", Mock(return_value=model))
     monkeypatch.setattr(studio, "read_barcodes", lambda path: scanned)
     result = wait(client, client.post("/api/analyze", headers=ORIGIN))
-    assert result["job"]["status"] == "completed", result
+    assert result["job"]["status"] == "completed", (result["job"], errors)
     product = result["draft"]["product"]
     assert product["barcode"] == expected
     assert product["sku"] == (expected or studio.runtime.generar_sku_logica("Pocky Chocolate", "Glico", "40 g"))
