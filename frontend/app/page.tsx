@@ -375,6 +375,7 @@ export default function Platform() {
   const [automaticReview, setAutomaticReview] = useState(false);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [generationTab, setGenerationTab] = useState("batch");
+  const [captureVisible, setCaptureVisible] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [comparison, setComparison] = useState<Detail | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -1084,7 +1085,25 @@ export default function Platform() {
           </>
         )}
 
-        {(section === "products" || section === "inventory") && ready && (
+        {section === "products" && (
+          <div className="p-chips p-tabs">
+            <button className={!captureVisible ? "active" : ""} onClick={() => setCaptureVisible(false)}>Catálogo</button>
+            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Sparkles size={17} /> Nuevo producto con IA</button>
+          </div>
+        )}
+        {section === "generate" && (
+          <div className="p-chips p-tabs">
+            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Camera size={17} /> Capturar producto</button>
+            {captureVisible && <button onClick={() => { setCaptureVisible(false); setGenerationTab("batch"); }}>Generación masiva</button>}
+          </div>
+        )}
+        <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || section === "inventory") && !ready && !loading && session.authenticated))}>
+          <CaptureStudio embedded initialSection={section === "more" ? "settings" : !captureVisible && (section === "products" || section === "inventory") ? "catalog" : "studio"}
+            onOpenProduct={id => { setCaptureVisible(false); go("products"); attempt(() => openProduct(id)); }}
+            onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured}))}
+            onSaved={() => { if (ready) loadProducts().catch(e => setError(e.message)); }} />
+        </div>
+        {(section === "products" || section === "inventory") && ready && !(section === "products" && captureVisible) && (
           <>
             {!detail && !editing && (
               <>
@@ -1840,10 +1859,10 @@ export default function Platform() {
           </>
         )}
 
-        {section === "generate" && (
+        {section === "generate" && !captureVisible && (
           <>
             {!ready ? (
-              <CaptureStudio embedded />
+              <p className="p-muted">Captura y analiza un producto aquí. La generación masiva estará disponible al activar el catálogo maestro.</p>
             ) : (
               <>
                 <div className="p-chips p-tabs">
@@ -2238,6 +2257,7 @@ export default function Platform() {
                 ["sync", "Sincronización"],
                 ["exchange", "Importar / Exportar"],
                 ["settings", "Ajustes"],
+                ["tools", "Herramientas de Drive"],
                 ["help", "Ayuda"],
               ].map(([id, label]) => (
                 <button
@@ -2306,9 +2326,6 @@ export default function Platform() {
                   </p>
                 </div>
               </>
-            )}
-            {moreTab === "settings" && (
-              <CaptureStudio embedded initialSection="settings" />
             )}
             {moreTab === "sync" && (
               <section className="p-card">
@@ -2389,6 +2406,16 @@ export default function Platform() {
                 </button>
               </section>
             )}
+            {moreTab === "tools" && <section className="p-card">
+              <h2>Herramientas de tu inventario</h2>
+              <p>Consulta el inventario operativo y utiliza las herramientas del tutorial con tu misma cuenta. Cada escritura conserva su revisión y confirmación.</p>
+              <div className="p-chips">
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/inventory-hub">Conteo, movimientos y comparación Sheets–WooCommerce</a>
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-image-preview">Revisar Drive y WordPress</a>
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-batch-sync">Publicación masiva, pausa y reanudación</a>
+              </div>
+              <p className="p-muted">WooCommerce requiere una conexión activa. El modo solo Drive sigue protegiendo la tienda mientras preparas y revisas tus productos.</p>
+            </section>}
             {moreTab === "exchange" && (
               <div className="p-two-column">
                 <section className="p-card">
@@ -2548,9 +2575,12 @@ export default function Platform() {
                   <li>
                     <strong>Prepara el producto</strong>
                     <p>
-                      Importa o crea la ficha en Productos. Añade una foto
-                      original como referencia para la IA.
+                      Abre Productos → Nuevo producto con IA o Generar → Capturar producto. Toma la foto frontal o elígela desde la galería; añade el reverso y tus observaciones si los necesitas.
                     </p>
+                  </li>
+                  <li>
+                    <strong>Analiza y revisa coincidencias</strong>
+                    <p>Gemini propone datos editables. Revisa si el producto ya existe, pertenece a un padre o necesita una familia nueva. Prepara la portada con fotografías reales.</p>
                   </li>
                   <li>
                     <strong>Genera las imágenes</strong>
@@ -2570,7 +2600,7 @@ export default function Platform() {
                   <li>
                     <strong>Publica y sincroniza</strong>
                     <p>
-                      Un administrador publica las imágenes aprobadas en
+                      Guarda la captura revisada para incorporarla a Sheets y al catálogo maestro. Si queda una sincronización pendiente, repárala desde la captura. Un administrador publica las imágenes aprobadas en
                       WordPress y WooCommerce. El inventario registra cada
                       movimiento por separado.
                     </p>
@@ -2617,7 +2647,7 @@ export default function Platform() {
         {(section === "products" || section === "inventory") &&
           !ready &&
           !loading && (
-            session.authenticated ? <><div className="p-alert"><Cloud size={18}/><span>Catálogo histórico de Drive · disponible durante la activación de PostgreSQL.</span></div><CaptureStudio embedded initialSection="catalog"/></> : <Empty title="Conecta tu catálogo" text="En Más puedes conectar tu cuenta de Google Drive."/>
+            session.authenticated ? <div className="p-alert"><Cloud size={18}/><span>Catálogo histórico de Drive · disponible durante la activación de PostgreSQL.</span></div> : <Empty title="Conecta tu catálogo" text="En Más puedes conectar tu cuenta de Google Drive."/>
           )}
         <footer className="p-footer">
           <img src="/logo.png" width={23} height={23} alt="" />

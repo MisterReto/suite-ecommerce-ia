@@ -24,7 +24,12 @@ const config: NextConfig = {
     async rewrites() {
       return { beforeFiles: [
         ...["/api/:path*", "/auth/:path*", "/suite-static/:path*", "/webhooks/:path*",
-            "/login", "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*"]
+            "/login", "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*",
+            "/inventory-hub", "/inventory-manager", "/inventory-count", "/inventory-history",
+            "/inventory-count-bulk", "/inventory-movement", "/inventory-review",
+            "/woocommerce-image-preview", "/wp-media-health", "/image-sync-one",
+            "/woocommerce-batch-sync", "/batch-create", "/batch-status", "/batch-step", "/batch-resume",
+            "/woocommerce-product-sync", "/product-sync-one"]
           .map(source => ({ source, destination: upstream + source })),
       ], afterFiles: [], fallback: [] };
     },

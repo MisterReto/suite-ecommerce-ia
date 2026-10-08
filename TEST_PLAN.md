@@ -1,96 +1,88 @@
-# Plan obligatorio de validación
+# Validación de paridad — 8 octubre 2026
 
-Fecha: 2026-10-06. No alterar producción. CI/dobles prueban comportamiento;
-el siguiente pase valida conexiones reales en staging. Las escrituras/pagos
-reales **no se ejecutaron**. Si falla generación en 5–9: DETENER; no continuar
-nuevas integraciones. Registrar evidencia antes de considerar un paso aprobado.
+No se da la tarea por aceptada hasta completar el pase real. Las pruebas
+automáticas usan fotos locales y dobles de Gemini/Drive/Sheets/Woo; no gastan
+créditos ni cambian stock o productos reales. La rama parte de `405f423` y
+la auditoría previa publicada es `ef1b756`.
 
-## Orden del pase real
+## Resultados locales
 
-| Paso | Prueba / criterio | Escritura / reversión | Estado actual |
-| --- | --- | --- | --- |
-| 1 | Frontend básico: login, móvil 360–430 px, cinco rutas, cards, formularios/roles | staging; sin modificar producción | automatización local; login Google real pendiente |
-| 2 | FastAPI: health, 401/403, DB lectura, errores; worker caído no tumba API | BD prueba, sin DDL implícito | regresiones locales; staging pendiente |
-| 3 | Drive SOLO LECTURA: raíz/carpetas/imágenes, IDs/listado | cero write/move/delete | conector verificado; conexión staging pendiente |
-| 4 | inventario_completo SOLO LECTURA: pestañas/headers, buscar SKU, posiciones | ninguna columna/rango modificado | metadata/muestras verificadas; staging pendiente |
-| 5 | Una imagen limpia con referencias conocidas: SKU TEST-INTEGRATION, mismo modelo, HTTP queued/worker ejecuta | candidato aislado; registrar ID,size,MIME,dimensiones,checksum | dobles pasan; Gemini real pendiente |
-| 6 | Lifestyle: identidad/ref/brief conservados y producto correcto | candidato prueba; original intacto | regresión pasa; real pendiente |
-| 7 | Comercial: investigación/reglas/marca/naming originales | candidato prueba, revisión humana | regresión pasa; real pendiente |
-| 8 | Regeneración: nuevo candidato con originales y anterior conservado | job individual, coste mostrado | regresión pasa; real pendiente |
-| 9 | Corrección: feedback/raw/brief, sin doble marca; error conserva anterior | nuevo job, éxitos no repetidos | regresión pasa; real pendiente |
-| 10 | Drive ESCRITURA controlada: aprobada a destino de prueba, backup antes de reemplazo/readback | IDs TEST-INTEGRATION; restaurar backup de prueba | dobles pasan; real pendiente |
-| 11 | Lote 2–3: job por producto, estados independientes/error controlado | registros prueba, sin publicación | regresión lote/Redis pasa; real pendiente |
-| 12 | Lote ~10: memoria pool/temporales, restart API/worker, coste/idempotencia | revisar inciertos; no repetir todo | infraestructura real pendiente |
-| 13 | WordPress Media: un JPEG prueba, ID/URL/alt/metadata | borrar solo medio prueba sin uso | real pendiente |
-| 14 | WooCommerce LECTURA: producto/variación por mapping + SKU | cero escrituras | dobles pasan; real pendiente |
-| 15 | WooCommerce ESCRITURA: un draft TEST-INTEGRATION con media | flags controlados; eliminar objeto identificado | real pendiente |
-| 16 | WooCommerce WEBHOOK: firma/evento durable/duplicado, respuesta rápida | pedido/producto prueba; un efecto | dobles pasan; real pendiente |
-| 17 | Loyverse LECTURA FUTURA: items/variants/store/inventory | solo cuenta autorizada | no configurado; no forzar |
-| 18 | Loyverse ESCRITURA FUTURA: artículo prueba/eventos verificados | restaurar/limpiar solo IDs prueba | no autorizado/configurado |
-| 19 | Stock: SKU prueba, before/acción/expected/final/restauración | compensación/readback; no doble descuento | Woo dobles; real/POS pendiente |
-| 20 | Producción: pasos aplicables validados, monitor/rollback | cambiar entrada conservando antiguos | NO activado |
+Los seis grupos existentes del workflow pasaron: 35 + 9 + 24 unittest,
+63 pytest históricos, 52 pytest de contrato/catálogo/captura y 35 de
+estabilización/free Render: **218 pasadas, 10 omitidas**. Las omisiones son
+pruebas que necesitan PostgreSQL/Redis reales; SQLite no demuestra concurrencia.
+Después se ampliaron las pruebas de paridad de 17 a **22**, todas pasaron.
+No sumar los 22 de nuevo como pruebas independientes: 17 ya estaban en el grupo de 52.
 
-17–18 son futuros si no hay POS; no habilitar una API sin autorización por
-completar la lista. Generación es obligatoria antes de cualquier ampliación.
+Next export y standalone compilaron; TypeScript y el proxy Next real pasaron
+rutas, cookies, OAuth y uploads de 12 MB. La prueba Node de Loyverse pasó
+progreso y recuperación de respuesta perdida. `npm audit --omit=dev` informó
+cero vulnerabilidades. Se registra CI posterior en `docs/VERIFICATION.md`.
 
-## Datos reversibles
+El contenedor no tiene un navegador ejecutable y la descarga Playwright quedó
+truncada. No se afirma pase móvil local. `test_capture_mobile.cjs` añade
+perfiles táctiles Pixel/iPhone en Chromium y WebKit a 360/390/430 px en CI:
+catálogo listo, controles alcanzables de al menos 44 px, inputs de cámara y
+galería, error de carga y reintento, sustitución del frente, eliminar reverso,
+campos de 16 px y teclados por dato, autosave estable, salir antes del debounce,
+navegación/recarga, clave, familia/portada, tres slots, corrección individual
+sin perder las otras imágenes y reparación. También reduce la altura a 480 px
+para comprobar formulario y diálogo. Usa APIs sintéticas; no abre una cámara
+física ni demuestra el comportamiento del teclado del sistema.
 
-Usar TEST-INTEGRATION-* para SKU/nombres y carpeta de prueba autorizada.
-Primero leer originales. Una raíz compatible de prueba se prepara después de
-4 copiando fuentes, sin mover originales, y registrando IDs. Conservar modelo,
-prompts y referencias de estilo. 5–9 suben candidatos/raw/referencias por job;
-10 valida guardado final, no supone que generar no produzca archivos Drive.
+Después del ajuste para celular pasaron 28 pruebas focales de paridad,
+contrato del generador y separación frontend, TypeScript y build standalone.
+También pasó el proxy Next real, incluidos uploads de 12 MB. La restauración
+local está en `7378358`. El usuario autorizó explícitamente publicar la rama
+el 7/oct a las 23:27 (México), resolviendo el bloqueo de aprobación anterior.
+Chromium/WebKit y PostgreSQL/Redis de este nuevo pase CI siguen
+**pendientes de ejecución** hasta registrar sus resultados, además de los
+teléfonos físicos.
 
-Stock: registrar inicial app/tienda, ID evento, acción, esperado, final y valor
-restaurado. Si ya existe diferencia, detener/conciliar; no ajustar un producto
-real solo para hacer pasar el test. Media/objetos Woo se limpian exclusivamente
-por IDs registrados de prueba y después de comprobar que no están usados.
+## Pase real, en el orden solicitado
 
-## Registro por prueba
+Usar staging, cuenta autorizada y un inventario/carpeta de pruebas. Para
+escrituras identificar SKUs con prefijo `TEST-INTEGRATION-`; registrar imagen,
+cuenta sin secretos, commit/deploy y resultado de cada paso. Gemini real solo
+con presupuesto explícito; no usar claves Render como sustituto personal.
 
-Fecha/operador, rama/commit, servicio/deploy, tenant, SKU/UUID, job/batch,
-modelo/proveedor, coste estimado/observado, IDs/nombres Drive, tamaño/MIME,
-dimensiones/checksum, tabla/rango afectado y resultado. Añadir before/after,
-cleanup/rollback y readback. Nunca tokens, cookies completas ni Authorization.
-Un pendiente no es passed porque la UI se vea bien.
+| # | Prueba / aceptación | Evidencia automática | Pase real |
+|---|---|---|---|
+| 1 | Celular → Productos → Nuevo producto con IA | Entrada independiente de ready; browser CI | Pendiente Chrome Android y Safari iPhone |
+| 2 | Cámara + galería, preview/reemplazo/remover, EXIF | Upload real JPEG/EXIF y validación bytes; browser CI | Pendiente dispositivos; HEIC solo si decoder instalado |
+| 3 | Ajustes Gemini, salir/entrar conserva configuración | `test_key_is_encrypted_persistent_and_never_uses_render` | Pendiente cuenta real, clave mediante UI segura |
+| 4 | Foto conocida autocompleta campos editables y dudas | `test_photo_analysis_fills_editable_fields_and_marks_unknowns` | Pendiente Gemini y comparación con etiqueta |
+| 5 | Existente exacto detectado y sin duplicar | Barcode real, SKU/SQL/Sheet; no IA antes de exacto | Pendiente lectura real, sin crear copia |
+| 6 | Otro sabor/tamaño utiliza padre correcto | `test_existing_family_is_suggested_without_gemini`, browser CI | Pendiente familia de prueba |
+| 7 | Padre nuevo e hijo relacionados, sin guardado parcial | `test_new_parent_cover_and_variant_are_atomic_in_master`, rollback SQL | Pendiente familia de prueba |
+| 8 | Portada solo con fotos reales y estado de una variante | Composición JPEG real, token/revisión y marca | Pendiente revisar visualmente en staging |
+| 9 | Producto ajeno a familia se guarda simple | `test_simple_save_mirrors_once_and_preserves_reference` | Pendiente SKU simple de prueba |
+| 10 | Maestro + inventario_completo + imágenes coherentes | Padre SQL faltante en Sheet; repair/lost-response sin doble escritura | Pendiente lectura de ambos tras guardar prueba |
+| 11 | Producto limpio, lifestyle y comercial | Contrato AST y pipeline/worker con doubles; browser tres slots | Pendiente solicitudes mínimas con presupuesto |
+| 12 | Corregir un slot conserva los otros dos | `test_studio_api`, `test_stabilization`, contratos/history | Pendiente una corrección autorizada |
+| 13 | Lote de 2–3 productos, resultados por SKU | `test_catalog_platform`, `test_stabilization` con providers dobles | Pendiente presupuesto e inventario de prueba |
+| 14 | Reinicio API/worker recupera clave y borrador | Nueva sesión/namespace; key vigente y tombstone | Pendiente reinicio controlado de staging |
+| 15 | Dos usuarios/tiendas no comparten claves/datos/fotos | Actor/tenant + viewer 403 + archivo ajeno 404 + Woo scope | Pendiente dos cuentas de prueba |
+| 16 | Cada sección del tutorial tiene resultado individual | Matriz en `docs/FUNCTIONAL_PARITY_AUDIT.md` | Pendiente aceptación funcional real por sección |
 
-## Regresión reproducible
+## Ejecución reproducible
 
-CI: .github/workflows/validate-drive-client.yml. Mantiene grupos históricos
-en procesos separados porque algunos cargan un runtime sintético.
+Los comandos completos están en `.github/workflows/validate-drive-client.yml`.
+Prueba focal: `python -m pytest test_functional_parity.py -q`. La batería de
+PostgreSQL/Redis usa `TEST_DATABASE_URL` / `TEST_REDIS_URL` de servicios efímeros
+de CI y añade este archivo. Nunca apuntar esos tests a la base operativa: los
+fixtures usan cuentas, filas y claves sintéticas.
 
-```bash
-python -m unittest test_store_connection test_stability test_sync_changes test_generation_content test_catalog_capture test_variation_stock -q
-python -m unittest test_split_services test_parent_full -q
-python -m unittest test_bulk_security test_inventory_unified -q
-python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
-python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py test_frontend_separation.py -q
-```
+El browser requiere build standalone y copia de `public` y `.next/static`.
+Ejecutar `TEST_WEBKIT=true node test_capture_mobile.cjs` con Playwright y sus
+browsers instalados. Un fallo guarda una captura en `test-results`, publicada
+como artifact CI. `test_frontend_mobile.cjs` conserva los cinco menús,
+conexión y request_key tras respuesta perdida; `test_frontend_proxy.cjs`
+comprueba el proxy TLS real.
 
-Exportar privadamente TEST_DATABASE_URL/TEST_REDIS_URL de **almacenes dedicados**,
-nunca producción, y ejecutar:
+## Barrera de despliegue
 
-```bash
-python -m pytest test_catalog_platform.py test_stabilization.py -q
-```
-
-CI crea PG17 y Redis7 efímeros. Sin TEST_DATABASE_URL usa SQLite doble y omite
-dos pruebas de concurrencia: no anunciar PG validado por ellas. Sin TEST_REDIS_URL
-omite los tests RQ real. No se usa Gemini/Google/tienda real en esos tests.
-
-Frontend: npm ci/audit, export build/typecheck y standalone build; luego
-`node test_frontend_proxy.cjs` usa TLS local para rutas/cookies/callback/upload
-12 MB. Los tests PWA impiden cachear APIs/fotos privadas. `node test_loyverse_ui.js`
-conserva recuperación de respuesta perdida. pip-audit revisa requirements;
-Blueprint pasa esquema oficial de Render.
-
-test_generation_contract compara AST con 3ba6a2f; conservar historial git y
-fetch-depth 0. Validar formato/dimensiones/tamaño/relación/naming/estado/guardado;
-no comparar píxeles exactos de una imagen aleatoria.
-
-## Aceptación
-
-Rama revisable con tests verdes todavía no equivale a producción validada.
-Falta pase real IA completo, Drive/Sheet intactos, RAM aislada, Woo/Media prueba,
-roles/logs/móvil y rollback ensayado. Registrar evidencia/pendientes en
-docs/VERIFICATION.md y MANUAL_ACTIONS_REQUIRED; no ocultarlos bajo “terminado”.
+CI fallido detiene promoción. Staging de tres servicios free precede al pase
+real; ningún servicio histórico se sustituye. La aceptación real incompleta
+impide publicación final. Los cambios de datos de prueba se revisan y limpian
+solo por ID/SKU explícito, sin borrados masivos ni cambios en productos reales.

@@ -305,6 +305,11 @@ class ProductCapture:
             session.pop("capture_snapshot", None)
             service, sheet, rows = self.snapshot(session)
             images = self.draft_images(session, text(sku))
+            current = session.get("studio_draft", {})
+            if current.get("revision") == session.get("capture_revision") and current.get("product", {}).get("sku") == text(sku):
+                for index, path in enumerate(self._references(session, current.get("references", []))):
+                    side = "frente" if index == 0 else "reverso"
+                    images.append((f"{sku}_referencia_{side}.jpg", path))
             record = {"sku": text(sku), "tipo": "variation" if kind == "Variable" else "simple",
                       "sku_padre": text(parent) if kind == "Variable" else "", "nombre_producto": text(name),
                       "Marca": text(brand), "gramaje": text(size), "atributo_nombre": text(attribute),
@@ -324,6 +329,13 @@ class ProductCapture:
                         "nombre_producto": title, "Marca": brand, "categorias": record["categorias"], "etiquetas": tags,
                         "descripcion_corta": f"{title}. Selecciona una variación para consultar su presentación.",
                         "descripcion_larga": f"Familia de productos {title}. Selecciona una opción para consultar sus características, precio y disponibilidad."}
+                elif not any(text(row.get("sku")) == text(parent) for row in rows):
+                    # A parent captured in the master may not yet have a Sheet
+                    # row. The caller supplied this authenticated master row.
+                    source_parent = session.get("capture_parent_record")
+                    if not source_parent or text(source_parent.get("sku")) != text(parent):
+                        raise ValueError("El padre no está en el inventario compatible. Revisa su ficha antes de guardar.")
+                    record["_new_parent"] = source_parent
             # Validate before uploading; the adapter repeats validation on a fresh
             # Sheet snapshot under a lock before one atomic parent+child write.
             values = [list(MASTER_COLUMNS) + ["", "", "", "", "atributo_nombre", "atributo_valor", "codigo_barras"]]
@@ -335,6 +347,14 @@ class ProductCapture:
                     self.backend["_subir_imagen_drive"](service, folder, filename, path)
             if info:
                 self.backend["_subir_imagen_drive"](service, folder, record["_parent_cover"], info["path"])
+            if current and current.get("revision") == session.get("capture_revision"):
+                from catalog_platform.capture_bridge import checkpoint
+                current["save_phase"] = "saving"
+                try:
+                    checkpoint(session, current)
+                except Exception:
+                    current.pop("save_phase", None)  # No Sheet write was attempted.
+                    raise
             self.backend["_agregar_fila_google_sheet"](session, sheet, record)
             session.pop("capture_snapshot", None)
             detail = f" {len(images)} imagen(es) guardadas en Drive."
