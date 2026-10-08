@@ -63,10 +63,24 @@ def same_brand(first, second):
     return bool(normalized(first)) and normalized(first) == normalized(second)
 
 
+VARIANT_WORDS = {"fresa", "chocolate", "vainilla", "matcha", "platano", "banana", "mango",
+                 "uva", "melon", "coco", "limon", "durazno", "original", "picante",
+                 "strawberry", "vanilla", "rojo", "azul", "verde", "negro", "blanco"}
+GENERIC_WORDS = {"de", "con", "para", "el", "la", "un", "una", "sabor", "color", "g", "ml",
+                 "producto", "bebida", "dulce", "snack", "salsa", "paquete", "botella"}
+
+
+def family_label(name):
+    words = family_name(name).split()
+    return " ".join(word for word in words if normalized(word) not in VARIANT_WORDS).strip()
+
+
 def family_score(name, brand, row):
     if not same_brand(brand, row.get("Marca", row.get("marca", ""))):
         return 0.0
-    wanted, candidate = set(normalized(family_name(name)).split()), set(normalized(family_name(row.get("nombre_producto"))).split())
+    exclude = set(normalized(brand).split()) | VARIANT_WORDS | GENERIC_WORDS
+    wanted = set(normalized(family_name(name)).split()) - exclude
+    candidate = set(normalized(family_name(row.get("nombre_producto"))).split()) - exclude
     if not wanted or not candidate:
         return 0.0
     return len(wanted & candidate) / min(len(wanted), len(candidate))
@@ -74,14 +88,20 @@ def family_score(name, brand, row):
 
 def find_duplicate(rows, candidate):
     code = barcode_key(candidate.get("codigo_barras"))
-    sku = normalized(candidate.get("sku"))
+    sku = text(candidate.get("sku")).casefold()
+    if code:
+        match = next((r for r in rows if not is_variable_parent(r) and barcode_key(r.get("codigo_barras")) == code), None)
+        if match:
+            return match, "código de barras"
+    if sku:
+        match = next((r for r in rows if text(r.get("sku")).casefold() == sku), None)
+        if match:
+            return match, "SKU"
     name = normalized(candidate.get("nombre_producto"))
     brand = candidate.get("Marca", candidate.get("marca", ""))
     value = text(candidate.get("atributo_valor")) or text(candidate.get("gramaje"))
     size = presentation(value or candidate.get("nombre_producto"))
     for row in rows:
-        if sku and sku == normalized(row.get("sku")):
-            return row, "SKU"
         if is_variable_parent(row):
             continue
         row_code = barcode_key(row.get("codigo_barras"))
@@ -114,12 +134,19 @@ def review_product(rows, candidate):
         message = f"⛔ Ya existe: {text(duplicate.get('sku'))} · {text(duplicate.get('nombre_producto'))}. Coincidencia por {reason}."
         if text(duplicate.get("sku_padre")):
             message += f" Es una variación del padre {text(duplicate.get('sku_padre'))}; no crees otra copia."
-        return {"status": "duplicate", "message": message, "parents": parents, "suggested": text(duplicate.get("sku_padre")) or suggested}
+        return {"status": "duplicate", "case": "existing", "message": message, "parents": parents,
+                "suggested": text(duplicate.get("sku_padre")) or suggested, "duplicate": duplicate,
+                "reason": reason, "candidates": [], "recommendation": "Abrir o actualizar la ficha existente; no crear una copia."}
     if suggested:
-        return {"status": "possible_variation", "message": f"🔎 Posible variación nueva de {suggested}. Compara sabor, tamaño o versión y elige ese padre si pertenece a la misma familia.", "parents": parents, "suggested": suggested}
+        children = [r for r in rows if text(r.get("sku_padre")) == suggested]
+        return {"status": "possible_variation", "case": "existing_parent", "message": f"🔎 Posible variación nueva de {suggested}. Compara sabor, tamaño o versión y elige ese padre si pertenece a la misma familia.", "parents": parents, "suggested": suggested,
+                "candidates": children, "recommendation": "Utilizar el padre existente después de revisar los atributos."}
     related = [r for r in rows if not is_variable_parent(r) and family_score(candidate.get("nombre_producto"), candidate.get("Marca"), r) >= 0.8]
     message = "🔎 Hay productos similares de la misma marca; revisa si cambia la presentación. Todavía no hay un padre coincidente." if related else "✅ Sin coincidencia exacta registrada. Puedes capturar un producto nuevo; revisa también los padres disponibles."
-    return {"status": "review" if related else "new", "message": message, "parents": parents, "suggested": ""}
+    return {"status": "review" if related else "new", "case": "new_family" if related else "simple",
+            "message": message, "parents": parents, "suggested": "", "candidates": related,
+            "family_name": family_label(candidate.get("nombre_producto")),
+            "recommendation": "Revisar una familia nueva con estas presentaciones." if related else "Guardar como simple; no hay evidencia de una familia registrada."}
 
 
 def next_parent_sku(name, brand, rows):

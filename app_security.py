@@ -42,11 +42,18 @@ def checked_image_type(filename, data):
         raise ValueError("Nombre de imagen inválido.")
     if len(data) > 12_000_000:
         raise ValueError("La imagen supera el límite de 12 MB.")
-    if filename.rsplit(".", 1)[-1].casefold() not in {"jpg", "jpeg", "png", "webp", "gif", "avif"}:
+    extension = filename.rsplit(".", 1)[-1].casefold()
+    if extension in {"heic", "heif"}:
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except ImportError:
+            raise ValueError("Este servidor no tiene un decodificador HEIC/HEIF. Exporta la foto como JPG o toma una foto compatible desde la cámara.") from None
+    if extension not in {"jpg", "jpeg", "png", "webp", "gif", "avif", "heic", "heif"}:
         raise ValueError("Solo se permiten imágenes JPG, PNG, WebP, GIF o AVIF.")
     try:
         with Image.open(io.BytesIO(data)) as image:
-            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif"}.get(image.format)
+            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif", "HEIF": "image/heic"}.get(image.format)
             if not mime or image.width * image.height > 24_000_000:
                 raise ValueError("Formato o dimensiones de imagen no permitidos.")
             image.verify()

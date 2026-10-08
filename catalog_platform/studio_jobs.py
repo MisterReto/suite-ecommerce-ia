@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from fastapi import HTTPException
 from sqlalchemy import select, func
-from .accounts import persist
+from .accounts import account, persist
 from .catalog import audit
 from .database import configured, transaction
 from .models import GenerationJob, uid
@@ -245,13 +245,21 @@ def get_job(value, job_id):
 
 
 def recover_latest(value):
-    if value.get("studio_draft") or not configured() or not member(value.get("email", "")):
+    if not configured() or not member(value.get("email", "")):
         return
     root = tenant_for(value)
     with transaction() as db:
-        job = db.scalar(select(GenerationJob).where(GenerationJob.tenant_id == root,
+        record = account(db, root, value["email"], "capture_draft")
+        if record and record.status != "connected":
+            return  # Clearing the durable draft also disables legacy job recovery.
+        current = value.get("studio_draft")
+        query = select(GenerationJob).where(GenerationJob.tenant_id == root,
             GenerationJob.actor == value.get("email", ""), GenerationJob.kind == "studio_generation")
-            .order_by(GenerationJob.created_at.desc()).limit(1))
+        if current:
+            query = query.where(GenerationJob.payload["capture"]["revision"].as_string() == current["revision"])
+        elif record:
+            return  # A persisted capture is authoritative over an unrelated old job.
+        job = db.scalar(query.order_by(GenerationJob.created_at.desc()).limit(1))
         if job:
             payload, job_id = deepcopy(job.payload), job.id
         else:
@@ -261,6 +269,8 @@ def recover_latest(value):
 
 def record_saved(value, current):
     """Remember the existing capture save; never repeat a Sheet write on recovery."""
+    from .capture_bridge import mark_saved
+
     with transaction() as db:
         jobs = db.scalars(select(GenerationJob).where(
             GenerationJob.tenant_id == tenant_for(value),
@@ -272,6 +282,7 @@ def record_saved(value, current):
             payload = deepcopy(job.payload)
             payload["capture"]["saved"] = current["saved"]
             job.payload = payload
+        mark_saved(db, value, current)
         audit(db, tenant_for(value), value["email"], "capture.saved",
               after={"sku": current["product"]["sku"], "revision": current["revision"]})
 

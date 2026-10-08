@@ -45,7 +45,17 @@ type Product = {
   parent_mode: string;
   attribute: string;
   attribute_value: string;
+  product_type?: string;
+  variant?: string;
+  attributes?: Record<string, string>;
+  uncertain_fields?: string[];
 };
+type Match = {sku: string; nombre_producto: string; Marca?: string; precio?: number | string;
+  atributo_nombre?: string; atributo_valor?: string | string[]; sku_padre?: string;
+  product_id?: string; image_url?: string; _source?: string; attributes?: Record<string, string | string[]>;
+  matching_attributes?: string[]; different_attributes?: string[]};
+type IdentityReview = {status: string; case: string; message: string; recommendation: string;
+  suggested?: string; duplicate?: Match; parents: Match[]; candidates: Match[]; sources?: string[]};
 type Picture = {
   id: string;
   approved: boolean;
@@ -74,6 +84,10 @@ type Draft = {
   saved?: string;
   variant_report?: string;
   variant_recommendation?: string;
+  identity_review?: IdentityReview;
+  sync_status?: string;
+  sync_error?: string;
+  master_product_id?: string;
 };
 type Job = {
   id: string;
@@ -133,7 +147,7 @@ const initial: Product = {
   size: "",
   kind: "Simple",
   price: 0,
-  category: "Dulces",
+  category: "",
   subcategory: "",
   tags: "",
   short_description: "",
@@ -144,7 +158,18 @@ const initial: Product = {
   parent_mode: "Crear nuevo padre",
   attribute: "Tamaño",
   attribute_value: "",
+  product_type: "",
+  variant: "",
+  attributes: {},
+  uncertain_fields: [],
 };
+
+function sameProduct(a: Product, b: Product) {
+  const normalize = (value: unknown): unknown => value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([x], [y]) => x.localeCompare(y)).map(([key, item]) => [key, normalize(item)]))
+    : value;
+  return JSON.stringify(normalize({...initial, ...a})) === JSON.stringify(normalize({...initial, ...b}));
+}
 const slots = [
   {
     id: "1_hd",
@@ -215,7 +240,12 @@ async function api<T>(
             }
           : {}),
     });
-    const result = await response.json();
+    const result = await response.json().catch(() => {
+      throw new ApiError(
+        "El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",
+        response.ok ? 503 : response.status,
+      );
+    });
     if (!response.ok)
       throw new ApiError(
         typeof result.detail === "string"
@@ -261,12 +291,14 @@ function PhotoUpload({
   optional,
   disabled,
   onUpload,
+  onRemove,
 }: {
   name: string;
   id?: string;
   optional?: boolean;
   disabled: boolean;
   onUpload: (file: File) => void;
+  onRemove: () => void;
 }) {
   return (
     <div className={"photo-upload" + (id ? " has-photo" : "")}>
@@ -286,7 +318,7 @@ function PhotoUpload({
       <label className="upload-control">
         <input
           type="file"
-          accept="image/jpeg,image/png,image/webp,image/avif"
+          accept="image/jpeg,image/png,image/webp,image/avif,image/heic,image/heif"
           disabled={disabled}
           aria-label={"Subir foto " + name.toLowerCase()}
           onChange={(e) => {
@@ -296,7 +328,7 @@ function PhotoUpload({
           }}
         />
         <Upload size={15} />
-        {id ? "Cambiar foto" : "Subir foto"}
+        {id ? "Cambiar foto" : "Galería / archivos"}
       </label>
       <label className="camera-control" title="Tomar foto">
         <input
@@ -312,8 +344,10 @@ function PhotoUpload({
           }}
         />
         <Camera size={17} />
+        <span>Tomar foto</span>
       </label>
       {id && <span className="photo-name">{name}</span>}
+      {id && <button className="photo-remove" disabled={disabled} onClick={onRemove} aria-label={"Eliminar foto " + name.toLowerCase()}><X size={17} /></button>}
     </div>
   );
 }
@@ -321,13 +355,22 @@ function PhotoUpload({
 export default function CaptureStudio({
   embedded = false,
   initialSection = "studio",
+  onOpenProduct,
+  onSaved,
+  onSessionChange,
 }: {
   embedded?: boolean;
   initialSection?: string;
+  onOpenProduct?: (id: string) => void;
+  onSaved?: () => void;
+  onSessionChange?: (value: Session) => void;
 }) {
   const [session, setSession] = useState<Session>({ authenticated: false });
+  const sessionCallback = useRef(onSessionChange);
+  sessionCallback.current = onSessionChange;
   const [loading, setLoading] = useState(true);
   const [section, setSection] = useState(initialSection);
+  useEffect(() => { if (embedded) setSection(initialSection); }, [embedded, initialSection]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [product, setProduct] = useState<Product>(initial);
   const [front, setFront] = useState<string>();
@@ -367,17 +410,21 @@ export default function CaptureStudio({
     Object.values(draft?.images || {}).every((i) => i.approved);
 
   const applyDraft = useCallback((value: Draft | null | undefined) => {
-    if (!value) return;
+    if (!value) {
+      setDraft(null); setProduct(initial); setFront(undefined); setBack(undefined); setContext("");
+      return;
+    }
     setDraft(value);
     setProduct(value.product);
     setFront(value.front_id);
-    setBack(value.back_id);
+    setBack(value.back_id || undefined);
     setContext(value.context);
   }, []);
 
   const refresh = useCallback(async () => {
     const data = await api<Session>("/api/session");
     setSession(data);
+    sessionCallback.current?.(data);
     applyDraft(data.draft);
     if (data.job) setJob(data.job);
     if (data.loyverse?.job) setLoyJob(data.loyverse.job);
@@ -421,6 +468,7 @@ export default function CaptureStudio({
         if (data.job.status === "failed") setError(data.job.message);
         if (data.job.status === "completed") {
           setMessage(data.draft?.saved || "Listo. Revisa el resultado.");
+          if (data.draft?.saved) onSaved?.();
           await refresh();
         }
       } catch (e) {
@@ -435,7 +483,7 @@ export default function CaptureStudio({
       stopped = true;
       clearInterval(timer);
     };
-  }, [job?.id, job?.status, applyDraft, refresh]);
+  }, [job?.id, job?.status, applyDraft, refresh, onSaved]);
 
   useEffect(() => {
     if (!loyWorking || !loyJob) return;
@@ -488,7 +536,13 @@ export default function CaptureStudio({
     setProduct((p) => ({ ...p, [field]: value }));
   const ensureCapture = async () => {
     if (!front) throw new Error("Sube la foto frontal del producto.");
-    if (draft && draft.front_id === front && draft.back_id === back) return;
+    if (draft && draft.front_id === front && (draft.back_id || undefined) === back) {
+      if (draft.context !== context) {
+        const result = await api<{ draft: Draft }>("/api/capture-notes", "PUT", { context });
+        setDraft(result.draft);
+      }
+      return;
+    }
     const result = await api<{ draft: Draft }>("/api/capture", "POST", {
       front_id: front,
       back_id: back || null,
@@ -531,7 +585,11 @@ export default function CaptureStudio({
         setFront(result.id);
         setProduct(initial);
       } else setBack(result.id);
-      setDraft(null);
+      const nextFront = which === "front" ? result.id : front;
+      if (nextFront) {
+        const saved = await api<{draft: Draft}>("/api/capture", "POST", {front_id: nextFront, back_id: which === "back" ? result.id : back || null, context});
+        setDraft(saved.draft);
+      } else setDraft(null);
       setMessage("Foto lista. Analiza el producto o captura sus datos.");
     });
   const loadCatalog = () =>
@@ -543,6 +601,18 @@ export default function CaptureStudio({
       setSheetUrl(data.sheet_url);
       setCatalogLoaded(true);
     });
+  const removePhoto = (which: "front" | "back") => attempt(async () => {
+    if (which === "front") {
+      await api("/api/draft", "DELETE"); setFront(undefined); setBack(undefined); setDraft(null); setProduct(initial);
+    } else {
+      setBack(undefined);
+      if (front) {
+        const r = await api<{draft: Draft}>("/api/capture", "POST", {front_id: front, back_id: null, context});
+        setDraft(r.draft);
+        await api("/api/draft", "PUT", product);
+      }
+    }
+  });
   const loadParents = () =>
     attempt(async () => {
       await persist();
@@ -560,12 +630,31 @@ export default function CaptureStudio({
         attribute: result.attribute,
       }));
     });
+  const chooseFamily = (mode: string) => attempt(async () => {
+    await ensureCapture();
+    const selected = draft?.identity_review?.suggested || "";
+    const next = {...product, kind: "Variable", parent_mode: mode, parent_sku: mode === "Usar padre existente" ? selected : ""};
+    const saved = await api<{draft: Draft}>("/api/draft", "PUT", next);
+    setDraft(saved.draft);
+    const r = await api<{choices: [string, string][]; parent_sku: string; parent_name: string; attribute: string}>("/api/parents");
+    setParents(r.choices);
+    setProduct({...next, parent_sku: r.parent_sku, parent_name: r.parent_name, attribute: r.attribute});
+    setMessage("Familia propuesta. Revisa el atributo y prepara su portada antes de guardar.");
+  });
   const go = (name: string) => {
     if (embedded) setSection(name);
     else location.hash = name;
     setError("");
     setMessage("");
   };
+  useEffect(() => {
+    if (!signedIn || busy || !draft || draft.saved || !front || draft.front_id !== front || (draft.back_id || undefined) !== back) return;
+    if (sameProduct(product, draft.product) && context === draft.context) return;
+    const timer = setTimeout(() => {
+      attempt(async () => { await persist(); });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [product, context, draft, signedIn, busy, front, back]);
 
   return (
     <div className={embedded ? "app capture-embedded" : "app"}>
@@ -720,7 +809,8 @@ export default function CaptureStudio({
                 <button
                   className="button secondary"
                   disabled={busy || !front}
-                  onClick={() => {
+                  onClick={() => attempt(async () => {
+                    await api("/api/draft", "DELETE");
                     setFront(undefined);
                     setBack(undefined);
                     setDraft(null);
@@ -730,7 +820,7 @@ export default function CaptureStudio({
                     setMessage(
                       "Nueva captura. Sube las fotos de tu siguiente producto.",
                     );
-                  }}
+                  })}
                 >
                   <Plus size={16} />
                   Nuevo producto
@@ -774,6 +864,7 @@ export default function CaptureStudio({
                       id={front}
                       disabled={!signedIn || busy}
                       onUpload={(f) => upload("front", f)}
+                      onRemove={() => removePhoto("front")}
                     />
                     <PhotoUpload
                       name="Reverso"
@@ -781,6 +872,7 @@ export default function CaptureStudio({
                       id={back}
                       disabled={!signedIn || busy}
                       onUpload={(f) => upload("back", f)}
+                      onRemove={() => removePhoto("back")}
                     />
                   </div>
                   <Field
@@ -802,7 +894,7 @@ export default function CaptureStudio({
                       busy ||
                       !front ||
                       !session.gemini_configured ||
-                      !!draft?.saved
+                    !!draft?.saved || draft?.identity_review?.status === "duplicate"
                     }
                     onClick={() =>
                       attempt(async () => {
@@ -861,6 +953,9 @@ export default function CaptureStudio({
                     </Field>
                     <Field label="SKU">
                       <input
+                        autoCapitalize="characters"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={product.sku}
                         onChange={(e) =>
                           edit(
@@ -874,6 +969,9 @@ export default function CaptureStudio({
                     </Field>
                     <Field label="Código de barras">
                       <input
+                        autoComplete="off"
+                        autoCorrect="off"
+                        spellCheck={false}
                         value={product.barcode}
                         onChange={(e) => edit("barcode", e.target.value)}
                         placeholder="Se lee de las fotos"
@@ -886,6 +984,7 @@ export default function CaptureStudio({
                         value={product.category}
                         onChange={(e) => edit("category", e.target.value)}
                       >
+                        <option value="">Por confirmar</option>
                         {[...new Set([...categories, product.category])]
                           .filter(Boolean)
                           .map((c) => (
@@ -901,11 +1000,19 @@ export default function CaptureStudio({
                         maxLength={160}
                       />
                     </Field>
+                    <Field label="Tipo reconocido">
+                      <input value={product.product_type || ""} maxLength={120} onChange={e => edit("product_type", e.target.value)} placeholder="Por confirmar" />
+                    </Field>
+                    <Field label="Sabor, color o variante">
+                      <input value={product.variant || ""} maxLength={120} onChange={e => edit("variant", e.target.value)} placeholder="Por confirmar" />
+                    </Field>
+                    {Object.entries(product.attributes || {}).map(([name, value]) => <Field key={name} label={name}><input value={value} maxLength={160} onChange={e => edit("attributes", {...product.attributes, [name]: e.target.value})} /></Field>)}
                     <Field label="Precio de venta · MXN">
                       <div className="input-affix">
                         <span>$</span>
                         <input
                           type="number"
+                          inputMode="decimal"
                           min={0}
                           step="0.01"
                           value={product.price || ""}
@@ -963,12 +1070,13 @@ export default function CaptureStudio({
                       onClick={() =>
                         attempt(async () => {
                           await persist();
-                          const r = await api<{ message: string }>(
+                          const r = await api<{ message: string; draft: Draft }>(
                             "/api/check-product",
                             "POST",
                             {},
                           );
                           setMessage(r.message);
+                          setDraft(r.draft);
                         })
                       }
                     >
@@ -991,7 +1099,7 @@ export default function CaptureStudio({
                     </button>
                     <button
                       className="text-button"
-                      disabled={busy || !front || !session.gemini_configured}
+                      disabled={busy || !front}
                       onClick={() =>
                         attempt(async () => {
                           await persist();
@@ -1002,6 +1110,31 @@ export default function CaptureStudio({
                       Buscar variantes
                     </button>
                   </div>
+                  {!!product.uncertain_fields?.length && <p className="notice compact" role="status">Datos por confirmar: {product.uncertain_fields.join(", ")}. Revisa las etiquetas antes de guardar.</p>}
+                  {draft?.identity_review && <section className="identity-review" aria-label="Coincidencias y clasificación">
+                    <h3>Coincidencias y clasificación</h3>
+                    <p>{draft.identity_review.message}</p>
+                    <p>{draft.identity_review.recommendation}</p>
+                    {[...(draft.identity_review.duplicate ? [draft.identity_review.duplicate] : []), ...draft.identity_review.candidates, ...draft.identity_review.parents.filter(p => p.sku === draft.identity_review?.suggested)].map((match, i) => <div className="identity-match" key={match.sku + match._source + i}>
+                      {match.image_url && <img src={match.image_url} alt={match.nombre_producto} width={64} height={64} />}
+                      <div><strong>{match.nombre_producto}</strong><p>SKU: {match.sku} · {match.Marca || "Marca por confirmar"} · {match._source}</p>
+                      <p>{match.precio != null ? `Precio: $${match.precio} · ` : ""}{match.atributo_nombre}: {Array.isArray(match.atributo_valor) ? match.atributo_valor.join(", ") : match.atributo_valor}</p>
+                      {match.attributes && <p>{Object.entries(match.attributes).map(([k,v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" · ")}</p>}
+                      {!!match.matching_attributes?.length && <p>Coinciden: {match.matching_attributes.join(", ")}</p>}
+                      {!!match.different_attributes?.length && <p>Difieren: {match.different_attributes.join("; ")}</p>}
+                      {match.product_id && onOpenProduct && <button className="text-button" onClick={() => onOpenProduct(match.product_id!)}>Abrir o actualizar ficha</button>}
+                      {!match.product_id && <button className="text-button" onClick={() => { setQuery(match.sku); go("catalog"); loadCatalog(); }}>Ver en catálogo de Drive</button>}
+                      </div>
+                    </div>)}
+                    {draft.identity_review.sources?.map(note => <p className="micro-copy left" key={note}>{note}</p>)}
+                    {draft.identity_review.status !== "duplicate" && <div className="form-actions">
+                      <button className="button secondary small" disabled={busy || !draft.identity_review.suggested} onClick={() => chooseFamily("Usar padre existente")}>Utilizar padre existente</button>
+                      <button className="button secondary small" disabled={busy} onClick={() => chooseFamily("Crear nuevo padre")}>Crear nuevo padre</button>
+                      <button className="button secondary small" disabled={busy} onClick={() => setProduct(p => ({...p, kind: "Simple", parent_sku: "", parent_name: ""}))}>Guardar como simple</button>
+                      <button className="text-button" disabled={busy} onClick={() => attempt(async () => { await persist(); await run("/api/find-variants"); })}>Investigar nuevamente</button>
+                    </div>}
+                    <p className="micro-copy left">Compara marca, familia, presentación y atributos. Puedes corregir la ficha y la clasificación manualmente; la decisión final es tuya.</p>
+                  </section>}
                   {draft?.variant_recommendation && (
                     <div className="notice compact">
                       <Info size={16} />
@@ -1066,6 +1199,9 @@ export default function CaptureStudio({
                         )}
                         <Field label="SKU padre">
                           <input
+                            autoCapitalize="characters"
+                            autoCorrect="off"
+                            spellCheck={false}
                             disabled={
                               busy ||
                               product.parent_mode === "Usar padre existente"
@@ -1395,7 +1531,7 @@ export default function CaptureStudio({
                     !product.name ||
                     !product.sku ||
                     !allApproved ||
-                    !!draft?.saved
+                    !!draft?.saved || draft?.identity_review?.status === "duplicate"
                   }
                   onClick={() =>
                     attempt(async () => {
@@ -1409,6 +1545,7 @@ export default function CaptureStudio({
                     ? "Guardado en Drive"
                     : "Guardar producto en Drive"}
                 </button>
+                {draft?.sync_status === "pending_repair" && <div className="notice compact"><p>{draft.sync_error}</p><button className="button secondary small" disabled={busy} onClick={() => attempt(async () => { await run("/api/capture-sync"); })}>Reparar catálogo maestro</button></div>}
               </div>
             </>
           )}
@@ -1903,8 +2040,7 @@ export default function CaptureStudio({
                     />
                   </Field>
                   <p className="micro-copy left">
-                    La clave se guarda en esta sesión. No se incluye en tus
-                    productos.
+                    Tu clave se guarda cifrada en el servidor, asociada a tu cuenta y tienda. Permanece configurada al volver a iniciar sesión.
                   </p>
                   <button
                     className="button purple"
@@ -1922,6 +2058,16 @@ export default function CaptureStudio({
                   >
                     Guardar clave
                   </button>
+                  <div className="form-actions">
+                    <button className="button secondary small" disabled={busy || !session.gemini_configured} onClick={() => attempt(async () => {
+                      const r = await api<{message: string; image_model_available: boolean; text_model_available: boolean}>("/api/settings/gemini/test", "POST", {});
+                      setMessage(r.message + (r.image_model_available && r.text_model_available ? " Los dos modelos actuales están disponibles." : " Revisa la disponibilidad de los modelos actuales en tu proyecto."));
+                    })}>Comprobar clave y modelos</button>
+                    <button className="button secondary small" disabled={busy || !session.gemini_configured} onClick={() => attempt(async () => {
+                      await api("/api/settings/gemini", "DELETE"); setKey(""); await refresh(); setMessage("Clave personal eliminada.");
+                    })}>Eliminar clave</button>
+                  </div>
+                  <p className="micro-copy left">Configuración activa: {session.gemini_configured ? "clave personal de Ajustes" : "sin clave personal"}.</p>
                 </section>
               </div>
               <section className="card consumption">
@@ -2014,9 +2160,10 @@ export default function CaptureStudio({
               <div className="notice">
                 <Info size={18} />
                 <span>
-                  Si el servicio reinicia, vuelve a conectar Drive y tu clave.
-                  Los productos ya guardados permanecen en tu Drive. Ante una
-                  subida interrumpida, consulta su progreso antes de repetir.
+                  Al volver a entrar, se recuperan el borrador guardado y la
+                  configuración de Gemini de tu cuenta. Si Google solicita
+                  acceso, vuelve a conectar Drive. Ante una subida interrumpida,
+                  consulta su progreso antes de repetir.
                 </span>
               </div>
             </>

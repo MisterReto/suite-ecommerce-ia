@@ -3758,3 +3758,120 @@ details p {
     transition: none !important;
   }
 }
+/* Individual photo controls stay visible above the mobile navigation. */
+.photo-upload { position: relative; }
+.photo-remove { position: absolute; top: .5rem; left: .5rem; z-index: 2; display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border: 1px solid #ddd; border-radius: 50%; background: white; color: #a00; }
+.p-chips.p-tabs { flex-wrap: wrap; }
+.identity-review { margin-top: 1rem; padding: 1rem; border: 1px solid #ddd; border-radius: 1rem; overflow-wrap: anywhere; }
+.identity-match { display: flex; gap: .75rem; align-items: start; margin-block: .75rem; }
+.identity-match img { object-fit: contain; flex-shrink: 0; }
+.identity-match p { margin: .25rem 0; }
+
+.camera-control span {
+  display: none;
+}
+.photo-name {
+  left: auto;
+  right: 8px;
+}
+.identity-match > div {
+  min-width: 0;
+}
+
+/* Phone capture uses readable fields and separate, reachable photo actions. */
+@media (max-width: 760px) {
+  html {
+    scroll-padding-bottom: calc(100px + env(safe-area-inset-bottom));
+  }
+  .p-header {
+    height: calc(68px + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+    padding-left: max(18px, env(safe-area-inset-left));
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+  .p-main {
+    padding-left: max(18px, env(safe-area-inset-left));
+    padding-right: max(18px, env(safe-area-inset-right));
+  }
+  .p-navigation {
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+  }
+  .app .field input,
+  .app .field select,
+  .app .field textarea {
+    font-size: 16px;
+    min-height: 48px;
+    scroll-margin-block: 90px;
+  }
+  .app .button,
+  .app .text-button,
+  .app .approve-check,
+  .app .slot-selector label,
+  .app .studio-footnote label,
+  .app .error-options label,
+  .app summary {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .app .icon-button,
+  .app .feedback button {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+  .app .upload-control,
+  .app .camera-control {
+    height: 48px;
+    min-width: 44px;
+    width: auto;
+    font-size: 0.82rem;
+    bottom: 10px;
+  }
+  .app .camera-control {
+    left: 10px;
+    right: calc(50% + 5px);
+    border-color: #bb9cc9;
+    color: var(--purple-dark);
+  }
+  .app .camera-control span {
+    display: inline;
+  }
+  .app .upload-control {
+    left: calc(50% + 5px);
+    right: 10px;
+  }
+  .app .photo-upload > img {
+    padding-bottom: 68px;
+  }
+  .app .photo-placeholder {
+    padding-bottom: 68px;
+  }
+  .app .photo-placeholder span {
+    max-width: 220px;
+  }
+  .app .notice,
+  .app .feedback {
+    overflow-wrap: anywhere;
+  }
+  .app .notice > span,
+  .app .feedback > span {
+    min-width: 0;
+  }
+  .app .modal-backdrop {
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  .app .correction-dialog {
+    max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+}
+@media (max-width: 480px) {
+  .app .photos,
+  .app .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app .photo-upload {
+    height: 250px;
+  }
+}

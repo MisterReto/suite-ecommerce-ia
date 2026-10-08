@@ -51,8 +51,8 @@ def context(request: Request):
         )
     if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
         value["carpeta_raiz_id_manual"] = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-    if not value.get("gemini_key") and os.getenv("AI_API_KEY"):
-        value["gemini_key"] = os.environ["AI_API_KEY"]
+    from .accounts import restore
+    restore(value)
     if not value.get("platform_tenant"):
         from drive_service import DriveService
 
@@ -1120,7 +1120,7 @@ def connections(value=Depends(context)):
                 "name": "IA · Gemini",
                 "status": (
                     "connected"
-                    if value.get("gemini_key") or os.getenv("AI_API_KEY")
+                    if value.get("gemini_key")
                     else "disconnected"
                 ),
             },

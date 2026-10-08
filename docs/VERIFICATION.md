@@ -1,5 +1,54 @@
 # Evidencia, alcance y pendientes
 
+## Restauración y prioridad celular — 8 octubre 2026
+
+Rama aislada `agent/restore-functional-parity-20261008`, base de código
+`405f423` y auditoría previa publicada `ef1b756`. Captura accesible con el
+catálogo listo, credencial Gemini personal cifrada y puente al maestro;
+la restauración completa se describe en TEST_PLAN.md y los documentos de
+captura/familias/credenciales. Los cambios móviles amplían cámara/galería,
+acciones y correcciones; apilan fotos/campos hasta 480 px y mantienen texto
+de 16 px, teclados apropiados y áreas seguras. No cambian el generador protegido.
+
+Pase focal después de la corrección de recuperación: **30 passed** (24 de
+paridad y seis de contrato/separación). TypeScript, build standalone y proxy
+Next real con uploads de 12 MB correctos. La rama está publicada en
+[PR #27](https://github.com/MisterReto/suite-ecommerce-ia/pull/27), tras la
+autorización explícita del usuario; el bloqueo inicial quedó resuelto.
+
+El [run 37744572296](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37744572296),
+sobre `3eee946`, pasó el flujo completo en perfiles táctiles Chromium/Pixel y
+WebKit/iPhone a 360/390/430 px: controles alcanzables, cámara/galería mediante
+inputs, error/reintento de upload, edición, navegación/recarga, clave personal,
+familia, tres slots, corrección individual y reparación. También comprobó la
+respuesta HTML del servicio al despertar y pantallas de 480 px de altura.
+Pasaron builds/proxy, auditorías, Blueprint, batería histórica y contrato en
+Python 3.11/3.14. El grupo PostgreSQL17/Redis7 terminó con **79 passed, 1 failed**:
+el marcador de guardado de un job no actualizaba el borrador cifrado que ahora
+se recupera primero. Se corrigió la confirmación de ambos estados en la misma
+transacción; también se recuperan resultados de la revisión vigente sin revivir
+un borrador descartado. Dos regresiones nuevas cubren estas interrupciones.
+
+La repetición sobre `d894f0c` terminó con los tres jobs verdes en el
+[run 37746010480](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37746010480);
+también pasó el envío directo de la rama
+[37746004169](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37746004169).
+PostgreSQL17/Redis7 ejecutó **82 passed sin omisiones**, incluida la regresión
+que había fallado. La batería general pasó 35 + 9 + 24 unittest, 63 pytest
+históricos y 59 pytest de captura/contrato/catálogo/paridad. Sus dos casos de
+concurrencia omitidos en el primer grupo se ejecutaron en el grupo PostgreSQL
+real. El flujo móvil Chromium/WebKit y todos los controles anteriores volvieron
+a pasar. Auditorías de dependencias sin vulnerabilidades conocidas.
+
+El estado de los siguientes commits de documentación y de la rama está en
+[PR #27 → Checks](https://github.com/MisterReto/suite-ecommerce-ia/pull/27/checks).
+Exigir validate y ambos generation-contract verdes, con el grupo PostgreSQL/Redis
+sin omisiones, antes de actualizar staging. Proveedor real, cámara nativa,
+teclado del sistema y PWA instalada siguen pendientes del pase operativo en
+teléfonos; no convertir la emulación en evidencia de esos casos.
+
+## Evidencia de la estabilización anterior
+
 Fecha: 2026-10-06. Rama agent/stabilize-architecture-20261006, base 9dc9a09.
 Producción histórica sigue en 41d0599. Se desplegó staging aditivo en cinco
 recursos free; tres apps live en `df88da8` y dos almacenes disponibles.

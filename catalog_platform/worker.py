@@ -476,6 +476,8 @@ def process(job):
         session_id=sid,
         file_namespace=secrets.token_urlsafe(24),
         expires_at=time.time() + 8 * 3600,
+        email=job["actor"],
+        platform_tenant=job["tenant_id"],
     )
     runtime.SESSIONS[sid] = value
     from gemini_gateway import usage_for_key

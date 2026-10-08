@@ -56,6 +56,9 @@ def setup(tmp_path,monkeypatch):
         "file_namespace":secrets.token_urlsafe(24),"platform_tenant":tenant,"carpeta_raiz_id_manual":tenant,
         "gemini_key":"test-key-no-spend","creds":{"token":"private-token","refresh_token":"private-refresh"}}
     studio.runtime.SESSIONS[sid]=value
+    from catalog_platform.accounts import save_gemini
+    with transaction() as db:
+        save_gemini(db, tenant, value["email"], value["gemini_key"])
     drive=DriveDouble(tenant)
     from drive_service import DriveService
     monkeypatch.setattr(DriveService,"for_session",lambda *args:drive)
@@ -161,7 +164,7 @@ def test_quote_changes_no_worker_and_replay(setup):
     assert accepted.status_code==202 and replay.status_code==202
     assert accepted.json()["jobs"][0]["id"]==replay.json()["jobs"][0]["id"]
     with transaction() as db:
-        account=db.scalar(select(IntegrationAccount).where(IntegrationAccount.tenant_id==value["platform_tenant"]))
+        account=db.scalar(select(IntegrationAccount).where(IntegrationAccount.tenant_id==value["platform_tenant"], IntegrationAccount.provider=="studio"))
         assert "private-token" not in account.encrypted_credentials
         assert unseal(account.encrypted_credentials)["creds"]["refresh_token"]=="private-refresh"
     assert "private-token" not in client.get("/api/platform/jobs").text

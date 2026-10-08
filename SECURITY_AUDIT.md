@@ -1,68 +1,50 @@
-# Auditoría de seguridad del proyecto
+# Seguridad de captura y credenciales — 8 octubre 2026
 
-Fecha: 2026-10-06. Alcance: código de plataforma y módulos históricos invocados,
-historial accesible, configuración declarada, Render/Drive/Sheet de solo lectura,
-dependencias y regresiones. No se consultaron valores secretos Render ni se
-realizó una prueba de intrusión de producción. No declarar todos los controles
-operativos validados por tener pruebas con dobles.
+Auditoría de código y pruebas sintéticas; no es una prueba de penetración.
+Complementa la auditoría inicial funcional y la seguridad previa del repositorio.
 
-## Clasificación y hallazgos
+| Control | Implementación comprobada | Evidencia / límite |
+|---|---|---|
+| Sesión y CSRF | Middleware existente; `studio_api::session` | Cookies/OAuth same origin; proxy conserva cabeceras |
+| Rol para escrituras | `editor` + `security::require_role` en POST/PUT/DELETE del estudio | Viewer no cambia borrador, notas, clave, portada ni guarda |
+| Credencial personal | `accounts::put`, `seal/unseal`, `gemini_for` | Fernet por actor/tenant; no echo ni fallback AI_API_KEY |
+| Worker correcto | Job actor/tenant → `accounts::load` vigente | Cambio/borrado no revertido por snapshot Google obsoleto |
+| Redis | Broker/RQ existente: solo ID de job | Contratos existentes verifican ausencia de secretos y payload fotográfico |
+| Fotos privadas | `asset`, `file_path`, namespace + ID opaco | Actor ajeno 404; rutas /tmp no llegan al frontend |
+| Fotos reales | `checked_image_type` + Pillow/EXIF | MIME/extensión/bytes, 12 MB y 24 MP; HEIC con decoder opcional |
+| Datos estructurados | Pydantic `Product`, límites de campos/atributos | Precios finitos/no negativos; SKU caracteres permitidos; GTIN checksum |
+| Fuente Woo por tienda | `woo_rows` asociación de root, GET | Tienda ajena no consulta credenciales globales; modo solo Drive respetado |
+| Doble guardado | Lock PG por tienda, fresh read, guardia save_phase, SyncEvent | Sheets incierto se verifica en lectura; repair solo SQL |
+| Padre/hijo | `prepare_capture_updates`, `mirror_records` | Una petición Sheets; una transacción SQL; rollback no deja padre parcial |
+| Generación/costo | Request key, cotización/límites existentes; contrato protegido | No reintento pagado automático; no llamadas reales en estas pruebas |
+| Secretos en UI/logs | `SecretStr`, errores filtrados, password vaciado | Respuestas de pruebas sin claves; no se leyeron valores de env Render |
 
-CRITICAL: pérdida masiva/exposición privilegiada confirmada. HIGH: acceso o
-integridad importante. MEDIUM: requiere condiciones adicionales o deja un
-control incompleto. LOW: endurecimiento. INFO: límite o hecho operativo.
+El catálogo y sus imágenes siguen filtrados por tenant. El borrador persistido
+usa tenant + actor y guarda referencias de Drive, no rutas del host. Cambiar
+de carpeta invalida los IDs de archivos de la sesión y recupera otro checkpoint;
+no traslada fotos al tenant nuevo. Logout conserva la configuración cifrada.
 
-| ID | Severidad | Evidencia / estado | Acción |
-| --- | --- | --- | --- |
-| SEC-01 | HIGH | oauth_guard.email_allowed histórico acepta cualquier Google verificado si allowlist vacía. No se conocen env actuales. | Nuevo Blueprint exige APP_REQUIRE_ALLOWLIST=true; APP_ROLE_MAP/allowlist cierran login. Verificar producción sin cambiarla antes del pase IA. |
-| SEC-02 | HIGH | OAuth usa scope drive amplio; ownership limita app, no el token. | No revocar. Probar alternativa de mínimo privilegio/cuenta dedicada compartida antes de sustituir. Pendiente operativo. |
-| SEC-03 | HIGH | Generación captura inicial en API/RAM; OOM Render 512Mi confirmado. | Modo worker con SQL/RQ, pool aislado y concurrency 1. Medición real y reinicio en staging pendientes. |
-| SEC-04 | HIGH | _subir_imagen_drive histórico reemplaza contenido por nombre sin backup. | En modo separado delega a save_approved; copia antes de reemplazar, rechaza duplicados. Modo productivo viejo intacto. |
-| SEC-05 | HIGH | Llamadas pagadas/escrituras interrumpidas pueden ser inciertas. | in_flight + leases + checkpoint + revisión obligatoria; no retry automático. Regresiones verdes, ensayo real pendiente. |
-| SEC-06 | MEDIUM | URLs HTTPS validan host textual; DNS rebinding y todos los redirects de clientes históricos no están demostrados cubiertos. | Descarga nueva WordPress usa host allowlist y sin redirects. Revisar clientes históricos antes de permitir URLs no confiables. |
-| SEC-07 | MEDIUM | Sesiones, rate limit y locks de captura son locales a API. | Una instancia/proceso inicial. Varias réplicas exigen sesiones/limitador distribuido; jobs ya son durables. |
-| SEC-08 | MEDIUM | Sheets no aporta CAS/transacción con SQL ni garantía contra edición humana entre read/write. | Celda precisa, SKU único, cobertura de pestaña, expected/readback; prueba reversible, sin sync masivo. |
-| SEC-09 | MEDIUM | Clientes/callbacks históricos tienen mensajes y excepciones que requieren verificar en logs reales. | Errores nuevos redactan secretos/contexto; sin access log en Docker API, worker no imprime payload. No afirmar sanitización universal de todos los módulos heredados. |
-| SEC-10 | MEDIUM | Free Key Value de staging no persiste; capacidad sin validar. | SQL outbox y reconciliación probados. Revisar plan persistente/retención para producción. |
-| SEC-11 | LOW | CSP conserva unsafe-inline para Next/estilos. | Headers nosniff/frame/HSTS/permissions; nonces se mejorarán separadamente. |
-| SEC-12 | INFO | No .env real, claves de patrones conocidos o private key encontrados en archivos y 208 commits accesibles. | No requiere rotación por un hallazgo inexistente. El escaneo no prueba ausencia de todo secreto posible. |
-| SEC-13 | INFO | pip-audit de requirements y npm audit producción no reportan vulnerabilidades conocidas. | Nuevas dependencias fijadas RQ/Redis; no upgrade general. Repetir al cambiar lock. |
-| SEC-14 | INFO | Loyverse nuevo webhook bloqueado 503; proveedores alternativos no habilitados. | No usar firma supuesta ni fallback pagado; autorización/contrato reales pendientes. |
+Las claves viejas que pudieran estar en snapshots cifrados Google no se usan.
+No se eliminan automáticamente esos registros históricos ni las variables
+existentes de Render. Una migración de limpieza de secretos antiguos requiere
+su backup y revisión; el flujo nuevo escribe exclusivamente el provider personal.
 
-No hay un hallazgo CRITICAL confirmado en el alcance observado. No significa
-que producción esté certificada ni que todo su entorno sea conocido.
+No se añadió schema SQL, migración masiva ni servicio de pago. Se reutiliza
+IntegrationAccount para `gemini`, `studio_profile`, `capture_draft` y SyncEvent
+para reparación. La nueva asociación opcional `WOOCOMMERCE_TENANT_ID` solo
+restringe una fuente de lectura; no añade permiso de publicación.
 
-## Cobertura de controles
+## Límites prácticos
 
-| Control | Código / evidencia | Límites pendientes |
-| --- | --- | --- |
-| Secretos / env / frontend | archivos + parches de 208 commits; .env.example vacío; Next solo origen API | valores Render privados; patrones no exhaustivos |
-| Autenticación | OAuth state/verifier, email verificado/allowlist; app.py, oauth_guard.py | login real en nuevo dominio/callback |
-| Autorización | RoleMiddleware, context, require_role y tenant/product ownership | comprobar herramientas históricas habilitadas |
-| CORS / CSRF / Host | proxy mismo origen, Origin/Referer exacto, Host API; sin wildcard CORS | APP_PUBLIC_ORIGIN real; webhook exento por firma, no cookie |
-| Sesiones / cookies | HttpOnly/Secure/SameSite, expiración, logout y no-store | locales; re-login tras reinicio |
-| SQL | SQLAlchemy/parámetros; DDL aditivo fijo; locks/versiones | concurrencia PG real en CI; no extrapolar SQLite |
-| Uploads | 12 MB, MIME Pillow, 24 MP, verify, nombre/path traversal; 413 HTTP | memoria integral con archivos grandes simultáneos |
-| Webhooks | HMAC raw, tamaño, IDs/hash únicos, payload cifrado, worker | entrega Woo real; Loyverse bloqueado |
-| Drive | owns/root, downloads limitados, candidatos privados y backup | scope OAuth amplio, ACL/duplicados completos no auditados |
-| Sheets | rangos precisos, headers compatibles, SKU único, expected | datos completos/carreras humanas; nunca sobrescribir por una celda |
-| APIs / SSRF | HTTPS sin credenciales/query/private IP; allowlist media, no redirect nuevo | resolución DNS/clientes históricos |
-| Logs | public_error [REDACTED], error_message con clave de sesión, sin payload/cookie/Authorization nuevos | revisar logs staging sin copiar valores al informe |
-| Headers / XSS | CSP/nosniff/frames/HSTS API/no-referrer, bleach HTML, React escaping | unsafe-inline; observación real de proxy/hosting |
-| Rate limit / gasto | límite sesión, ref doble clic, request_key, imágenes/USD/token de estimación | no distribuido; research/QA variable fuera de estimado |
-| Cola / filesystem | JSONSerializer, ID SQL, post-commit/lease/outbox, /tmp propio y cleanup | exportar backups temporales; retención Drive manual |
-| Render / DB / Redis | nombres aislados, private network, contenedores sin root | recursos no provisionados; plan/RAM reales |
-| AuditLog / integridad | precio/stock/review/publicación/lotes/jobs/sync/eventos e IDs permanentes | retención/acceso operativo del historial |
-| Dependencias | versions/locks, pip-audit, npm audit/CI | índices evolucionan; resultado representa fecha/run |
+No hay commit distribuido entre Google y PostgreSQL. Un Sheet aceptado y SQL
+caído queda visible como pendiente y puede verificarse/repararse. La detección
+de coincidencias de nombre es una heurística explicada al operador; datos
+ilegibles o diferentes dimensiones requieren revisión, no invención automática.
 
-## Gate de producción
+La clave de cifrado API/worker debe ser la misma y conservarse entre deploys.
+Fernet protege el almacenamiento, no un proceso servidor ya comprometido.
+Las fotos temporales ocupan Drive y siguen su control de acceso; este cambio no
+borra originales ni backups y no incluye una política automática de retención.
 
-Regresiones protegen AST del generador, roles/tenant, uploads corruptos/grandes,
-errores sin clave, aprobación/QA, idempotencia, firmas, leases/incertidumbre,
-Redis real, cookies/proxy y backup antes de reemplazo. IA/Drive/Woo privados son
-dobles: no hubo gasto ni escritura real.
-
-Antes de cambio de entrada: comprobar roles/callbacks, flags de escritura,
-ACL/scopes, logs seguros y RAM; completar TEST_PLAN. Si falla generación real
-en 5–9 se detiene. Consultar MANUAL_ACTIONS_REQUIRED. No rotar credenciales
-actuales ni otorgar acceso Drive global adicional por esta auditoría.
+Faltan el pase de cuentas reales, Safari/Android físicos y uso de Gemini con
+presupuesto. No presentar CI sintético como evidencia de esos tres controles.
