@@ -4,13 +4,13 @@ La restauración de código y CI no equivalen a completar el tutorial en un
 teléfono conectado a Google/Gemini. Registrar el resultado de las 16 pruebas
 en TEST_PLAN.md, sin convertir pendientes en aprobadas.
 
-El código está preparado en la rama local
-`agent/restore-functional-parity-20261008` (implementación `7378358`). La revisión
-automática bloqueó inicialmente su publicación a GitHub. El usuario autorizó
-explícitamente enviar la rama el 7/oct a las 23:27 (México). Publicar esta rama aislada en
-`MisterReto/suite-ecommerce-ia` y ejecutar CI antes de actualizar staging.
-Las pruebas táctiles Chromium/WebKit están preparadas, todavía sin ejecución;
-el pase local de 28 regresiones, build, TypeScript y proxy sí terminó.
+La rama `agent/restore-functional-parity-20261008` está publicada en
+[PR #27](https://github.com/MisterReto/suite-ecommerce-ia/pull/27). El flujo táctil
+Chromium/WebKit pasó a 360/390/430 px en CI; el pase focal posterior de paridad,
+contrato y separación terminó con 30 pruebas correctas. La evidencia y el
+fallo PostgreSQL corregido se registran en `docs/VERIFICATION.md`. Exigir todos
+los checks del commit final verdes antes de actualizar los tres servicios
+staging existentes y comprobar sus versiones/salud.
 
 1. **Cuenta y teléfono.** Conectar la cuenta autorizada en el frontend staging;
    probar Chrome Android, Safari iPhone y PWA instalada con cámara/galería,

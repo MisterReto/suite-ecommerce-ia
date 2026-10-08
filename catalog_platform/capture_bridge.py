@@ -208,6 +208,25 @@ def checkpoint(value, current):
         put(db, root, value["email"], "capture_draft", state)
 
 
+def mark_saved(db, value, current):
+    """Update the durable save marker in the job transaction, without uploading files."""
+    root, actor = root_for(value), value["email"]
+    request_lock(db, root, "credential:" + actor.casefold() + ":capture_draft")
+    record = account(db, root, actor, "capture_draft")
+    if not record or record.status != "connected":
+        return  # A cleared draft must not be revived by an older job.
+    state = unseal(record.encrypted_credentials)
+    if state.get("revision") != current["revision"]:
+        return  # A completed save belongs only to its original product.
+    for key in ("saved", "sync_status", "sync_error", "master_product_id"):
+        if key in current:
+            state[key] = deepcopy(current[key])
+        else:
+            state.pop(key, None)
+    state["save_phase"] = "saved"
+    put(db, root, actor, "capture_draft", state)
+
+
 def restore(value):
     if value.get("studio_draft") or not active(value):
         return

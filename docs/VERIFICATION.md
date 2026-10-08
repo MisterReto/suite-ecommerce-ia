@@ -10,18 +10,31 @@ captura/familias/credenciales. Los cambios móviles amplían cámara/galería,
 acciones y correcciones; apilan fotos/campos hasta 480 px y mantienen texto
 de 16 px, teclados apropiados y áreas seguras. No cambian el generador protegido.
 
-Pase focal tras estos ajustes: **28 passed**, TypeScript, build standalone
-y proxy Next real con uploads de 12 MB correctos. La batería amplia de la restauración ya está registrada en
-TEST_PLAN.md. No hay browser local ejecutable: CI exige perfiles táctiles
-Chromium/Pixel y WebKit/iPhone a 360/390/430 px, objetivos alcanzables,
-errores de upload, navegación/recarga y corrección individual, también en
-pantalla corta. La implementación local está en `7378358`; la revisión
-automática bloqueó inicialmente el envío de la rama a GitHub; el usuario
-autorizó explícitamente esa publicación el 7/oct a las 23:27 (México).
-Las pruebas de navegador y de PostgreSQL/Redis
-del nuevo pase CI todavía no se ejecutaron. Proveedor real,
-cámara nativa, teclado del sistema y PWA instalada siguen pendientes del pase
-operativo en teléfonos; no convertir la emulación en evidencia de esos casos.
+Pase focal después de la corrección de recuperación: **30 passed** (24 de
+paridad y seis de contrato/separación). TypeScript, build standalone y proxy
+Next real con uploads de 12 MB correctos. La rama está publicada en
+[PR #27](https://github.com/MisterReto/suite-ecommerce-ia/pull/27), tras la
+autorización explícita del usuario; el bloqueo inicial quedó resuelto.
+
+El [run 37744572296](https://github.com/MisterReto/suite-ecommerce-ia/actions/runs/37744572296),
+sobre `3eee946`, pasó el flujo completo en perfiles táctiles Chromium/Pixel y
+WebKit/iPhone a 360/390/430 px: controles alcanzables, cámara/galería mediante
+inputs, error/reintento de upload, edición, navegación/recarga, clave personal,
+familia, tres slots, corrección individual y reparación. También comprobó la
+respuesta HTML del servicio al despertar y pantallas de 480 px de altura.
+Pasaron builds/proxy, auditorías, Blueprint, batería histórica y contrato en
+Python 3.11/3.14. El grupo PostgreSQL17/Redis7 terminó con **79 passed, 1 failed**:
+el marcador de guardado de un job no actualizaba el borrador cifrado que ahora
+se recupera primero. Se corrigió la confirmación de ambos estados en la misma
+transacción; también se recuperan resultados de la revisión vigente sin revivir
+un borrador descartado. Dos regresiones nuevas cubren estas interrupciones.
+
+El estado del pase posterior de la rama está en
+[PR #27 → Checks](https://github.com/MisterReto/suite-ecommerce-ia/pull/27/checks).
+Exigir validate y ambos generation-contract verdes, con el grupo PostgreSQL/Redis
+sin omisiones, antes de actualizar staging. Proveedor real, cámara nativa,
+teclado del sistema y PWA instalada siguen pendientes del pase operativo en
+teléfonos; no convertir la emulación en evidencia de esos casos.
 
 ## Evidencia de la estabilización anterior
 

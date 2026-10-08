@@ -15,7 +15,7 @@ from catalog_capture import prepare_capture_updates, records_from_values
 from inventory_schema import MASTER_COLUMNS
 from catalog_platform import accounts, capture_bridge
 from catalog_platform.database import transaction
-from catalog_platform.models import IntegrationAccount, Product, ProductImage, ProductVariant
+from catalog_platform.models import GenerationJob, IntegrationAccount, Product, ProductImage, ProductVariant, uid
 from catalog_platform.security import unseal
 from creative_pipeline import IMAGE_MODEL, TEXT_MODEL
 from test_catalog_platform import setup, ORIGIN
@@ -301,6 +301,50 @@ def test_simple_save_preserves_reference_and_mirrors_master_once(capture_store):
     assert client.post("/api/save", json={"confirm":True}, headers=ORIGIN).status_code == 200
     assert len(writes) == 1
     assert all(u["folder"] == "original-images" for u in drive.uploads if "_referencia_" in u["name"])
+
+
+def test_saved_job_marker_survives_loss_before_final_draft_checkpoint(capture_store):
+    from catalog_platform.studio_jobs import record_saved
+    client, value, drive, _, _, writes = capture_store
+    start(client)
+    current = value["studio_draft"]
+    current.update(saved="💾 TEST-INTEGRATION guardado", sync_status="pending_repair")
+    uploads = len(drive.uploads)
+    record_saved(value, current)
+    assert len(drive.uploads) == uploads and not writes
+    value.pop("studio_draft")
+    recovered = client.get("/api/session").json()["draft"]
+    assert recovered["saved"] == current["saved"]
+    assert recovered["sync_status"] == "pending_repair"
+    assert client.post("/api/save", json={"confirm":True}, headers=ORIGIN).status_code == 200
+    assert not writes  # Recovery cannot repeat an already accepted Sheet write.
+    assert client.delete("/api/draft", headers=ORIGIN).status_code == 200
+    record_saved(value, current)
+    assert client.get("/api/session").json()["draft"] is None
+
+
+def test_worker_completion_recovers_into_matching_draft_but_never_revives_clear(capture_store, monkeypatch):
+    client, value, *_ = capture_store
+    monkeypatch.setenv("STUDIO_IMAGE_JOBS", "worker")
+    start(client)
+    current = value["studio_draft"]
+    with transaction() as db:
+        state = unseal(accounts.account(db, value["platform_tenant"], value["email"], "capture_draft").encrypted_credentials)
+        file_id = state["references"][0]
+        payload = {"capture":{k:deepcopy(current[k]) for k in ("revision","context","product")},
+                   "references":state["references"],"results":{"1_hd":{"id":file_id,"raw_id":file_id,
+                   "history":[],"approved":False,"message":"Imagen sintética terminada"}}}
+        db.add(GenerationJob(tenant_id=value["platform_tenant"],actor=value["email"],kind="studio_generation",
+                             request_key=uid(),status="completed",model=IMAGE_MODEL,payload=payload))
+    revised = {**current["product"], "name":"Nombre revisado después de solicitar la imagen"}
+    assert client.put("/api/draft", json=revised, headers=ORIGIN).status_code == 200
+    value.pop("studio_draft")
+    recovered = client.get("/api/session").json()["draft"]
+    assert recovered["product"]["name"] == revised["name"]
+    assert "1_hd" in recovered["images"]
+    assert client.get("/api/files/"+recovered["images"]["1_hd"]["id"]).status_code == 200
+    assert client.delete("/api/draft", headers=ORIGIN).status_code == 200
+    assert client.get("/api/session").json()["draft"] is None
 
 
 def test_new_parent_cover_and_variant_are_atomic_in_master(capture_store):

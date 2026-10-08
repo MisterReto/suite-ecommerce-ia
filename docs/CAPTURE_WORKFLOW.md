@@ -80,6 +80,14 @@ por tienda y actor, provider `capture_draft`. Los archivos se suben a
 evita volver a subir la misma imagen. `restore` descarga a un namespace nuevo
 y entrega IDs opacos nuevos. No se guardan rutas privadas ni claves en el navegador.
 
+La recuperación incorpora resultados del worker para la revisión vigente aunque
+terminaran mientras el cliente estaba desconectado; conserva los campos editados
+del borrador. Descartar una captura deja una marca que impide recuperarla desde
+jobs antiguos. `studio_jobs::record_saved` confirma la marca de guardado de los
+jobs y del borrador cifrado en la misma transacción, sin volver a subir archivos
+ni escribir Sheets. Así no se pierde el guardado si el proceso termina antes
+del checkpoint final.
+
 El guardado mantiene la escritura original de `inventario_completo` / Lista
 completa y la carpeta `imagenes_generadas`. A:N y las fórmulas O:R permanecen;
 S:T contienen el atributo de variación y U el barcode. Los atributos adicionales,

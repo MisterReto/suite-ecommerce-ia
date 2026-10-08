@@ -11,8 +11,8 @@ Los seis grupos existentes del workflow pasaron: 35 + 9 + 24 unittest,
 63 pytest históricos, 52 pytest de contrato/catálogo/captura y 35 de
 estabilización/free Render: **218 pasadas, 10 omitidas**. Las omisiones son
 pruebas que necesitan PostgreSQL/Redis reales; SQLite no demuestra concurrencia.
-Después se ampliaron las pruebas de paridad de 17 a **22**, todas pasaron.
-No sumar los 22 de nuevo como pruebas independientes: 17 ya estaban en el grupo de 52.
+Después se ampliaron las pruebas de paridad de 17 a **24**, todas pasaron.
+No sumar los 24 de nuevo como pruebas independientes: 17 ya estaban en el grupo de 52.
 
 Next export y standalone compilaron; TypeScript y el proxy Next real pasaron
 rutas, cookies, OAuth y uploads de 12 MB. La prueba Node de Loyverse pasó
@@ -22,7 +22,7 @@ cero vulnerabilidades. Se registra CI posterior en `docs/VERIFICATION.md`.
 El contenedor no tiene un navegador ejecutable y la descarga Playwright quedó
 truncada. No se afirma pase móvil local. `test_capture_mobile.cjs` añade
 perfiles táctiles Pixel/iPhone en Chromium y WebKit a 360/390/430 px en CI:
-catálogo listo, controles alcanzables de al menos 44 px, inputs de cámara y
+servicio despertando con respuesta HTML, catálogo listo, controles alcanzables de al menos 44 px, inputs de cámara y
 galería, error de carga y reintento, sustitución del frente, eliminar reverso,
 campos de 16 px y teclados por dato, autosave estable, salir antes del debounce,
 navegación/recarga, clave, familia/portada, tres slots, corrección individual
@@ -30,14 +30,15 @@ sin perder las otras imágenes y reparación. También reduce la altura a 480 px
 para comprobar formulario y diálogo. Usa APIs sintéticas; no abre una cámara
 física ni demuestra el comportamiento del teclado del sistema.
 
-Después del ajuste para celular pasaron 28 pruebas focales de paridad,
-contrato del generador y separación frontend, TypeScript y build standalone.
-También pasó el proxy Next real, incluidos uploads de 12 MB. La restauración
-local está en `7378358`. El usuario autorizó explícitamente publicar la rama
-el 7/oct a las 23:27 (México), resolviendo el bloqueo de aprobación anterior.
-Chromium/WebKit y PostgreSQL/Redis de este nuevo pase CI siguen
-**pendientes de ejecución** hasta registrar sus resultados, además de los
-teléfonos físicos.
+Después del ajuste para celular y recuperación pasaron 30 pruebas focales de
+paridad, contrato y separación. TypeScript, build standalone y proxy Next real
+de 12 MB correctos. La rama está publicada en PR #27. El run 37744572296 pasó
+Chromium/WebKit completos y la batería general; PostgreSQL/Redis encontró un
+marcador de guardado desactualizado (79 pasadas, una fallida). La corrección
+confirma job y borrador en la misma transacción y cubre resultados terminados
+durante una desconexión, sin recuperar capturas descartadas. La evidencia y
+el enlace al estado posterior están en `docs/VERIFICATION.md`. Los teléfonos
+físicos y el proveedor real mantienen su aceptación separada.
 
 ## Pase real, en el orden solicitado
 
