@@ -8,7 +8,8 @@ La rama `agent/restore-functional-parity-20261008` está publicada en
 [PR #27](https://github.com/MisterReto/suite-ecommerce-ia/pull/27). El flujo táctil
 Chromium/WebKit pasó a 360/390/430 px en CI; el pase focal posterior de paridad,
 contrato y separación terminó con 30 pruebas correctas. La evidencia y el
-fallo PostgreSQL corregido se registran en `docs/VERIFICATION.md`. Exigir todos
+fallo PostgreSQL corregido se registran en `docs/VERIFICATION.md`. El CI sobre
+`d894f0c` terminó verde, con 82 casos PostgreSQL17/Redis7 sin omisiones. Exigir todos
 los checks del commit final verdes antes de actualizar los tres servicios
 staging existentes y comprobar sus versiones/salud.
 

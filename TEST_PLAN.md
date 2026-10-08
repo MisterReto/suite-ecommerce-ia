@@ -37,8 +37,11 @@ Chromium/WebKit completos y la batería general; PostgreSQL/Redis encontró un
 marcador de guardado desactualizado (79 pasadas, una fallida). La corrección
 confirma job y borrador en la misma transacción y cubre resultados terminados
 durante una desconexión, sin recuperar capturas descartadas. La evidencia y
-el enlace al estado posterior están en `docs/VERIFICATION.md`. Los teléfonos
-físicos y el proveedor real mantienen su aceptación separada.
+el enlace al estado posterior están en `docs/VERIFICATION.md`. La repetición
+37746010480 sobre `d894f0c` terminó verde: **82 pruebas PostgreSQL17/Redis7 sin
+omisiones**, móvil completo Chromium/WebKit y los tres jobs correctos. El run
+de push 37746004169 también pasó. Los teléfonos físicos y el proveedor real
+mantienen su aceptación separada.
 
 ## Pase real, en el orden solicitado
 
