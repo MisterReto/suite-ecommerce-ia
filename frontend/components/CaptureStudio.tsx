@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GenerationSounds } from "@/lib/generation-sounds";
 import {
   Camera,
   Check,
@@ -377,6 +378,17 @@ export default function CaptureStudio({
   const [back, setBack] = useState<string>();
   const [context, setContext] = useState("");
   const [job, setJob] = useState<Job | null>(null);
+  const sounds = useRef<GenerationSounds | null>(null);
+  if (!sounds.current) sounds.current = new GenerationSounds();
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  useEffect(() => {
+    let enabled = true;
+    try { enabled = localStorage.getItem("rincon-generation-sounds") !== "off"; } catch {}
+    setSoundEnabled(enabled);
+    sounds.current!.setEnabled(enabled);
+    return () => sounds.current!.dispose();
+  }, []);
+  useEffect(() => { sounds.current!.observe(job); }, [job]);
   const [posting, setPosting] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -554,6 +566,7 @@ export default function CaptureStudio({
     await ensureCapture();
     const result = await api<{ draft: Draft }>("/api/draft", "PUT", product);
     setDraft(result.draft);
+    setProduct((latest) => sameProduct(latest, product) ? result.draft.product : latest);
     return result.draft;
   };
   const run = async (path: string, body: unknown = {}) => {
@@ -567,7 +580,10 @@ export default function CaptureStudio({
       body = { ...(body as Record<string, unknown>), request_key: key, confirm_cost: true };
     }
     const result = await api<{ job?: Job; draft?: Draft }>(path, "POST", body);
-    if (result.job) setJob(result.job);
+    if (result.job) {
+      sounds.current!.observe(result.job, path === "/api/generate" || path.endsWith("/correct"));
+      setJob(result.job);
+    }
     if (!activeJob(result.job)) {
       if (result.draft) applyDraft(result.draft);
       await refresh();
@@ -657,7 +673,7 @@ export default function CaptureStudio({
   }, [product, context, draft, signedIn, busy, front, back]);
 
   return (
-    <div className={embedded ? "app capture-embedded" : "app"}>
+    <div className={embedded ? "app capture-embedded" : "app"} onClickCapture={() => sounds.current!.unlock()}>
       <header className="brand-header">
         <a className="brand" href="#studio">
           <img src="/logo.png" width="48" height="48" alt="El Rincón de Asia" />
@@ -951,19 +967,14 @@ export default function CaptureStudio({
                         maxLength={80}
                       />
                     </Field>
-                    <Field label="SKU">
+                    <Field label="SKU" hint="Código de barras legible; sin código se crean 10 caracteres.">
                       <input
                         autoCapitalize="characters"
                         autoCorrect="off"
                         spellCheck={false}
                         value={product.sku}
-                        onChange={(e) =>
-                          edit(
-                            "sku",
-                            e.target.value.replace(/[^A-Za-z0-9_-]/g, ""),
-                          )
-                        }
-                        placeholder="Identificador del producto"
+                        readOnly
+                        placeholder="Se asigna automáticamente"
                         maxLength={80}
                       />
                     </Field>
@@ -1208,7 +1219,7 @@ export default function CaptureStudio({
                             }
                             value={product.parent_sku}
                             onChange={(e) => edit("parent_sku", e.target.value)}
-                            placeholder="Ej. GLIPOCFULL"
+                            placeholder="Ej. 400638xxxxxxx"
                           />
                         </Field>
                         <Field label="Nombre de la familia">
@@ -1287,6 +1298,20 @@ export default function CaptureStudio({
                       : " · Estimación de costo no disponible"}.
                     La investigación y revisión pueden añadir consumo. Generar confirma este consumo.
                   </p>
+                  <label className="approve-check">
+                    <input
+                      type="checkbox"
+                      checked={soundEnabled}
+                      onChange={(e) => {
+                        const enabled = e.target.checked;
+                        setSoundEnabled(enabled);
+                        sounds.current!.setEnabled(enabled);
+                        if (enabled) sounds.current!.unlock();
+                        try { localStorage.setItem("rincon-generation-sounds", enabled ? "on" : "off"); } catch {}
+                      }}
+                    />
+                    Sonidos al iniciar, terminar o fallar la generación
+                  </label>
                   <div className="slot-selector">
                     {slots.map((s) => (
                       <label key={s.id}>
@@ -1674,7 +1699,7 @@ export default function CaptureStudio({
               <div className="notice">
                 <Info size={18} />
                 <span>
-                  Las familias con SKU FULL reúnen las variaciones. Su precio y
+                  Los productos padre reúnen las variaciones. Su precio y
                   existencias pertenecen a cada presentación.
                 </span>
               </div>
@@ -2143,7 +2168,7 @@ export default function CaptureStudio({
                   },
                   {
                     name: "Aprueba y guarda",
-                    text: "Aprueba cada imagen que quieras guardar. Guardar producto sube las imágenes a Drive y registra la ficha en Lista completa. Las familias FULL no tienen precio ni existencias propios.",
+                    text: "Aprueba cada imagen que quieras guardar. Guardar producto sube las imágenes a Drive y registra la ficha en Lista completa. Los productos padre no tienen precio ni existencias propios.",
                   },
                   {
                     name: "Publica o sincroniza",

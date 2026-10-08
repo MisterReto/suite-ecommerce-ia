@@ -74,10 +74,11 @@ def start(client, **updates):
     assert uploaded.status_code == 200, uploaded.text
     response = client.post("/api/capture", json={"front_id": uploaded.json()["id"], "context": "Etiqueta real"}, headers=ORIGIN)
     assert response.status_code == 200, response.text
-    product = studio.Product(sku="POCKCH40", name="Pocky Chocolate 40 g", brand="Glico", size="40 g", category="Dulces",
+    product = studio.Product(name="Pocky Chocolate 40 g", brand="Glico", size="40 g", category="Dulces",
                              price=35, attribute="Sabor", attribute_value="Chocolate", **updates).model_dump()
-    assert client.put("/api/draft", json=product, headers=ORIGIN).status_code == 200
-    return product
+    response = client.put("/api/draft", json=product, headers=ORIGIN)
+    assert response.status_code == 200, response.text
+    return response.json()["draft"]["product"]
 
 
 def sheet_row(values, sku="POCKFR40", name="Pocky Fresa 40 g", kind="simple", parent="", code=""):
@@ -266,6 +267,8 @@ def test_photo_analysis_fills_editable_fields_and_marks_unknowns(capture_store, 
     assert p["size"] == "" and p["category"] == ""
     assert "gramaje" in p["uncertain_fields"] and "categoria" in p["uncertain_fields"]
     assert p["variant"] == "Chocolate" and p["attribute"] == "Sabor"
+    assert p["sku"] == studio.runtime.generar_sku_logica(p["name"], p["brand"], "")
+    assert len(p["sku"]) == 10 and p["barcode"] == ""
     assert client.put("/api/draft", json={**p, "size":"40 g"}, headers=ORIGIN).status_code == 200
     model.models.generate_content.assert_called_once()
 
@@ -280,10 +283,72 @@ def test_exact_barcode_skips_ai_and_refuses_a_duplicate(capture_store, monkeypat
     result = wait(client, client.post("/api/analyze", headers=ORIGIN))
     assert result["job"]["status"] == "completed", result
     assert result["draft"]["identity_review"]["case"] == "existing"
-    assert result["draft"]["product"]["sku"] == "POCKFR40"
+    assert result["draft"]["product"]["sku"] == "4006381333931"
+    assert result["draft"]["identity_review"]["duplicate"]["sku"] == "POCKFR40"
     rejected = wait(client, client.post("/api/save", json={"confirm":True}, headers=ORIGIN))
     assert rejected["job"]["status"] == "failed" and writes == []
     ai.assert_not_called()
+
+
+@pytest.mark.parametrize("scanned,seen,expected", [
+    (["036000291452"], "4006381333931", "036000291452"),
+    (["00036000291452"], "", "00036000291452"),
+    (["96385074"], "", "96385074"),
+    ([], "4006381333931", "4006381333931"),
+    ([], "4006381333932", ""),
+    ([], "No se alcanza a leer", ""),
+    ([], "", ""),
+])
+def test_analysis_uses_readable_gtin_or_the_existing_ten_character_logic(capture_store, monkeypatch, scanned, seen, expected):
+    client, *_ = capture_store
+    start(client)
+    model = Mock()
+    model.models.generate_content.return_value = SimpleNamespace(text=json.dumps({
+        "nombre": "Pocky Chocolate", "marca": "Glico", "gramaje": "40 g", "codigo_barras": seen}))
+    monkeypatch.setattr(studio, "GeminiClient", Mock(return_value=model))
+    monkeypatch.setattr(studio, "read_barcodes", lambda path: scanned)
+    result = wait(client, client.post("/api/analyze", headers=ORIGIN))
+    assert result["job"]["status"] == "completed", result
+    product = result["draft"]["product"]
+    assert product["barcode"] == expected
+    assert product["sku"] == (expected or studio.runtime.generar_sku_logica("Pocky Chocolate", "Glico", "40 g"))
+    if not expected:
+        assert len(product["sku"]) == 10
+
+
+def test_manual_barcode_normalizes_sku_and_invalid_input_preserves_the_draft(capture_store):
+    client, *_ = capture_store
+    product = start(client)
+    changed = client.put("/api/draft", json={**product, "sku": "CUSTOM", "barcode": "0 36000-291452"}, headers=ORIGIN)
+    assert changed.status_code == 200, changed.text
+    canonical = changed.json()["draft"]["product"]
+    assert canonical["sku"] == canonical["barcode"] == "036000291452"
+    rejected = client.put("/api/draft", json={**canonical, "barcode": "036000291453"}, headers=ORIGIN)
+    assert rejected.status_code == 422
+    assert client.get("/api/session").json()["draft"]["product"] == canonical
+    cleared = client.put("/api/draft", json={**canonical, "barcode": "", "sku": "CUSTOM"}, headers=ORIGIN)
+    assert cleared.status_code == 200
+    fallback = cleared.json()["draft"]["product"]
+    assert fallback["sku"] == studio.runtime.generar_sku_logica(product["name"], product["brand"], product["size"])
+    assert len(fallback["sku"]) == 10 and fallback["barcode"] == ""
+
+
+def test_parent_uses_matching_variants_without_rewriting_existing_catalog(capture_store):
+    client, _, _, values, _, writes = capture_store
+    sheet_row(values, code="4006381340007")
+    product = start(client, kind="Variable", barcode="4006381333931")
+    old = deepcopy(values)
+    proposed = client.get("/api/parents")
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["parent_sku"] == "40063813xxxxx"
+    assert values == old and writes == []
+    sheet_row(values, sku="40063813xxxxx", name="Otra familia", kind="variable")
+    collision = client.get("/api/parents")
+    assert collision.status_code == 422 and "ya existe" in collision.text
+    sheet_row(values, sku="GLIPOCFULL", name="Pocky", kind="variable")
+    selected = {**product, "parent_sku": "GLIPOCFULL", "parent_mode": "Usar padre existente"}
+    assert client.put("/api/draft", json=selected, headers=ORIGIN).status_code == 200
+    assert client.get("/api/parents").json()["parent_sku"] == "GLIPOCFULL"
 
 
 def test_new_flavor_uses_existing_family_without_ai(capture_store, monkeypatch):
@@ -311,17 +376,18 @@ def test_matching_brand_alone_never_invents_family(capture_store):
 
 def test_simple_save_preserves_reference_and_mirrors_master_once(capture_store):
     client, value, drive, values, names, writes = capture_store
-    start(client)
+    product = start(client)
+    sku = product["sku"]
     result = wait(client, client.post("/api/save", json={"confirm":True}, headers=ORIGIN))
     assert result["job"]["status"] == "completed", result
     assert result["draft"]["sync_status"] == "synced"
-    assert len(writes) == 1 and "POCKCH40_referencia_frente.jpg" in names
-    assert any(r["sku"] == "POCKCH40" for r in records_from_values(values))
+    assert len(writes) == 1 and f"{sku}_referencia_frente.jpg" in names
+    assert any(r["sku"] == sku for r in records_from_values(values))
     with transaction() as db:
         p = db.get(Product, result["draft"]["master_product_id"])
         assert p.product_type == "simple" and p.stock == 0 and p.price == 35
         image = db.scalar(select(ProductImage).where(ProductImage.product_id==p.id, ProductImage.role=="reference"))
-        assert image and image.drive_file_id == names["POCKCH40_referencia_frente.jpg"]
+        assert image and image.drive_file_id == names[f"{sku}_referencia_frente.jpg"]
     assert client.post("/api/save", json={"confirm":True}, headers=ORIGIN).status_code == 200
     assert len(writes) == 1
     assert all(u["folder"] == "original-images" for u in drive.uploads if "_referencia_" in u["name"])
@@ -371,11 +437,12 @@ def test_worker_completion_recovers_into_matching_draft_but_never_revives_clear(
     assert client.get("/api/session").json()["draft"] is None
 
 
-def test_new_parent_cover_and_variant_are_atomic_in_master(capture_store):
+@pytest.mark.parametrize("code,expected", [("", "GLIPOCFULL"), ("4006381333931", "400638xxxxxxx")])
+def test_new_parent_cover_and_variant_are_atomic_in_master(capture_store, code, expected):
     client, value, _, values, names, writes = capture_store
-    p = start(client, kind="Variable")
+    p = start(client, kind="Variable", barcode=code)
     proposed = client.get("/api/parents").json()
-    assert proposed["parent_name"] == "Pocky" and proposed["parent_sku"].endswith("FULL")
+    assert proposed["parent_name"] == "Pocky" and proposed["parent_sku"] == expected
     p.update(parent_sku=proposed["parent_sku"], parent_name=proposed["parent_name"])
     assert client.put("/api/draft", json=p, headers=ORIGIN).status_code == 200
     cover = wait(client, client.post("/api/family-cover", headers=ORIGIN))
@@ -390,6 +457,8 @@ def test_new_parent_cover_and_variant_are_atomic_in_master(capture_store):
         parent = db.get(Product, child.parent_id)
         assert child.product_type == "variation" and child.attributes == {"Sabor":"Chocolate", "Tamaño":"40 g"}
         assert parent.product_type == "variable" and parent.price is None and parent.stock is None
+        assert parent.sku == expected and not parent.barcode
+        assert child.sku == p["sku"] and (child.barcode or "") == code
         assert parent.attributes == {"Sabor":["Chocolate"]}
         assert db.scalar(select(ProductVariant).where(ProductVariant.child_product_id==child.id)).product_id == parent.id
         assert db.scalar(select(ProductImage).where(ProductImage.product_id==parent.id, ProductImage.role=="cover"))
@@ -466,7 +535,7 @@ def test_mirror_parent_and_child_rollback_together(capture_store):
     p.update(parent_sku="GLIPOCFULL", parent_name="Pocky")
     current = {"revision":"bad-parent-rollback", "product":p}
     sheet_row(values, sku="GLIPOCFULL", name="Pocky", kind="simple")
-    sheet_row(values, sku="POCKCH40", name="Pocky Chocolate 40 g", kind="variation", parent="MISSINGFULL")
+    sheet_row(values, sku=p["sku"], name="Pocky Chocolate 40 g", kind="variation", parent="MISSINGFULL")
     with pytest.raises(ValueError, match="padre"):
         capture_bridge.mirror_records(value, current, records_from_values(values))
     with transaction() as db:

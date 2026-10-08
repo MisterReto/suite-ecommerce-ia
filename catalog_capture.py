@@ -1,5 +1,6 @@
 """Local product identity and atomic parent/variation append planning."""
 from decimal import Decimal
+from os.path import commonprefix
 import re
 import unicodedata
 
@@ -37,6 +38,20 @@ def barcode_key(value):
         return barcode(value).zfill(14) if text(value) else ""
     except ValueError:
         return ""  # Old malformed catalog values never establish identity.
+
+
+def record_barcode(row):
+    """Read legacy numeric SKUs too, without treating a parent mask as a GTIN."""
+    if is_variable_parent(row):
+        return ""
+    for value in (row.get("codigo_barras"), row.get("sku")):
+        try:
+            code = barcode(value)
+            if code:
+                return code
+        except ValueError:
+            continue
+    return ""
 
 
 MEASURE = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*(kg|ml|mg|g|l|oz|pz|pzas?|piezas?)\b")
@@ -87,10 +102,10 @@ def family_score(name, brand, row):
 
 
 def find_duplicate(rows, candidate):
-    code = barcode_key(candidate.get("codigo_barras"))
+    code = barcode_key(record_barcode(candidate))
     sku = text(candidate.get("sku")).casefold()
     if code:
-        match = next((r for r in rows if not is_variable_parent(r) and barcode_key(r.get("codigo_barras")) == code), None)
+        match = next((r for r in rows if barcode_key(record_barcode(r)) == code), None)
         if match:
             return match, "código de barras"
     if sku:
@@ -104,7 +119,7 @@ def find_duplicate(rows, candidate):
     for row in rows:
         if is_variable_parent(row):
             continue
-        row_code = barcode_key(row.get("codigo_barras"))
+        row_code = barcode_key(record_barcode(row))
         if code and code == row_code:
             return row, "código de barras"
         # The same option under the same parent cannot be created twice.
@@ -149,7 +164,23 @@ def review_product(rows, candidate):
             "recommendation": "Revisar una familia nueva con estas presentaciones." if related else "Guardar como simple; no hay evidencia de una familia registrada."}
 
 
-def next_parent_sku(name, brand, rows):
+def next_parent_sku(name, brand, rows, code=""):
+    own_code = barcode(code)
+    related = [record_barcode(r) for r in rows
+               if family_score(name, brand, r) >= 0.8 and record_barcode(r)]
+    base = own_code or next(iter(related), "")
+    if base:
+        # UPC/EAN representations of the same GTIN are one product, not variants.
+        codes = {barcode_key(c) for c in [base, *related]}
+        shared = commonprefix(sorted(codes))[14 - len(base):] if len(codes) > 1 else base[:6]
+        if not shared:
+            raise ValueError("Las variantes no comparten un prefijo de código de barras. Revisa el SKU padre antes de crear la familia.")
+        shared = shared[:len(base) - 1]
+        masked = shared + "x" * (len(base) - len(shared))
+        if any(text(r.get("sku")).casefold() == masked.casefold() for r in rows):
+            raise ValueError(f"El SKU padre {masked} ya existe. Revisa y elige su familia; no se unirán productos automáticamente.")
+        return masked
+    # No readable barcode: retain the established brand/name parent convention.
     prefix = (re.sub(r"[^A-Z0-9]", "", text(brand).upper())[:3].ljust(3, "X")
               + re.sub(r"[^A-Z0-9]", "", family_name(name).upper())[:3].ljust(3, "X"))
     used = {text(r.get("sku")).casefold() for r in rows}

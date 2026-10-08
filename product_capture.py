@@ -15,7 +15,7 @@ def field_update(**values):
 from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from catalog_capture import (barcode, family_name, next_parent_sku,
+from catalog_capture import (barcode, family_name, next_parent_sku, record_barcode,
                              prepare_capture_updates, review_product, text)
 from inventory_schema import MASTER_COLUMNS, is_variable_parent
 from product_generation import branded_image
@@ -133,7 +133,7 @@ class ProductCapture:
         except Exception:
             return ""
 
-    def load_parents(self, kind, mode, name, brand, sku, selected, request: Request):
+    def load_parents(self, kind, mode, name, brand, sku, selected, request: Request, code=""):
         visible = kind == "Variable"
         try:
             session = self.session(request)
@@ -150,7 +150,7 @@ class ProductCapture:
             title = text(parent.get("nombre_producto"))
             attribute = text(parent.get("atributo_nombre")) or "Tamaño"
             if mode == NEW_PARENT:
-                parent_sku = next_parent_sku(name, brand, rows) if name else ""
+                parent_sku = next_parent_sku(name, brand, rows, code or record_barcode({"sku": sku})) if name else ""
                 title = family_name(name)
             return (field_update(choices=choices, value=selected, visible=visible and mode == EXISTING_PARENT),
                     field_update(visible=visible, value=parent_sku, interactive=mode == NEW_PARENT),

@@ -19,11 +19,24 @@ async function exercise(browser, engine, width) {
   const page = await context.newPage();
   await page.addInitScript(() => {
     window.__captureTestTouches = 0;
+    window.__generationNotes = [];
     document.addEventListener("touchstart", () => { window.__captureTestTouches++; }, {passive:true});
+    const NativeAudio = window.AudioContext || window.webkitAudioContext;
+    window.AudioContext = function () {
+      const audio = new NativeAudio();
+      const create = audio.createOscillator.bind(audio);
+      audio.createOscillator = () => {
+        const oscillator = create(), start = oscillator.start.bind(oscillator);
+        oscillator.start = at => {window.__generationNotes.push(oscillator.frequency.value);start(at);};
+        return oscillator;
+      };
+      return audio;
+    };
   });
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true;
   const generations = [], corrections = [];
+  let imageJob = null, polls = 0, failImage = false;
   async function touchTarget(locator, label) {
     // Bring the control to the usable center, as a phone swipe would. WebKit's
     // nearest-edge scroll can leave an otherwise reachable target under the fixed nav.
@@ -76,11 +89,14 @@ async function exercise(browser, engine, width) {
       draft = {...body(), revision:"capture-"+count, product:blank(), images:{}};
       json = {draft};
     } else if (p === "/api/draft" && method === "PUT") {
-      draft.product = {...blank(),...body()}; delete draft.identity_review; writes++; json = {draft};
+      draft.product = {...blank(),...body()};
+      draft.product.barcode = draft.product.barcode.replace(/[\s-]/g,"");
+      draft.product.sku = draft.product.barcode || (draft.product.name ? "GLIPOC40GX" : "");
+      delete draft.identity_review; writes++; json = {draft};
     } else if (p === "/api/draft" && method === "DELETE") {draft=null; json={ok:true};}
     else if (p === "/api/capture-notes") {draft.context=body().context; json={draft};}
     else if (p === "/api/analyze") {
-      draft.product = {...blank(),sku:"POCKCH40",name:"Pocky Chocolate 40 g",brand:"Glico",size:"40 g",category:"Dulces",
+      draft.product = {...blank(),sku:"GLIPOC40GX",name:"Pocky Chocolate 40 g",brand:"Glico",size:"40 g",category:"Dulces",
         price:35,product_type:"Galleta",variant:"Chocolate",attribute:"Sabor",attribute_value:"Chocolate",attributes:{Sabor:"Chocolate"},uncertain_fields:["codigo_barras"]};
       json=complete();
     } else if (p === "/api/check-product") {
@@ -92,12 +108,22 @@ async function exercise(browser, engine, width) {
     else if (p === "/api/family-cover") {
       draft.cover_id="cover-real-photo"; draft.cover_message="Portada con 1 foto real. Aún no hay fotos de otras variaciones."; json=complete();
     } else if (p === "/api/generate") {
-      generations.push(body()); draft.images=Object.fromEntries(body().slots.map(slot=>[slot,{id:slot,approved:false,history:[],message:"Lista"}])); json=complete();
+      generations.push(body()); polls=0;
+      imageJob={id:"generation-"+generations.length,status:failImage?"queued":"completed",progress:failImage?0:100,label:"Generando imágenes",message:"Listo"};
+      if (!failImage) draft.images=Object.fromEntries(body().slots.map(slot=>[slot,{id:slot,approved:false,history:[],message:"Lista"}]));
+      json={job:imageJob,draft};
     } else if (/\/api\/images\/[^/]+\/correct/.test(p)) {
       const slot = p.split("/")[3];
       corrections.push({slot,...body()});
       draft.images[slot] = {...draft.images[slot],id:slot+"-corrected",history:[draft.images[slot].id]};
-      json = complete();
+      imageJob={id:"correction-"+corrections.length,status:"queued",progress:0,label:"Corrigiendo imagen",message:"En cola"};polls=0;
+      json = {job:imageJob,draft};
+    } else if (p.startsWith("/api/jobs/")) {
+      polls++;
+      if (!failImage && polls === 1) return route.fulfill({status:503,json:{detail:"Conexión temporal al consultar el progreso"}});
+      imageJob={...imageJob,status:polls<3?"running":failImage?"failed":"completed",progress:polls<3?40:100,
+        message:failImage?"La generación sintética falló":"Listo"};
+      json={job:imageJob,draft};
     } else if (/\/api\/images\/[^/]+\/approve/.test(p)) {draft.images[p.split("/")[3]].approved=body().approved;json={draft};}
     else if (p === "/api/save") {
       saves++; draft.saved="Producto guardado"; draft.sync_status="pending_repair";draft.sync_error="Sheets guardó; falta el maestro";json=complete();
@@ -146,7 +172,14 @@ async function exercise(browser, engine, width) {
       assert.ok(await input.evaluate(element=>parseFloat(getComputedStyle(element).fontSize)>=16),label+" uses readable phone text");
     }
     assert.equal(await capture.getByLabel("SKU",{exact:true}).getAttribute("autocorrect"),"off");
+    assert.equal(await capture.getByLabel("SKU",{exact:true}).evaluate(element=>element.readOnly),true);
     assert.equal(await capture.getByLabel("Código de barras",{exact:true}).getAttribute("inputmode"),"numeric");
+    await capture.getByLabel("Código de barras",{exact:true}).fill("0 36000-291452");
+    await page.waitForFunction(()=>document.querySelector('.capture-embedded input[value="036000291452"]')!==null);
+    assert.equal(await capture.getByLabel("SKU",{exact:true}).inputValue(),"036000291452");
+    await capture.getByLabel("Código de barras",{exact:true}).fill("");
+    await page.waitForFunction(()=>document.querySelector('.capture-embedded input[value="GLIPOC40GX"]')!==null);
+    assert.equal(await capture.getByLabel("SKU",{exact:true}).inputValue(),"GLIPOC40GX");
     const price = capture.getByRole("spinbutton",{name:/^Precio de venta · MXN/});
     assert.equal(await price.getAttribute("inputmode"),"decimal");
     await page.setViewportSize({width,height:480});
@@ -186,10 +219,16 @@ async function exercise(browser, engine, width) {
     assert.equal(await capture.getByLabel("SKU padre",{exact:true}).inputValue(),"GLIPOCFULL");
     await capture.getByRole("button",{name:"Preparar portada de la familia"}).tap();
     await capture.getByAltText("Portada de la familia").waitFor();
+    const soundToggle = capture.getByLabel("Sonidos al iniciar, terminar o fallar la generación");
+    await touchTarget(soundToggle.locator(".."),"Generation sounds toggle");
+    assert.equal(await soundToggle.isChecked(),true);
+    assert.deepEqual(await page.evaluate(()=>window.__generationNotes),[],"analysis and family cover do not sound");
     await capture.getByRole("button",{name:"Generar las tres imágenes",exact:true}).tap();
     await capture.getByAltText(/^Imagen comercial de /).waitFor();
     assert.deepEqual(generations[0].slots,["1_hd","2_uso","3_comercial"]);
     assert.equal(generations[0].confirm_cost,true);
+    await page.waitForFunction(()=>window.__generationNotes.length===5);
+    assert.deepEqual(await page.evaluate(()=>window.__generationNotes),[440,660,660,880,1046]);
     const preserved = {...draft.images};
     const correct = capture.getByRole("button",{name:"Corregir Lifestyle",exact:true});
     await touchTarget(correct,"Correct one image");
@@ -201,16 +240,27 @@ async function exercise(browser, engine, width) {
     await touchTarget(apply,"Apply correction in a short viewport");
     await apply.tap();
     await dialog.waitFor({state:"hidden"});
+    await capture.getByText("Conexión temporal al consultar el progreso",{exact:true}).waitFor();
+    assert.deepEqual((await page.evaluate(()=>window.__generationNotes)).slice(5),[440,660],"polling errors do not announce failure");
+    await page.waitForFunction(()=>window.__generationNotes.length===10);
+    assert.deepEqual((await page.evaluate(()=>window.__generationNotes)).slice(5),[440,660,660,880,1046]);
     await page.setViewportSize({width,height:844});
     assert.equal(corrections[0].slot,"2_uso");
     assert.equal(corrections[0].confirm_cost,true);
     assert.equal(draft.images["1_hd"].id,preserved["1_hd"].id);
     assert.equal(draft.images["3_comercial"].id,preserved["3_comercial"].id);
+    failImage=true;
+    await capture.getByRole("button",{name:"Generar las tres imágenes",exact:true}).tap();
+    await capture.locator(".feedback.error").getByText("La generación sintética falló",{exact:true}).waitFor();
+    await page.waitForFunction(()=>window.__generationNotes.length===15);
+    assert.deepEqual((await page.evaluate(()=>window.__generationNotes)).slice(10),[440,660,330,220,165]);
+    await soundToggle.uncheck();
+    assert.equal(await page.evaluate(()=>localStorage.getItem("rincon-generation-sounds")),"off");
     for (let i=0;i<3;i++) {
       const approve = capture.locator("label.approve-check").filter({hasText:"Aprobar imagen"}).first();
       await touchTarget(approve,"Approve image "+(i+1));
       await approve.tap();
-      await page.waitForFunction(count => document.querySelectorAll(".capture-embedded .approve-check input:checked").length === count, i+1);
+      await page.waitForFunction(count => document.querySelectorAll(".capture-embedded .image-card .approve-check input:checked").length === count, i+1);
     }
     await capture.getByRole("button",{name:"Guardar producto en Drive",exact:true}).tap();
     await capture.getByRole("button",{name:"Reparar catálogo maestro",exact:true}).tap();
@@ -221,7 +271,7 @@ async function exercise(browser, engine, width) {
     await capture.getByAltText("Frente del producto").waitFor({state:"hidden"});
     assert.equal(draft,null);
     assert.deepEqual(errors,[]);
-    console.log(`Capture ${engine} ${width}px: service cold start, phone touch, reachable controls, camera/gallery inputs, upload retry, edits, navigation/reload, private settings, family, three slots, individual correction and repair passed.`);
+    console.log(`Capture ${engine} ${width}px: cold start, touch controls, uploads, edits, settings, family, three slots, correction, sound start/success/failure, polling recovery, mute and repair passed.`);
   } catch (error) {
     fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
     await page.screenshot({path:path.join(__dirname,"test-results",`capture-${engine}-${width}.png`),fullPage:true});

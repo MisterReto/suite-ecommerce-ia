@@ -64,6 +64,7 @@ jobs:
           npm audit --omit=dev --audit-level=high
           npm run build
           npm run typecheck
+          node ../test_generation_sounds.cjs
           SUITE_FRONTEND_MODE=standalone SUITE_API_ORIGIN=https://localhost:24443 npm run build
           cp -r public .next/standalone/
           cp -r .next/static .next/standalone/.next/

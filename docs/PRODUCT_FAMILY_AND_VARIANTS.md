@@ -40,15 +40,20 @@ bloquea crear un producto hasta revisar la conexión.
 ## Modelo padre e hijo
 
 Se reutilizan `ProductCapture::load_parents`, `next_parent_sku` y
-`generar_sku_logica`. El sufijo FULL sigue reservado al padre; no se cambia la
-regla histórica para hijos. `/api/parents` añade padres SQL a los de Sheets y
+`generar_sku_logica`. Las capturas usan el código GTIN legible y válido como SKU,
+conservando sus ceros iniciales. Sin lectura válida se aplica la lógica original
+de diez caracteres: marca (3), nombre (3), gramaje (4). Un nuevo padre usa el
+prefijo común de sus variantes y sustituye el resto con `x`; sin variantes
+distintas, conserva los primeros seis dígitos. Si tampoco hay códigos de
+variantes, conserva la propuesta histórica de marca/nombre + FULL. No se renombran
+registros existentes. `/api/parents` añade padres SQL a los de Sheets y
 explica su origen. Un padre SQL seleccionado que falta en Sheets se incorpora
 en el mismo batch que su nuevo hijo, conservando el ID SQL existente.
 
 | Registro | PostgreSQL | Sheets | Precio / stock |
 |---|---|---|---|
 | Simple | `Product.product_type=simple` | `tipo=simple`, sin `sku_padre` | Propios; captura inicia stock en cero |
-| Padre | `product_type=variable`, sin parent_id | `tipo=variable`, SKU FULL | Nulos en SQL; no se vende como unidad |
+| Padre | `product_type=variable`, sin parent_id | `tipo=variable`, SKU enmascarado o FULL histórico | Nulos en SQL; no se vende como unidad |
 | Hijo | `product_type=variation`, `parent_id`; `ProductVariant` | `tipo=variation`, `sku_padre` | Propios del hijo |
 
 El padre conserva las opciones de su atributo; la variación conserva su valor

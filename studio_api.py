@@ -414,6 +414,14 @@ def update_product(data: Product, value=Depends(editor)):
     idle(value)
     current = draft(value)
     product = data.model_dump()
+    try:
+        product["barcode"] = barcode(product["barcode"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if product["barcode"]:
+        product["sku"] = product["barcode"]
+    elif product["name"]:
+        product["sku"] = runtime.generar_sku_logica(product["name"], product["brand"], product["size"])
     product["short_description"] = clean_description(product["short_description"], short=True)
     product["description"] = clean_description(product["description"])
     if current.get("saved") and product != current["product"]:
@@ -424,8 +432,8 @@ def update_product(data: Product, value=Depends(editor)):
     current.pop("identity_review", None)  # An edited identity must be checked again.
     # A corrected SKU reuses the same authenticated image files, with new names on save.
     for slot, item in current["images"].items():
-        if data.sku:
-            runtime.captura.stage_image(value, data.sku, slot, file_path(value, item["id"]), current["revision"])
+        if product["sku"]:
+            runtime.captura.stage_image(value, product["sku"], slot, file_path(value, item["id"]), current["revision"])
     from catalog_platform.capture_bridge import checkpoint
     checkpoint(value, current)
     return {"draft": view(value)}
@@ -464,7 +472,7 @@ def analyze(request: Request, value=Depends(editor)):
             known = capture_bridge.check(value, Product(barcode=codes[0]).model_dump())
             if known["status"] == "duplicate":
                 row = known["duplicate"]
-                current["product"] = Product(sku=text(row.get("sku")), name=text(row.get("nombre_producto")),
+                current["product"] = Product(sku=codes[0], name=text(row.get("nombre_producto")),
                     brand=text(row.get("Marca")), size=text(row.get("gramaje")), barcode=codes[0],
                     price=float(row.get("precio") or 0), short_description=text(row.get("descripcion_corta"))[:300],
                     description=text(row.get("descripcion_larga"))[:3000]).model_dump()
@@ -506,7 +514,7 @@ def analyze(request: Request, value=Depends(editor)):
             barcode=recognized_code, product_type=text(data.get("tipo_producto"))[:120],
             variant=text(data.get("variante"))[:120], attributes=dict(list(attrs.items())[:20]),
             uncertain_fields=list(dict.fromkeys(uncertain))[:20])
-        product.sku = runtime.generar_sku_logica(product.name, product.brand, product.size)
+        product.sku = recognized_code or runtime.generar_sku_logica(product.name, product.brand, product.size)
         product.attribute = "Sabor" if product.variant else "Tamaño"
         product.attribute_value = product.variant or product.size
         current["product"] = product.model_dump()
@@ -687,15 +695,18 @@ def check(request: Request, value=Depends(editor)):
 @app.get("/api/parents")
 def parents(request: Request, value=Depends(session)):
     p = draft(value)["product"]
-    fields = runtime.captura.load_parents(p["kind"], p["parent_mode"], p["name"], p["brand"], p["sku"], p["parent_sku"], request)
+    fields = runtime.captura.load_parents(p["kind"], p["parent_mode"], p["name"], p["brand"], p["sku"], p["parent_sku"], request, code=p["barcode"])
     from catalog_platform.capture_bridge import check as compare, master_rows
-    result = compare(value, p)
+    result = compare(value, p, include_woo=p["parent_mode"] == NEW_PARENT)
     available = {text(r.get("sku")): r for r in reversed(result["parents"])}
     chosen = available.get(p["parent_sku"] or result.get("suggested", ""), {})
     choices = [(f"{r.get('nombre_producto', '')} · {r.get('Marca', '')} · {sku}", sku) for sku, r in available.items()]
     if p["parent_mode"] == NEW_PARENT:
         _, _, rows = runtime.captura.snapshot(value)
-        parent_sku = next_parent_sku(p["name"], p["brand"], rows + master_rows(value)) if p["name"] else ""
+        try:
+            parent_sku = next_parent_sku(p["name"], p["brand"], rows + master_rows(value) + result["candidates"], p["barcode"]) if p["name"] else ""
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
         title = family_label(p["name"])
     else:
         parent_sku, title = text(chosen.get("sku")), text(chosen.get("nombre_producto"))
