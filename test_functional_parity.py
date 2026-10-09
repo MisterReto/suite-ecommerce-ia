@@ -342,13 +342,16 @@ def test_login_session_check_does_not_wait_for_drive_draft(capture_store, monkey
 
 def test_drive_classification_choices_are_read_only_and_scoped_to_current_folder(capture_store, monkeypatch):
     client, value, drive, _, _, writes = capture_store
+    # PostgreSQL fixtures share the database but use a fresh encryption key.
+    # Keep this selected folder distinct from other fixtures' credential rows.
+    other_root = "other_" + uid()
     rows_by_root = {
         value["platform_tenant"]: [
             {"categorias": "Dulces > Galletas", "etiquetas": "Japón, Chocolate"},
             {"categorias": " Bebidas > Té ", "etiquetas": "Japón, Té"},
             {"categoria": "Dulces", "subcategoria": "Caramelos", "etiquetas": "Chocolate, "},
         ],
-        "another-store": [{"categorias": "Hogar > Vajilla", "etiquetas": "Cerámica"}],
+        other_root: [{"categorias": "Hogar > Vajilla", "etiquetas": "Cerámica"}],
     }
     first_root = value["platform_tenant"]
     reads = []
@@ -370,10 +373,10 @@ def test_drive_classification_choices_are_read_only_and_scoped_to_current_folder
         "subcategories": {"Dulces": ["Caramelos", "Galletas"], "Bebidas": ["Té"]},
         "tags": ["Chocolate", "Japón", "Té"]}
     assert response.headers["cache-control"] == "no-store"
-    value.update(platform_tenant="another-store", carpeta_raiz_id_manual="another-store")
+    value.update(platform_tenant=other_root, carpeta_raiz_id_manual=other_root)
     other = client.get("/api/catalog-taxonomy").json()
     assert other["categories"] == ["Hogar"] and other["tags"] == ["Cerámica"]
-    assert reads == [first_root, "another-store"]
+    assert reads == [first_root, other_root]
     prepare.assert_not_called()
     restore.assert_not_called()
     assert not writes and not drive.uploads
