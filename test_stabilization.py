@@ -163,9 +163,14 @@ def test_capture_worker_correction_and_recovery_use_original_pipeline(redis_mode
     # Simulate a fresh API session after login: files are recovered by Drive IDs.
     import studio_api as studio
     studio.runtime._eliminar_sesion(value["session_id"])
-    fresh = {**value, "studio_files": {}, "file_namespace": "TESTINTEGRATION" + uid().replace("-", "")}
+    fresh = {**value, "session_id": studio.runtime._nueva_session_id(),
+             "studio_files": {}, "file_namespace": "TESTINTEGRATION" + uid().replace("-", "")}
     fresh.pop("studio_draft", None); fresh.pop("studio_loaded_results", None)
-    studio.runtime.SESSIONS[fresh["session_id"]] = fresh
+    # A new login mints a new cookie; it must never resurrect the revoked ID.
+    assert fresh["session_id"] != value["session_id"]
+    studio.runtime._guardar_sesion(fresh["session_id"], **fresh)
+    fresh = studio.runtime.SESSIONS[fresh["session_id"]]
+    client.cookies.clear(); client.cookies.set("session_id", fresh["session_id"])
     recovered = client.get("/api/jobs/" + first.json()["job"]["id"])
     assert recovered.status_code == 200
     image_id = recovered.json()["draft"]["images"]["2_uso"]["id"]
@@ -188,6 +193,7 @@ def test_capture_worker_correction_and_recovery_use_original_pipeline(redis_mode
     restored = client.get("/api/session").json()["draft"]
     assert restored["images"]["2_uso"]["approved"]
     assert restored["saved"] == "💾 TEST-INTEGRATION guardado"
+    studio.runtime._eliminar_sesion(fresh["session_id"])
 
 
 def test_forked_rq_worker_completes_signed_sql_event(redis_mode):
