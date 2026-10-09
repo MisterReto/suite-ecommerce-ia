@@ -81,6 +81,21 @@ def test_logout_revokes_persistent_and_cached_sessions(setup):
     assert sid not in studio.runtime.SESSIONS
 
 
+def test_new_session_id_cannot_inherit_another_sessions_persistence_marker(setup):
+    client, value, _ = setup
+    sid = value["session_id"]
+    assert client.get("/api/session").json()["authenticated"] is True
+    fresh_sid = secrets.token_urlsafe(24)
+    fresh = dict(value, session_id=fresh_sid)
+    studio.runtime.SESSIONS[fresh_sid] = fresh
+    client.cookies.clear()
+    client.cookies.set("session_id", fresh_sid)
+    assert client.get("/api/session").json()["authenticated"] is True
+    assert fresh["_persistent_session"] == web_sessions._tenant(fresh_sid)
+    assert fresh["_persistent_session"] != value["_persistent_session"]
+    studio.runtime._eliminar_sesion(fresh_sid)
+
+
 def test_expired_or_tampered_cookie_does_not_restore_session(setup):
     client, value, _ = setup
     sid = value["session_id"]

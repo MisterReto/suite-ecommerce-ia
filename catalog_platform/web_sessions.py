@@ -31,7 +31,7 @@ def save(sid, value):
     data = {key: value[key] for key in _fields if key in value}
     with _lock, transaction() as db:
         put(db, tenant, value["email"], "web_session", data)
-    value["_persistent_session"] = True
+    value["_persistent_session"] = tenant
 
 
 def revoke(sid):
@@ -55,9 +55,9 @@ def restore(sid):
         if not configured():
             return cached
         # Trusted process sessions predating this change are saved on first use.
-        if cached and not cached.get("_persistent_session"):
+        if cached and cached.get("_persistent_session") != tenant:
             save(sid, cached)
-            if not cached.get("_persistent_session"):
+            if cached.get("_persistent_session") != tenant:
                 return cached  # Historical/test sessions without Google credentials.
         with transaction() as db:
             record = db.scalar(select(IntegrationAccount).where(
@@ -72,7 +72,7 @@ def restore(sid):
         if cached:
             return cached  # Keep active draft/job references and refreshed Google tokens.
         value = {key: data[key] for key in _fields if key in data}
-        value.update(session_id=sid, _persistent_session=True)
+        value.update(session_id=sid, _persistent_session=tenant)
         from .accounts import restore as restore_profile
         restore_profile(value)
         runtime.SESSIONS[sid] = value
