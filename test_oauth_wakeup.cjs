@@ -28,8 +28,9 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
     await page.clock.install();
     let checks = 0, starts = 0, awake = false, wakes = 0;
-    const errors = [];
+    const errors = [], consoleErrors = [];
     page.on("pageerror", error => errors.push(error.message));
+    page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
     await page.route("**/service-health", async route => {
       if (new URL(route.request().url()).origin !== origin) {
         wakes++;
@@ -60,7 +61,11 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     assert.equal(new URL(page.url()).pathname, "/login");
     for (let attempt = 0; checks < 1 && attempt < 40; attempt++) await page.waitForTimeout(50);
     assert.equal(checks, 1);
-    assert.equal(wakes, 1, "Wake the API directly once, even while the proxy hangs");
+    // Requests to different origins are scheduled independently by Chromium.
+    for (let attempt = 0; wakes < 1 && attempt < 100; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(wakes, 1, "Wake the API directly once, even while the proxy hangs: " + JSON.stringify(consoleErrors));
     await page.clock.fastForward(45_001);
     for (const width of [360, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
