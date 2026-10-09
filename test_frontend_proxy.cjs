@@ -121,7 +121,7 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(wakes[0].url, "https://localhost:24443/service-health");
     assert.equal(wakes[0].options.credentials, "omit");
     assert.equal(wakes[0].options.mode, "no-cors");
-    assert.equal(wakes[0].options.redirect, "error");
+    assert.equal(wakes[0].options.redirect, "follow", "Browser no-cors requests require follow mode");
     assert.equal(wakes[0].options.headers, undefined, "Never forward cookies or infrastructure headers to the wake request");
     assert.deepEqual(sessionChecks, ["/api/session?auth_only=true"], "OAuth readiness does not download Drive images");
     assert.ok(login.headers.get("content-security-policy").includes("connect-src 'self' https://localhost:24443;"));

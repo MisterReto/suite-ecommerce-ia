@@ -17,7 +17,9 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
   if (wakeOrigin && !signal?.aborted) {
     void fetch(wakeOrigin + "/service-health", {
       mode: "no-cors", credentials: "omit", cache: "no-store",
-      redirect: "error", signal: wake.signal,
+      // Browsers require redirect="follow" for no-cors. The page's CSP limits
+      // connection targets to the configured API; credentials remain omitted.
+      redirect: "follow", signal: wake.signal,
     }).catch(() => {}).finally(() => {
       clearTimeout(wakeTimer);
       signal?.removeEventListener("abort", cancelWake);

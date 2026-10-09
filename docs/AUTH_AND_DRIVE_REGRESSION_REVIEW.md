@@ -45,7 +45,8 @@ comportamiento a un encabezado concreto de Render sin evidencia de su interior.
 
 - Al iniciar una recuperación, el navegador envía un único GET directo a
   `/service-health` del origen validado `SUITE_API_ORIGIN`. No envía cookies ni
-  encabezados de la petición entrante, no sigue redirecciones y puede cancelarse.
+  encabezados de la petición entrante y puede cancelarse. El navegador exige
+  `redirect: follow` en modo `no-cors`; CSP restringe los destinos de conexión.
   Su respuesta opaca no se usa para dar el servidor por disponible.
 - La disponibilidad y las cookies se siguen comprobando mediante el frontend.
   Se mantienen 45 segundos por petición, tres minutos de espera y reintento
