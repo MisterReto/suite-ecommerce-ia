@@ -663,6 +663,32 @@ label:has(input:disabled) {
 .form-grid .field {
   margin-bottom: 13px;
 }
+.classification-tags {
+  border: 0;
+  padding: 0;
+  margin: 0 0 13px;
+  min-width: 0;
+  grid-column: 1 / -1;
+}
+.classification-tags legend { font-size: 0.85rem; margin-bottom: 8px; }
+.classification-options { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px; }
+.classification-options .classification-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid #e7dfeb;
+  border-radius: 22px;
+  font-size: 16px;
+  background: white;
+}
+.classification-option.selected { background: #f4edf7; border-color: var(--purple); }
+.classification-option input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; margin: 0; }
+.classification-status { grid-column: 1 / -1; font-size: 0.8rem; color: var(--muted); margin-bottom: 12px; }
+.classification-status button { display: block; min-height: 44px; }
 .information-card .section-heading {
   margin-bottom: 21px;
 }

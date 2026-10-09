@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GenerationSounds } from "@/lib/generation-sounds";
+import DriveClassification from "@/components/DriveClassification";
 import { recoverSession } from "@/lib/session-recovery";
 import {
   Camera,
@@ -194,15 +195,6 @@ const slots = [
     icon: WandSparkles,
     tone: "commercial",
   },
-];
-const categories = [
-  "Abarrotes",
-  "Bebidas",
-  "Cocina y Accesorios",
-  "Dulces",
-  "Snacks",
-  "Ramen e Instantáneo",
-  "Merch-store",
 ];
 const fileUrl = (id: string) => "/api/files/" + encodeURIComponent(id);
 const activeJob = (job?: Job | null) =>
@@ -1003,27 +995,13 @@ export default function CaptureStudio({
                         maxLength={32}
                       />
                     </Field>
-                    <Field label="Categoría">
-                      <select
-                        value={product.category}
-                        onChange={(e) => edit("category", e.target.value)}
-                      >
-                        <option value="">Por confirmar</option>
-                        {[...new Set([...categories, product.category])]
-                          .filter(Boolean)
-                          .map((c) => (
-                            <option key={c}>{c}</option>
-                          ))}
-                      </select>
-                    </Field>
-                    <Field label="Subcategoría">
-                      <input
-                        value={product.subcategory}
-                        onChange={(e) => edit("subcategory", e.target.value)}
-                        placeholder="Ej. Salsas"
-                        maxLength={160}
-                      />
-                    </Field>
+                    <DriveClassification
+                      value={{ category: product.category, subcategory: product.subcategory, tags: product.tags.split(",").map(tag => tag.trim()).filter(Boolean) }}
+                      onChange={value => setProduct(previous => ({ ...previous, ...value, tags: value.tags.join(", ") }))}
+                      enabled={signedIn}
+                      folderKey={(session.email || "") + ":" + (session.folder_id || session.folder || "")}
+                      disabled={busy}
+                    />
                     <Field label="Tipo reconocido">
                       <input value={product.product_type || ""} maxLength={120} onChange={e => edit("product_type", e.target.value)} placeholder="Por confirmar" />
                     </Field>
@@ -1057,14 +1035,6 @@ export default function CaptureStudio({
                           Variación de un producto
                         </option>
                       </select>
-                    </Field>
-                    <Field label="Etiquetas" wide>
-                      <input
-                        value={product.tags}
-                        onChange={(e) => edit("tags", e.target.value)}
-                        placeholder="Separadas por coma"
-                        maxLength={500}
-                      />
                     </Field>
                     <Field label="Descripción corta" wide>
                       <textarea

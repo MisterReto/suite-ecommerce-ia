@@ -27,10 +27,14 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
       args: ["--no-sandbox", "--disable-dev-shm-usage"] });
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
     await page.clock.install();
-    let checks = 0, starts = 0, awake = false;
+    let checks = 0, starts = 0, awake = false, wakes = 0;
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.route("**/service-health", async route => {
+      if (new URL(route.request().url()).origin !== origin) {
+        wakes++;
+        return route.fulfill({ status: 503, body: "Render starting" });
+      }
       checks++;
       assert.equal(route.request().method(), "GET");
       if (checks === 1) {
@@ -43,7 +47,10 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
       return route.fulfill({ status: awake ? 200 : 503,
         json: { ok: awake, backend: "fastapi" } });
     });
-    await page.route("**/api/session", route => route.fulfill({ json: { authenticated: false } }));
+    await page.route("**/api/session*", route => {
+      assert.equal(new URL(route.request().url()).searchParams.get("auth_only"), "true");
+      return route.fulfill({ json: { authenticated: false } });
+    });
     await page.route("**/auth/start", route => {
       starts++;
       return route.fulfill({ contentType: "text/html", body: "<h1>Google sign-in test</h1>" });
@@ -53,6 +60,7 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     assert.equal(new URL(page.url()).pathname, "/login");
     for (let attempt = 0; checks < 1 && attempt < 40; attempt++) await page.waitForTimeout(50);
     assert.equal(checks, 1);
+    assert.equal(wakes, 1, "Wake the API directly once, even while the proxy hangs");
     await page.clock.fastForward(45_001);
     for (const width of [360, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
@@ -77,6 +85,7 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
       ? route.abort("failed") : route.continue());
     let boundedChecks = 0, boundedStarts = 0;
     await bounded.route("**/service-health", route => {
+      if (new URL(route.request().url()).origin !== origin) return route.fulfill({ status: 503, body: "Starting" });
       boundedChecks++;
       return route.fulfill({ status: 503, json: { ok: false } });
     });
@@ -102,8 +111,9 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     await resumed.route("**/_next/static/**", route => route.request().resourceType() === "script"
       ? route.abort("failed") : route.continue());
     let resumedStarts = 0, sessionReads = 0;
-    await resumed.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
-    await resumed.route("**/api/session", route => {
+    await resumed.route("**/service-health", route => route.fulfill(new URL(route.request().url()).origin !== origin
+      ? { status: 503, body: "Starting" } : { json: { ok: true, backend: "fastapi" } }));
+    await resumed.route("**/api/session*", route => {
       sessionReads++;
       return route.fulfill(sessionReads === 1 ? { status: 503, json: { error: "Database starting" } }
         : { json: { authenticated: true } });

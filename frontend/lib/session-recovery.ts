@@ -1,10 +1,31 @@
 /* Retry readiness and the read-only session endpoint, never writes or OAuth codes. */
 // Keep this function self-contained: /login also embeds it in its HTML so
 // readiness still runs if React's external chunks cannot load on a cold start.
-export async function recoverSession<T extends { authenticated: boolean }>(signal?: AbortSignal): Promise<T> {
+export async function recoverSession<T extends { authenticated: boolean }>(signal?: AbortSignal, authOnly = false): Promise<T> {
   const REQUEST_TIMEOUT_MS = 45_000;
   const RETRY_DELAY_MS = 3_000;
   const MAX_WAIT_MS = 180_000;
+
+  // Render returned "no-deploy" through the rewrite without waking the API.
+  // One direct, credential-free GET triggers startup. Its opaque response is
+  // never trusted as readiness: health and session still use the UI proxy.
+  const wakeOrigin = process.env.NEXT_PUBLIC_SUITE_API_ORIGIN;
+  const wake = new AbortController();
+  const cancelWake = () => wake.abort();
+  signal?.addEventListener("abort", cancelWake, { once: true });
+  const wakeTimer = setTimeout(cancelWake, REQUEST_TIMEOUT_MS);
+  if (wakeOrigin && !signal?.aborted) {
+    void fetch(wakeOrigin + "/service-health", {
+      mode: "no-cors", credentials: "omit", cache: "no-store",
+      redirect: "error", signal: wake.signal,
+    }).catch(() => {}).finally(() => {
+      clearTimeout(wakeTimer);
+      signal?.removeEventListener("abort", cancelWake);
+    });
+  } else {
+    clearTimeout(wakeTimer);
+    signal?.removeEventListener("abort", cancelWake);
+  }
 
   function aborted() { return new DOMException("Recovery cancelled", "AbortError"); }
 
@@ -41,7 +62,7 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
   while (Date.now() < deadline) {
     const health = await read("/service-health", deadline, signal);
     if (health?.ok === true && health?.backend === "fastapi" && Date.now() < deadline) {
-      const session = await read("/api/session", deadline, signal);
+      const session = await read(authOnly ? "/api/session?auth_only=true" : "/api/session", deadline, signal);
       if (typeof session?.authenticated === "boolean") return session as T;
     }
     if (Date.now() >= deadline) break;

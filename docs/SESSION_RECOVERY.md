@@ -75,6 +75,12 @@ histórico en memoria; `/service-health` expone `session_backend` para comprobar
 
 ## Pantalla inmóvil al volver a conectar (8 de octubre, 21:07 en México)
 
+**Revisión posterior:** el 9 de octubre se reprodujo el bloqueo con el script
+inline operativo. Los GET por el proxy devolvían `no-deploy` y no despertaban la
+API; un GET directo sí la despertó. El ajuste siguiente añade ese aviso de
+arranque sin credenciales y una consulta de sesión que no descarga imágenes.
+Véase [la comparación y evidencia actual](AUTH_AND_DRIVE_REGRESSION_REVIEW.md).
+
 La nueva pantalla también dependía de que cargaran los archivos externos de
 React: su comprobación comenzaba en `useEffect`. Si alguno fallaba o la
 hidratación no terminaba, el HTML seguía mostrando «Iniciando servidor», sin

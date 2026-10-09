@@ -18,6 +18,8 @@ const config: NextConfig = {
   images: { unoptimized: true },
   devIndicators: false,
   poweredByHeader: false,
+  // Public, validated origin used only to wake the free API without proxy headers.
+  env: { NEXT_PUBLIC_SUITE_API_ORIGIN: upstream },
   ...(separate ? {
     // Match the API upload allowance plus multipart overhead.
     experimental: { proxyClientMaxBodySize: 13_000_000 },
@@ -44,7 +46,7 @@ const config: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=()" },
-          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" },
+          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' " + upstream + "; worker-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" },
         ],
       }, ...["/login", "/connect-google"].map(source => ({
         source,

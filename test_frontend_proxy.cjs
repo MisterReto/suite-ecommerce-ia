@@ -99,16 +99,32 @@ const { spawn, spawnSync } = require("node:child_process");
     const elements = new Map(["login-title", "login-message", "login-spinner", "login-retry"].map(id =>
       [id, { style: {}, addEventListener() {} }]));
     const navigations = [];
+    const wakes = [], sessionChecks = [];
     vm.runInNewContext(inline, {
       AbortController, DOMException, setTimeout, clearTimeout,
       document: { getElementById: id => elements.get(id) },
       window: { location: { replace: value => navigations.push(value) }, addEventListener() {} },
-      fetch: (url, options) => fetch(origin + url, { ...options, headers: { Cookie: cookie } }),
+      fetch: (url, options) => {
+        if (url.startsWith("https://")) {
+          wakes.push({url, options});
+          return Promise.resolve(new Response("Render loading", {status:503}));
+        }
+        if (url.startsWith("/api/session")) sessionChecks.push(url);
+        return fetch(origin + url, { ...options, headers: { Cookie: cookie } });
+      },
     });
     for (let attempt = 0; !navigations.length && attempt < 100; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     assert.deepEqual(navigations, ["/auth/start"], "Login continues once, without any framework chunk");
+    assert.equal(wakes.length, 1, "One direct GET wakes the API while the UI proxy is checked");
+    assert.equal(wakes[0].url, "https://localhost:24443/service-health");
+    assert.equal(wakes[0].options.credentials, "omit");
+    assert.equal(wakes[0].options.mode, "no-cors");
+    assert.equal(wakes[0].options.redirect, "error");
+    assert.equal(wakes[0].options.headers, undefined, "Never forward cookies or infrastructure headers to the wake request");
+    assert.deepEqual(sessionChecks, ["/api/session?auth_only=true"], "OAuth readiness does not download Drive images");
+    assert.ok(login.headers.get("content-security-policy").includes("connect-src 'self' https://localhost:24443;"));
     const health = await fetch(origin + "/service-health");
     assert.deepEqual(await health.json(), { ok: true, backend: "fastapi" });
     const start = await fetch(origin + "/auth/start", { redirect: "manual" });

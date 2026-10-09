@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import pandas as pd
 from PIL import Image
 from sqlalchemy import select, func
 from catalog_capture import prepare_capture_updates, records_from_values
@@ -306,6 +307,8 @@ def test_photo_analysis_fills_editable_fields_and_marks_unknowns(capture_store, 
 def test_exact_barcode_skips_ai_and_refuses_a_duplicate(capture_store, monkeypatch):
     client, value, _, values, _, writes = capture_store
     sheet_row(values, code="4006381333931")
+    values[-1][8] = "Dulces > Galletas"
+    values[-1][9] = "Japón, Chocolate"
     start(client)
     ai = Mock(side_effect=AssertionError("An exact barcode must not call Gemini"))
     monkeypatch.setattr(studio, "GeminiClient", ai)
@@ -314,10 +317,114 @@ def test_exact_barcode_skips_ai_and_refuses_a_duplicate(capture_store, monkeypat
     assert result["job"]["status"] == "completed", result
     assert result["draft"]["identity_review"]["case"] == "existing"
     assert result["draft"]["product"]["sku"] == "4006381333931"
+    assert result["draft"]["product"]["category"] == "Dulces"
+    assert result["draft"]["product"]["subcategory"] == "Galletas"
+    assert result["draft"]["product"]["tags"] == "Japón, Chocolate"
     assert result["draft"]["identity_review"]["duplicate"]["sku"] == "POCKFR40"
     rejected = wait(client, client.post("/api/save", json={"confirm":True}, headers=ORIGIN))
     assert rejected["job"]["status"] == "failed" and writes == []
     ai.assert_not_called()
+
+
+def test_login_session_check_does_not_wait_for_drive_draft(capture_store, monkeypatch):
+    client, value, drive, _, _, writes = capture_store
+    start(client)
+    restore = Mock(side_effect=RuntimeError("Drive image is temporarily unavailable"))
+    monkeypatch.setattr(capture_bridge, "restore", restore)
+    response = client.get("/api/session?auth_only=true")
+    assert response.status_code == 200 and response.json() == {"authenticated": True}
+    assert response.headers["cache-control"] == "no-store"
+    restore.assert_not_called()
+    client.cookies.clear()
+    assert client.get("/api/session?auth_only=true").json() == {"authenticated": False}
+    assert not writes
+
+
+def test_drive_classification_choices_are_read_only_and_scoped_to_current_folder(capture_store, monkeypatch):
+    client, value, drive, _, _, writes = capture_store
+    rows_by_root = {
+        value["platform_tenant"]: [
+            {"categorias": "Dulces > Galletas", "etiquetas": "Japón, Chocolate"},
+            {"categorias": " Bebidas > Té ", "etiquetas": "Japón, Té"},
+            {"categoria": "Dulces", "subcategoria": "Caramelos", "etiquetas": "Chocolate, "},
+        ],
+        "another-store": [{"categorias": "Hogar > Vajilla", "etiquetas": "Cerámica"}],
+    }
+    first_root = value["platform_tenant"]
+    reads = []
+    def read(service, sheet):
+        reads.append(sheet)
+        return pd.DataFrame(rows_by_root[sheet])
+    monkeypatch.delenv("GOOGLE_SHEET_ID", raising=False)
+    monkeypatch.setattr(studio.runtime, "_get_drive_service", lambda *a: drive)
+    monkeypatch.setattr(studio.runtime, "_get_sheets_service", lambda *a: object())
+    monkeypatch.setattr(studio.runtime, "_buscar_archivo", lambda service, name, root, *a: root)
+    monkeypatch.setattr(studio.runtime, "_leer_google_sheet", read)
+    prepare = Mock(side_effect=AssertionError("Read choices must never create or synchronize Drive"))
+    monkeypatch.setattr(studio.runtime, "_preparar_estructura", prepare)
+    restore = Mock(side_effect=AssertionError("Choices must not download a draft"))
+    monkeypatch.setattr(capture_bridge, "restore", restore)
+    response = client.get("/api/catalog-taxonomy")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"source": "drive", "categories": ["Bebidas", "Dulces"],
+        "subcategories": {"Dulces": ["Caramelos", "Galletas"], "Bebidas": ["Té"]},
+        "tags": ["Chocolate", "Japón", "Té"]}
+    assert response.headers["cache-control"] == "no-store"
+    value.update(platform_tenant="another-store", carpeta_raiz_id_manual="another-store")
+    other = client.get("/api/catalog-taxonomy").json()
+    assert other["categories"] == ["Hogar"] and other["tags"] == ["Cerámica"]
+    assert reads == [first_root, "another-store"]
+    prepare.assert_not_called()
+    restore.assert_not_called()
+    assert not writes and not drive.uploads
+    client.cookies.clear()
+    assert client.get("/api/catalog-taxonomy").status_code == 401
+    assert len(reads) == 2
+
+
+def test_drive_choices_failure_is_visible_without_leaking_provider_details(capture_store, monkeypatch):
+    client, *_ = capture_store
+    monkeypatch.setattr(studio, "read_rows", Mock(side_effect=RuntimeError("private-token-and-folder")))
+    response = client.get("/api/catalog-taxonomy")
+    assert response.status_code == 503
+    assert "private-token" not in response.text and "Reintenta" in response.text
+
+
+def test_missing_drive_inventory_does_not_create_folders_or_sheets(capture_store, monkeypatch):
+    client, value, _, _, _, writes = capture_store
+    monkeypatch.delenv("GOOGLE_SHEET_ID", raising=False)
+    monkeypatch.setattr(studio.runtime, "_buscar_archivo", lambda *a: None)
+    service = Mock()
+    monkeypatch.setattr(studio.runtime, "_get_drive_service", lambda *a: service)
+    prepare = Mock(side_effect=AssertionError("No create/synchronize on a choices read"))
+    monkeypatch.setattr(studio.runtime, "_preparar_estructura", prepare)
+    data = client.get("/api/catalog-taxonomy").json()
+    assert data["source"] == "defaults" and data["tags"] == []
+    assert data["categories"] == sorted(studio.runtime.CATEGORIAS_DEFECTO, key=str.casefold)
+    prepare.assert_not_called()
+    service.files.return_value.create.assert_not_called()
+    assert not writes
+
+
+def test_analysis_uses_drive_subcategories_and_rejects_a_wrong_parent(capture_store, monkeypatch):
+    client, value, drive, *_ = capture_store
+    start(client)
+    rows = [{"categorias": "Dulces > Galletas", "etiquetas": "Chocolate"},
+            {"categorias": "Bebidas > Té", "etiquetas": "Japón"}]
+    monkeypatch.setattr(studio.runtime.captura, "snapshot", lambda *a: (drive, "test-sheet", rows))
+    model = Mock()
+    data = {"nombre": "Pocky", "marca": "Glico", "categoria": "Dulces", "subcategoria": "Té",
+            "etiquetas": ["Chocolate", "Inventada"]}
+    model.models.generate_content.return_value = SimpleNamespace(text=json.dumps(data))
+    monkeypatch.setattr(studio, "GeminiClient", Mock(return_value=model))
+    monkeypatch.setattr(studio, "read_barcodes", lambda *a: [])
+    result = wait(client, client.post("/api/analyze", headers=ORIGIN))
+    assert result["job"]["status"] == "completed", result
+    product = result["draft"]["product"]
+    assert product["category"] == "Dulces" and product["subcategory"] == ""
+    assert product["tags"] == "Chocolate" and "subcategoria" in product["uncertain_fields"]
+    prompt = model.models.generate_content.call_args.kwargs["contents"][-1]
+    assert '"Dulces": ["Galletas"]' in prompt and '"Bebidas": ["Té"]' in prompt
 
 
 @pytest.mark.parametrize("scanned,seen,expected", [

@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { recoverSession } from "@/lib/session-recovery";
+import DriveClassification from "@/components/DriveClassification";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
 type Section = "home" | "products" | "generate" | "inventory" | "more";
@@ -144,6 +145,7 @@ type Session = {
   email?: string;
   gemini_configured?: boolean;
   folder?: string;
+  folder_id?: string;
   image_model?: string;
   estimated_image_usd?: number | null;
 };
@@ -1124,7 +1126,7 @@ export default function Platform() {
         <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || section === "inventory") && !ready && !loading && session.authenticated))}>
           <CaptureStudio embedded initialSection={section === "more" ? "settings" : !captureVisible && (section === "products" || section === "inventory") ? "catalog" : "studio"}
             onOpenProduct={id => { setCaptureVisible(false); go("products"); attempt(() => openProduct(id)); }}
-            onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured}))}
+            onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured, folder: data.folder, folder_id: data.folder_id}))}
             onSaved={() => { if (ready) loadProducts().catch(e => setError(e.message)); }} />
         </div>
         {(section === "products" || section === "inventory") && ready && !(section === "products" && captureVisible) && (
@@ -1328,8 +1330,6 @@ export default function Platform() {
                           ["sku", "SKU"],
                           ["barcode", "Código de barras"],
                           ["brand", "Marca"],
-                          ["category", "Categoría"],
-                          ["subcategory", "Subcategoría"],
                         ].map(([key, label]) => (
                           <label key={key}>
                             {label}
@@ -1343,6 +1343,12 @@ export default function Platform() {
                             />
                           </label>
                         ))}
+                        <DriveClassification value={form}
+                          onChange={value => setForm(previous => ({ ...previous, ...value }))}
+                          enabled={canEdit}
+                          folderKey={(session.email || "") + ":" + (session.folder_id || session.folder || "")}
+                          disabled={busy}
+                        />
                         <label>
                           Tipo
                           <select
@@ -1423,21 +1429,6 @@ export default function Platform() {
                             setForm({
                               ...form,
                               long_description: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="p-form-field">
-                        Etiquetas, separadas por comas
-                        <input
-                          value={form.tags.join(", ")}
-                          onChange={(e) =>
-                            setForm({
-                              ...form,
-                              tags: e.target.value
-                                .split(",")
-                                .map((t) => t.trim())
-                                .filter(Boolean),
                             })
                           }
                         />

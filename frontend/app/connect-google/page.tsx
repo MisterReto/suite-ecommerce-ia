@@ -21,7 +21,7 @@ function bootstrap() {
       retry.hidden = true;
       retry.style.display = "none";
       try {
-        const session = await recover(attempt.signal);
+        const session = await recover(attempt.signal, true);
         if (!leaving && controller === attempt) {
           // Full navigation preserves the API's HttpOnly cookies on the UI origin.
           window.location.replace(session.authenticated ? "/" : "/auth/start");

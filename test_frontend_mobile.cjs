@@ -47,6 +47,8 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
         return route.fulfill({ json: { job: { id: "accepted-once", status: "queued" } } });
       }
       let json = { items: [] };
+      if (pathname === "/api/catalog-taxonomy") json = {source:"drive",categories:["Dulces","Hogar"],
+        subcategories:{Dulces:["Chocolate"],Hogar:["Vajilla"]},tags:["Japón"]};
       if (pathname === "/api/session") json = { authenticated: true, email: "test@example.test", gemini_configured: true,
         folder: "TEST-INTEGRATION", image_model: asset.model, estimated_image_usd: .067 };
       else if (pathname.endsWith("/status")) json = { ready: true, configured: true, worker_ready: false, worker_can_queue: true, role: "admin", message: "Prueba" };
@@ -75,6 +77,13 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.locator(".p-product-card").first().click();
     await page.getByRole("button", { name: "Editar", exact: true }).click();
     assert.ok(await page.getByRole("textbox").count() > 3, "Editable product form is available");
+    const editForm = page.locator(".p-card").filter({has:page.getByRole("heading",{name:"Editar producto",exact:true})});
+    await editForm.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
+    await editForm.getByLabel("Categoría",{exact:true}).selectOption("Hogar");
+    assert.equal(await editForm.getByLabel("Subcategoría",{exact:true}).inputValue(),"");
+    await editForm.getByLabel("Subcategoría",{exact:true}).selectOption("Vajilla");
+    await editForm.getByRole("checkbox",{name:"Japón",exact:true}).check();
+    assert.ok(await editForm.getByRole("checkbox",{name:"Japón",exact:true}).isChecked());
     await nav.getByRole("link", { name: "Generar", exact: true }).click();
     await page.getByRole("button", { name: "Revisar imágenes", exact: false }).click();
     await page.locator(".p-asset-card").first().click();

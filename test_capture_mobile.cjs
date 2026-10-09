@@ -34,7 +34,7 @@ async function exercise(browser, engine, width) {
     };
   });
   const errors = []; page.on("pageerror", e => errors.push(e.message));
-  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true, failedSessionReads = 0;
+  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true, failedSessionReads = 0, taxonomyAvailable = false;
   const generations = [], corrections = [];
   let imageJob = null, polls = 0, failImage = false;
   async function touchTarget(locator, label) {
@@ -64,7 +64,8 @@ async function exercise(browser, engine, width) {
     }), `${engine}/${width}: ${label} is reachable above navigation or dialogs`);
   }
   const complete = () => ({job:{id:"synthetic-job", status:"completed", progress:100, label:"Prueba", message:"Listo"}, draft});
-  await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
+  await page.route("**/service-health", route => route.fulfill(new URL(route.request().url()).origin !== origin
+    ? { status: 503, body: "Render starting" } : { json: { ok: true, backend: "fastapi" } }));
   await page.route("**/api/**", async route => {
     const request = route.request(), p = new URL(request.url()).pathname, method = request.method();
     let json = {items:[]};
@@ -80,6 +81,10 @@ async function exercise(browser, engine, width) {
     else if (p === "/api/platform/dashboard") json = {stats:{low_stock:0,out_of_stock:0,sync_errors:0,pending_jobs:0,pending_products:0},activity:[],ecommerce:null};
     else if (p === "/api/platform/products") json = {items:[], total:0};
     else if (p === "/api/platform/taxonomy") json = {categories:[],brands:[]};
+    else if (p === "/api/catalog-taxonomy") {
+      if (!taxonomyAvailable) return route.fulfill({status:503,json:{detail:"Drive temporarily unavailable"}});
+      json = {source:"drive",categories:["Dulces","Hogar"],subcategories:{Dulces:["Galletas"],Hogar:["Vajilla"]},tags:["Chocolate","Japón","Cerámica"]};
+    }
     else if (p === "/api/uploads") {
       if (rejectUpload) {
         rejectUpload = false;
@@ -173,6 +178,29 @@ async function exercise(browser, engine, width) {
     await capture.getByRole("button",{name:"Eliminar foto reverso"}).tap();
     await capture.getByAltText("Reverso del producto").waitFor({state:"hidden"});
     await capture.getByRole("button",{name:"Analizar producto",exact:true}).tap();
+    await capture.getByRole("button",{name:"Reintentar carga",exact:true}).waitFor();
+    taxonomyAvailable = true;
+    await capture.getByRole("button",{name:"Reintentar carga",exact:true}).tap();
+    await capture.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
+    const categoryChoice = capture.getByLabel("Categoría",{exact:true});
+    const subcategoryChoice = capture.getByLabel("Subcategoría",{exact:true});
+    await touchTarget(categoryChoice,"Drive category selector");
+    await touchTarget(subcategoryChoice,"Drive subcategory selector");
+    assert.deepEqual(await categoryChoice.locator("option").allTextContents(),["Por confirmar","Dulces","Hogar"]);
+    await subcategoryChoice.selectOption("Galletas");
+    await categoryChoice.selectOption("Hogar");
+    assert.equal(await subcategoryChoice.inputValue(),"","Changing category clears an incompatible subcategory");
+    assert.deepEqual(await subcategoryChoice.locator("option").allTextContents(),["Por confirmar","Vajilla"]);
+    await categoryChoice.selectOption("Dulces");
+    await subcategoryChoice.selectOption("Galletas");
+    await capture.getByLabel("Buscar etiqueta",{exact:true}).fill("Jap");
+    const japan = capture.getByRole("checkbox",{name:"Japón",exact:true});
+    await japan.check();
+    await capture.getByLabel("Buscar etiqueta",{exact:true}).fill("");
+    await page.waitForTimeout(1300);
+    assert.equal(draft.product.category,"Dulces");
+    assert.equal(draft.product.subcategory,"Galletas");
+    assert.equal(draft.product.tags,"Japón","A selected Drive tag is persisted without typing");
     for (const label of ["Nombre del producto", "SKU", "Código de barras", "Precio de venta · MXN"]) {
       const input = label === "Precio de venta · MXN"
         ? capture.getByRole("spinbutton",{name:/^Precio de venta · MXN/})
@@ -220,6 +248,8 @@ async function exercise(browser, engine, width) {
     assert.equal(await capture.getByLabel("Nombre del producto",{exact:true}).inputValue(),"Pocky Chocolate 40 g revisado al salir");
     await page.reload({waitUntil:"networkidle"});
     await page.getByRole("button",{name:"Capturar producto",exact:true}).tap();
+    assert.equal(await capture.getByLabel("Subcategoría",{exact:true}).inputValue(),"Galletas");
+    assert.ok(await capture.getByRole("checkbox",{name:"Japón",exact:true}).isChecked());
     assert.equal(await capture.getByLabel("Nombre del producto",{exact:true}).inputValue(),"Pocky Chocolate 40 g revisado al salir");
     await capture.getByRole("button",{name:"Verificar coincidencias",exact:true}).tap();
     await capture.getByText("Pocky Fresa 40 g",{exact:true}).waitFor();
