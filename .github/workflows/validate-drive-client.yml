@@ -120,13 +120,13 @@ jobs:
           python -m unittest test_split_services test_parent_full -q
           python -m unittest test_bulk_security test_inventory_unified -q
           python -m pytest test_gemini_costs.py test_capture_workflow.py test_loyverse.py test_loyverse_jobs.py -q
-          python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py test_frontend_separation.py test_functional_parity.py -q
+          python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py test_frontend_separation.py test_functional_parity.py test_web_sessions.py -q
           node test_loyverse_ui.js
       - name: Cola y solicitudes concurrentes en PostgreSQL real
         env:
           TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
           TEST_REDIS_URL: redis://localhost:6379/0
-        run: python -m pytest test_catalog_platform.py test_stabilization.py test_free_render.py test_functional_parity.py -q
+        run: python -m pytest test_catalog_platform.py test_stabilization.py test_free_render.py test_functional_parity.py test_web_sessions.py -q
       - name: Evidencia visual de fallos del navegador
         if: failure()
         uses: actions/upload-artifact@v4

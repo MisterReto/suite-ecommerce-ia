@@ -64,13 +64,18 @@ el generador, Drive ni `inventario_completo`.
   intercambio de código, cookies seguras, sesión consultable en `/api/session`
   y tras otra consulta, rechazo de replay y caducidad del estado.
 
-El estado OAuth sigue en `oauth_guard._pending`: 600 segundos, PKCE y consumo
+En esta entrega inicial, el estado OAuth sigue en `oauth_guard._pending`: 600 segundos, PKCE y consumo
 único. La sesión sigue en `app.SESSIONS`, con cookie Secure/HttpOnly/SameSite=Lax
 y duración de 8 horas. Ambos almacenes son del proceso. Un reinicio o apagado
 de la API invalida esas sesiones; se debe volver a conectar. No se sustituyó
 este mecanismo por almacenamiento compartido como parte del arreglo del 502.
 Una autorización nueva debe completarse dentro de 10 minutos. No se usa la
 cookie de PKCE como alternativa a un estado que el servidor ya perdió.
+
+La entrega posterior [SESSION_RECOVERY.md](SESSION_RECOVERY.md) sustituye las
+sesiones en memoria por recuperación cifrada en la base de datos existente para
+la API nueva. Conserva el estado OAuth de un solo uso y añade recuperación segura
+de sesión y espera limitada también a la carga inicial y reanudación de la app.
 
 La comprobación final con una cuenta Google real necesita el inicio de sesión
 del usuario. Llegar a la pantalla de Google no prueba que exista una sesión

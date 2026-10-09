@@ -2,10 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
-
-const REQUEST_TIMEOUT_MS = 8_000;
-const RETRY_DELAY_MS = 3_000;
-const MAX_WAIT_MS = 180_000;
+import { recoverSession } from "@/lib/session-recovery";
 
 export default function ConnectGoogle() {
   const [attempt, setAttempt] = useState(0);
@@ -13,47 +10,18 @@ export default function ConnectGoogle() {
 
   useEffect(() => {
     let stopped = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let current: AbortController | undefined;
-    const deadline = Date.now() + MAX_WAIT_MS;
+    const controller = new AbortController();
     setUnavailable(false);
-
-    async function check() {
-      current = new AbortController();
-      const timeout = setTimeout(() => current?.abort(), REQUEST_TIMEOUT_MS);
-      let ready = false;
-      try {
-        const response = await fetch("/service-health", {
-          cache: "no-store",
-          credentials: "same-origin",
-          signal: current.signal,
-        });
-        if (response.ok && response.headers.get("content-type")?.includes("application/json")) {
-          const health = await response.json();
-          ready = health?.ok === true && health?.backend === "fastapi";
-        }
-      } catch {
-        // A sleeping Render service can return HTML, 502 or a timeout while waking.
-      } finally {
-        clearTimeout(timeout);
-      }
-      if (stopped) return;
-      if (ready) {
+    void recoverSession(controller.signal).then(session => {
+      if (!stopped) {
         // Full navigation preserves the API's HttpOnly cookies on the UI origin.
         // Only health probes are retried; never retry an OAuth callback or code.
-        window.location.replace("/auth/start");
-      } else if (Date.now() >= deadline) {
-        setUnavailable(true);
-      } else {
-        retry = setTimeout(check, RETRY_DELAY_MS);
+        window.location.replace(session.authenticated ? "/" : "/auth/start");
       }
-    }
-
-    void check();
+    }).catch(() => { if (!stopped) setUnavailable(true); });
     return () => {
       stopped = true;
-      current?.abort();
-      clearTimeout(retry);
+      controller.abort();
     };
   }, [attempt]);
 
@@ -67,7 +35,7 @@ export default function ConnectGoogle() {
         <p>
           {unavailable
             ? "No pudimos conectar en este momento. Puedes volver a intentarlo."
-            : "Estamos preparando la conexión con Google. Esto puede tardar unos minutos."}
+            : "Estamos recuperando tu sesión y preparando la conexión. Esto puede tardar unos minutos."}
         </p>
         {unavailable && (
           <button className="button primary" onClick={() => setAttempt(value => value + 1)}>

@@ -248,6 +248,8 @@ def _nueva_session_id():
 
 
 def _eliminar_sesion(session_id):
+    from catalog_platform.web_sessions import revoke
+    revoke(session_id)
     session = SESSIONS.pop(session_id, None)
     namespace = (session or {}).get("file_namespace", "")
     if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", namespace):
@@ -272,9 +274,12 @@ def _guardar_sesion(clave_sesion, **kwargs):
         if len(SESSIONS) >= 500:
             raise RuntimeError("Servicio ocupado. Vuelve a conectar Drive en unos minutos.")
         SESSIONS[clave_sesion] = {}
-    SESSIONS[clave_sesion].update(kwargs)
-    SESSIONS[clave_sesion]["session_id"] = clave_sesion
-    SESSIONS[clave_sesion]["expires_at"] = time.time() + 8 * 3600
+    from catalog_platform.web_sessions import save
+    value = dict(SESSIONS[clave_sesion], **kwargs)
+    value["session_id"] = clave_sesion
+    value["expires_at"] = time.time() + 8 * 3600
+    save(clave_sesion, value)
+    SESSIONS[clave_sesion].update(value)
 
 
 def _obtener_sesion(request: FastAPIRequest):

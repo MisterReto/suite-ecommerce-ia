@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GenerationSounds } from "@/lib/generation-sounds";
+import { recoverSession } from "@/lib/session-recovery";
 import {
   Camera,
   Check,
@@ -370,6 +371,7 @@ export default function CaptureStudio({
   const sessionCallback = useRef(onSessionChange);
   sessionCallback.current = onSessionChange;
   const [loading, setLoading] = useState(true);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [section, setSection] = useState(initialSection);
   useEffect(() => { if (embedded) setSection(initialSection); }, [embedded, initialSection]);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -434,8 +436,9 @@ export default function CaptureStudio({
   }, []);
 
   const refresh = useCallback(async () => {
-    const data = await api<Session>("/api/session");
+    const data = await recoverSession<Session>();
     setSession(data);
+    setSessionChecked(true);
     sessionCallback.current?.(data);
     applyDraft(data.draft);
     if (data.job) setJob(data.job);
@@ -750,10 +753,19 @@ export default function CaptureStudio({
           {loading && (
             <div className="inline-loading">
               <Loader2 className="spin" size={18} />
-              Cargando tu espacio…
+              Iniciando servidor y recuperando tu sesión…
             </div>
           )}
-          {!loading && !signedIn && (
+          {!loading && !sessionChecked && (
+            <div className="connection-banner" role="status">
+              <span>El servidor aún no está disponible.</span>
+              <button className="button primary" onClick={() => {
+                setLoading(true); setError("");
+                void refresh().catch(e => setError(e.message)).finally(() => setLoading(false));
+              }}>Reintentar conexión</button>
+            </div>
+          )}
+          {!loading && sessionChecked && !signedIn && (
             <div className="connection-banner">
               <Info size={19} />
               <div>

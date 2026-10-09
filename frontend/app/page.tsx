@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { recoverSession } from "@/lib/session-recovery";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
 type Section = "home" | "products" | "generate" | "inventory" | "more";
@@ -349,6 +350,7 @@ export default function Platform() {
     message: "Cargando…",
   });
   const [loading, setLoading] = useState(true);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const operationKeys = useRef(new Map<string, string>());
@@ -438,11 +440,10 @@ export default function Platform() {
     }
   };
   const reloadBase = useCallback(async () => {
-    const [s, st] = await Promise.all([
-      api<Session>("/api/session"),
-      api<Status>("/api/platform/status"),
-    ]);
+    const s = await recoverSession<Session>();
     setSession(s);
+    setSessionChecked(true);
+    const st = await api<Status>("/api/platform/status");
     setStatus(st);
     return { s, st };
   }, []);
@@ -481,27 +482,36 @@ export default function Platform() {
       }
     };
     const disconnected = () => { setOnline(false); setReconnecting(false); };
+    let recovering = false;
     const connected = () => {
+      if (recovering) return;
+      recovering = true;
       setOnline(true);
       setReconnecting(true);
+      setError("");
       reloadBase()
         .catch((e) => setError(`No se pudo reconectar: ${e.message}`))
-        .finally(() => setReconnecting(false));
+        .finally(() => { recovering = false; setReconnecting(false); setLoading(false); });
+    };
+    const resumed = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) connected();
     };
     change();
     setOnline(navigator.onLine);
     window.addEventListener("hashchange", change);
     window.addEventListener("online", connected);
     window.addEventListener("offline", disconnected);
-    reloadBase()
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+    window.addEventListener("focus", resumed);
+    document.addEventListener("visibilitychange", resumed);
+    connected();
     if ("serviceWorker" in navigator)
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     return () => {
       window.removeEventListener("hashchange", change);
       window.removeEventListener("online", connected);
       window.removeEventListener("offline", disconnected);
+      window.removeEventListener("focus", resumed);
+      document.removeEventListener("visibilitychange", resumed);
     };
   }, [reloadBase]);
   useEffect(() => {
@@ -847,13 +857,22 @@ export default function Platform() {
             </button>
           )}
         </div>
-        {loading && (
+        {(loading || reconnecting) && (
           <div className="inline-loading">
             <Loader2 className="spin" size={22} />
-            Cargando tu espacio…
+            Iniciando servidor y recuperando tu sesión…
           </div>
         )}
-        {!loading && !session.authenticated && (
+        {!loading && !reconnecting && !sessionChecked && (
+          <div className="p-alert" role="status">
+            <span>El servidor aún no está disponible.</span>
+            <button onClick={() => {
+              setLoading(true); setError("");
+              void reloadBase().catch(e => setError(e.message)).finally(() => setLoading(false));
+            }}>Reintentar conexión</button>
+          </div>
+        )}
+        {!loading && sessionChecked && !session.authenticated && (
           <div className="p-welcome">
             <img src="/logo.png" width={76} height={76} alt="" />
             <div>

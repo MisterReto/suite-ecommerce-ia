@@ -38,6 +38,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const page = await context.newPage();
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     const requests = [];
+    await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
     await page.route("**/api/**", async route => {
       const request = route.request(); const pathname = new URL(request.url()).pathname;
       if (pathname.endsWith("/regenerate")) {

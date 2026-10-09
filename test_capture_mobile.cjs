@@ -34,7 +34,7 @@ async function exercise(browser, engine, width) {
     };
   });
   const errors = []; page.on("pageerror", e => errors.push(e.message));
-  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true;
+  let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true, failedSessionReads = 0;
   const generations = [], corrections = [];
   let imageJob = null, polls = 0, failImage = false;
   async function touchTarget(locator, label) {
@@ -64,12 +64,15 @@ async function exercise(browser, engine, width) {
     }), `${engine}/${width}: ${label} is reachable above navigation or dialogs`);
   }
   const complete = () => ({job:{id:"synthetic-job", status:"completed", progress:100, label:"Prueba", message:"Listo"}, draft});
+  await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
   await page.route("**/api/**", async route => {
     const request = route.request(), p = new URL(request.url()).pathname, method = request.method();
     let json = {items:[]};
     const body = () => request.postDataJSON() || {};
-    if (p === "/api/session" && warming)
+    if (p === "/api/session" && warming) {
+      failedSessionReads++;
       return route.fulfill({status:503,contentType:"text/html",body:"<!DOCTYPE html><title>Service starting</title>"});
+    }
     if (p === "/api/session") json = {authenticated:true, email:"admin@example.test", gemini_configured:configured,
       gemini_source:configured ? "user_settings" : "not_configured", folder:"Tienda sintética", image_model:"gemini-3.1-flash-image",
       text_model:"gemini-3.1-flash-lite-preview", estimated_image_usd:.067, draft};
@@ -134,10 +137,15 @@ async function exercise(browser, engine, width) {
     return route.fulfill({json});
   });
   try {
-    await page.goto(origin,{waitUntil:"networkidle"});
-    await page.locator(".p-alert.error").getByText("El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",{exact:true}).waitFor();
+    await page.goto(origin,{waitUntil:"domcontentloaded"});
+    const waiting = page.locator("#workspace > .inline-loading");
+    await waiting.waitFor();
+    assert.match(await waiting.innerText(),/Iniciando servidor y recuperando tu sesión/);
+    for (let attempt=0;failedSessionReads<1&&attempt<60;attempt++) await page.waitForTimeout(50);
+    assert.ok(failedSessionReads>0,"A temporary session failure was reproduced");
+    assert.equal(await page.locator(".p-welcome").count(),0,"A server failure is not treated as a logged-out session");
     warming = false;
-    await page.reload({waitUntil:"networkidle"});
+    await waiting.waitFor({state:"hidden"});
     const nav=page.getByRole("navigation",{name:"Navegación principal"});
     await nav.getByRole("link",{name:"Productos",exact:true}).tap();
     assert.ok(await page.evaluate(() => window.__captureTestTouches > 0), "Phone touch events reach the page");

@@ -33,6 +33,7 @@ def service_health():
             "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "local"),
             "service_id": os.getenv("RENDER_SERVICE_ID", ""),
             "version": os.getenv("RENDER_GIT_COMMIT", ""),
+            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory",
             "store_connected": os.getenv("SUITE_DRIVE_ONLY", "true").lower() == "false"}
 
 
@@ -42,6 +43,8 @@ fastapi_app.router.routes[:] = [r for r in fastapi_app.routes if r not in _mount
 from app_security import SecurityMiddleware
 import app as session_runtime
 from catalog_platform.rbac import RoleMiddleware
+from catalog_platform.web_sessions import restore as restore_browser_session
 fastapi_app.add_middleware(RoleMiddleware,sessions=lambda:session_runtime.SESSIONS)
 fastapi_app.add_middleware(SecurityMiddleware, sessions=lambda: session_runtime.SESSIONS,
-                          expire=getattr(session_runtime, "_eliminar_sesion", None))
+                          expire=getattr(session_runtime, "_eliminar_sesion", None),
+                          restore=restore_browser_session)
