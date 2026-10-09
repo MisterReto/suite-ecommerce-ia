@@ -99,8 +99,8 @@ export default function DriveClassification({ value, onChange, enabled, folderKe
       {choices && !choices.tags.length && !value.tags.length && <small>Tu inventario todavía no contiene etiquetas.</small>}
     </fieldset>
     <div className="classification-status wide" aria-live="polite">
-      {loading ? "Cargando categorías y etiquetas de Drive…" : error || (choices?.source === "drive"
-        ? "Opciones de Lista completa en tu Drive." : choices ? "Inventario sin clasificación: opciones iniciales." : "")}
+      <span>{loading ? "Cargando categorías y etiquetas de Drive…" : error || (choices?.source === "drive"
+        ? "Opciones de Lista completa en tu Drive." : choices ? "Inventario sin clasificación: opciones iniciales." : "")}</span>
       {enabled && !loading && <button type="button" className="text-button" disabled={disabled}
         onClick={() => setRefresh(previous => previous + 1)}>{error ? "Reintentar carga" : "Actualizar opciones"}</button>}
     </div>

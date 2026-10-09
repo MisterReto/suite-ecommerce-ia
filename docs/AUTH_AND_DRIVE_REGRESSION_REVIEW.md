@@ -96,8 +96,10 @@ selector Google no prueba la sesión real de un usuario.
 
 ## Revertir
 
-Revertir el commit de esta entrega sobre esta rama con `git revert`, revisar y
-publicar el commit resultante. La base anterior es `e6e5c1f` y se conservan sus
+Revertir el rango de esta entrega sobre esta rama:
+`git revert --no-commit e6e5c1f5ce19d1067c3fab4d50b67b5e99558e8a..COMMIT_FINAL_ENTREGA`.
+Revisar y crear/publicar el commit resultante. El SHA final y el ensayo de reversión
+se registran en Notion. La base anterior es `e6e5c1f` y se conservan sus
 correcciones de persistencia, SKU y sonidos. CI debe pasar antes del despliegue
 automático. No revertir datos ni modificar Drive.
 

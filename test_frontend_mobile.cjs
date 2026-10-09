@@ -78,7 +78,14 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("button", { name: "Editar", exact: true }).click();
     assert.ok(await page.getByRole("textbox").count() > 3, "Editable product form is available");
     const editForm = page.locator(".p-card").filter({has:page.getByRole("heading",{name:"Editar producto",exact:true})});
-    await editForm.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
+    try {
+      await editForm.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
+    } catch (error) {
+      console.error("Classification status: " + JSON.stringify(await page.locator(".classification-status").allTextContents()));
+      fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
+      await page.screenshot({path:path.join(__dirname,"test-results","classification-failure.png"),fullPage:true});
+      throw error;
+    }
     await editForm.getByLabel("Categoría",{exact:true}).selectOption("Hogar");
     assert.equal(await editForm.getByLabel("Subcategoría",{exact:true}).inputValue(),"");
     await editForm.getByLabel("Subcategoría",{exact:true}).selectOption("Vajilla");
