@@ -71,6 +71,10 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
 
     const bounded = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
     await bounded.clock.install();
+    // Reproduce HTML stuck at "Iniciando servidor" when React never hydrates.
+    // The timeout and retry button must work with every framework script blocked.
+    await bounded.route("**/_next/static/**", route => route.request().resourceType() === "script"
+      ? route.abort("failed") : route.continue());
     let boundedChecks = 0, boundedStarts = 0;
     await bounded.route("**/service-health", route => {
       boundedChecks++;
@@ -93,8 +97,10 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     for (let attempt = 0; boundedChecks <= stoppedChecks && attempt < 20; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    assert.ok(boundedChecks > stoppedChecks, "Explicit retry starts a new bounded wait");
+    assert.ok(boundedChecks > stoppedChecks, "Retry works even when React cannot hydrate");
     const resumed = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+    await resumed.route("**/_next/static/**", route => route.request().resourceType() === "script"
+      ? route.abort("failed") : route.continue());
     let resumedStarts = 0, sessionReads = 0;
     await resumed.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
     await resumed.route("**/api/session", route => {
@@ -108,7 +114,7 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
     await resumed.getByRole("heading", { name: "Session restored" }).waitFor();
     assert.equal(resumedStarts, 0, "An existing session returns to the frontend without starting Google OAuth");
     assert.equal(sessionReads, 2, "Retry a temporary session lookup failure without losing the login");
-    console.log("OAuth wakeup: timeout/502/HTML, mobile layout, one OAuth start, bounded retry and existing session recovery passed.");
+    console.log("OAuth wakeup: timeout/502/HTML, mobile layout, one OAuth start, bounded retry and session recovery without React chunks passed.");
   } catch (error) {
     console.error("Next.js diagnostics: " + diagnostics);
     throw error;

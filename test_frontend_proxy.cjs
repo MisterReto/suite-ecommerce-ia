@@ -5,6 +5,7 @@ const path = require("node:path");
 const os = require("node:os");
 const https = require("node:https");
 const crypto = require("node:crypto");
+const vm = require("node:vm");
 const { spawn, spawnSync } = require("node:child_process");
 
 (async () => {
@@ -33,6 +34,10 @@ const { spawn, spawnSync } = require("node:child_process");
         assert.equal(url.searchParams.get("state"), "test");
         response.writeHead(303, { Location: "/", "Set-Cookie": "session_id=test; Secure; HttpOnly; SameSite=Lax; Path=/" });
         return response.end();
+      }
+      if (url.pathname === "/api/session") {
+        response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+        return response.end(JSON.stringify({ authenticated: false, cookie: request.headers.cookie }));
       }
       let size = 0;
       const hash = crypto.createHash("sha256");
@@ -81,9 +86,29 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(received.origin, origin);
     const login = await fetch(origin + "/login", { redirect: "manual" });
     assert.equal(login.status, 200, "Login waiting screen is local, even before API startup");
-    assert.match(await login.text(), /Iniciando servidor/);
+    const loginHTML = await login.text();
+    assert.match(loginHTML, /Iniciando servidor/);
     assert.equal(login.headers.get("cache-control"), "no-store");
     assert.equal(login.headers.get("set-cookie"), null, "Do not create OAuth state while waiting");
+    // Execute only the shipped inline bootstrap, with no React/framework files.
+    // This also detects accidental module references in the minified function.
+    const scripts = [...loginHTML.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
+    const inline = scripts.find(script => script.trimStart().startsWith("(() =>") && script.includes('"login-retry"'));
+    assert.ok(inline, "Readiness must be included in the HTML, before React loads: "
+      + JSON.stringify(scripts.map(script => script.slice(0,80))));
+    const elements = new Map(["login-title", "login-message", "login-spinner", "login-retry"].map(id =>
+      [id, { style: {}, addEventListener() {} }]));
+    const navigations = [];
+    vm.runInNewContext(inline, {
+      AbortController, DOMException, setTimeout, clearTimeout,
+      document: { getElementById: id => elements.get(id) },
+      window: { location: { replace: value => navigations.push(value) }, addEventListener() {} },
+      fetch: (url, options) => fetch(origin + url, { ...options, headers: { Cookie: cookie } }),
+    });
+    for (let attempt = 0; !navigations.length && attempt < 100; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(navigations, ["/auth/start"], "Login continues once, without any framework chunk");
     const health = await fetch(origin + "/service-health");
     assert.deepEqual(await health.json(), { ok: true, backend: "fastapi" });
     const start = await fetch(origin + "/auth/start", { redirect: "manual" });

@@ -73,7 +73,36 @@ de su cookie: hay que conectar Google una vez. Las nuevas sesiones se conservan
 durante su vigencia de ocho horas. Si faltase `DATABASE_URL`, se conserva el modo
 histórico en memoria; `/service-health` expone `session_backend` para comprobarlo.
 
-## Revertir
+## Pantalla inmóvil al volver a conectar (8 de octubre, 21:07 en México)
+
+La nueva pantalla también dependía de que cargaran los archivos externos de
+React: su comprobación comenzaba en `useEffect`. Si alguno fallaba o la
+hidratación no terminaba, el HTML seguía mostrando «Iniciando servidor», sin
+peticiones de salud, límite de espera ni reintento operativo.
+
+En el intento informado, el frontend arrancó a las 03:05:49 UTC, pero la API no
+arrancó hasta las 03:09:34, cuando el diagnóstico pidió su salud directamente
+(35,23 segundos). Después, el proxy respondió 200 y el navegador avanzó a Google.
+Esto es compatible con que la preparación no arrancara en el cliente; no se
+dispone de los registros de red del teléfono para atribuirlo a un archivo o
+configuración específicos.
+
+`/login` ahora incluye su preparación directamente en el HTML. Ejecuta la misma
+función de recuperación, autocontenida, sin esperar a React ni duplicar los
+reintentos. El botón funciona también sin los archivos de React. Conserva las
+peticiones GET, límites, cancelación, sesión existente y redirecciones previas;
+no cambia el proxy, las cookies, OAuth ni la política de seguridad.
+
+`test_frontend_proxy.cjs` ejecuta el script de la compilación real sin módulos
+externos, contra el proxy real. La prueba móvil bloquea todos los scripts de
+React y comprueba el límite de espera, reintento y recuperación de sesión. El
+navegador sigue necesitando JavaScript; si está desactivado, el HTML lo indica.
+
+Para revertir únicamente este ajuste, revertir su commit sobre `cd7835f`, sin
+revertir la persistencia de sesiones ni datos. El frontend previo es
+`dep-db44cjs9v7es73a9gbgg`.
+
+## Revertir la persistencia de sesiones
 
 Crear un commit que revierta esta entrega y publicarlo en la misma rama. Para una
 reversión inmediata, restaurar únicamente los despliegues de `419f849` anteriores
