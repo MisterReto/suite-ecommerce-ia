@@ -82,3 +82,10 @@ Esto no vuelve a poner en cola sus trabajos ni escribe Drive, Sheets o WooCommer
 Deploys anteriores de referencia: frontend `dep-db4s07o473hc738u62vg`,
 API `dep-db4s07o473hc738u6330`, worker `dep-db4s07o473hc738u62a0`.
 El rollback de código no revierte cambios de variables hechos después.
+
+Al preparar esta publicación se comprobó que la API había vuelto después a
+`backup/working-oauth-20261009` (`07ca7e8`, deploy `dep-db4td1flk1mc73fvdikg`),
+mientras frontend y worker seguían en `47226a6`. El despliegue debe volver a
+sincronizar el Blueprint para que los tres usen la rama de esta corrección.
+La edición de su comentario de versión dispara esa sincronización al promover
+el commit validado a la rama vinculada; no modifica credenciales ni planes.

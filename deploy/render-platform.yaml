@@ -1,5 +1,6 @@
 # Additive staging. Existing services are referenced, never managed or modified.
 # Every resource is free. PostgreSQL expires after 30 days: staging only.
+# Release 2026-10-10: resync the three services for the cancellation protocol.
 previews:
   generation: 'off'
 databases:
