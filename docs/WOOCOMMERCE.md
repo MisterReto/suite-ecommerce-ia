@@ -1,5 +1,59 @@
 # WooCommerce y WordPress en este repositorio
 
+## Activación de la rama de integración · 9 de octubre de 2026
+
+Rama: `feature/woocommerce-and-product-removal-20261009`. Base funcional de
+login, códigos de barras y clasificaciones: `07ca7e8`. La activación utiliza
+los clientes y trabajos existentes; no añade eliminación de productos ni
+cambia credenciales, imágenes, Drive o los dos servicios históricos.
+
+El bloqueo era `SUITE_DRIVE_ONLY=true` en `rincon-catalog-api`: ese modo
+rechaza incluso lecturas aunque `WC_WRITE_ENABLED=true`. Configuración de
+los servicios actuales:
+
+| Servicio | SUITE_DRIVE_ONLY | WC_WRITE_ENABLED | Credenciales |
+| --- | --- | --- | --- |
+| rincon-catalog-api | false | true, para las herramientas delegadas | Se conservan |
+| rincon-catalog-worker | false | true, por autorización del usuario | Se conservan las referencias existentes a WooCommerce |
+| rincon-frontend | No aplica | No recibe claves | Solo SUITE_API_ORIGIN |
+
+`sync: false` en los permisos de escritura del Blueprint conserva los valores
+que el usuario estableció en Render. No se modifica `WP_MEDIA_WRITE_ENABLED`.
+Los tres servicios nuevos usan la rama de integración; la rama estable y
+`backup/working-oauth-20261009` conservan la base para revertir.
+
+La tarjeta WooCommerce consulta el resultado de la última lectura de **su
+propio catálogo**: Pendiente antes de comprobar, Conectado al completarla y
+Error si falla. No necesita copiar secretos del worker a la API. Se completan
+las rutas del proxy para conexión, previews y stock; el login se conserva.
+
+### Pruebas manuales autorizadas, a cargo del usuario
+
+1. Desde el frontend, abrir **Más → Conexiones → WooCommerce → Comprobar
+   conexión → Consultar tienda**. Confirmar la consulta y esperar el trabajo;
+   una API/worker gratuitos pueden necesitar despertar. Esta consulta lee la
+   tienda y guarda snapshots en SQL; no modifica WooCommerce ni importa Drive.
+2. Volver a Conexiones: comprobar **Conectado**. Si aparece Error, abrir el
+   trabajo para revisar permisos/credenciales, sin publicar ni repetir a ciegas.
+3. Abrir un producto de prueba conocido y verificar su SKU, ID de producto,
+   variante y stock WooCommerce antes de confirmar una escritura.
+4. Para publicar imágenes, comprobar primero el permiso existente de WordPress
+   Media. Si está deshabilitado, esa parte seguirá bloqueada; no se activa
+   automáticamente con el permiso de WooCommerce.
+5. Realizar una sola escritura confirmada sobre un producto de prueba, comprobar
+   el resultado por ID y restaurar su stock si se cambió. Ante un timeout,
+   consultar el objeto antes de repetir. No ejecutar la importación completa
+   para probar la conexión: esa opción crea respaldos y archivos en Drive.
+
+Reversión inmediata: establecer `SUITE_DRIVE_ONLY=true` en API y worker,
+`WC_WRITE_ENABLED=false` en ambos y volver a desplegar para pausar la tienda.
+Para revertir código, seleccionar los deploys de `07ca7e8` o la rama
+`backup/working-oauth-20261009` en los tres servicios nuevos. Conservar SQL,
+las claves y los registros; no tocar servicios históricos. Un rollback no
+deshace escrituras manuales en la tienda; usar los IDs y valores iniciales.
+
+## Auditoría anterior
+
 La implementación existente se conserva. Esta auditoría no hizo lectura privada
 ni escritura real en la tienda: faltan conexiones operativas en el entorno de
 pruebas. Un mapping observado en Sheets no certifica que el objeto remoto siga

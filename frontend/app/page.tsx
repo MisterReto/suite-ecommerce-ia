@@ -2318,6 +2318,11 @@ export default function Platform() {
                       <h2>{c.name}</h2>
                       <Badge value={c.status} />
                       {c.note && <p>{c.note}</p>}
+                      {c.name === "WooCommerce" && isAdmin && (
+                        <button className="button secondary" onClick={() => setMoreTab("sync")}>
+                          Comprobar conexión
+                        </button>
+                      )}
                     </section>
                   ))}
                 </div>
@@ -2429,7 +2434,7 @@ export default function Platform() {
                 <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-image-preview">Revisar Drive y WordPress</a>
                 <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-batch-sync">Publicación masiva, pausa y reanudación</a>
               </div>
-              <p className="p-muted">WooCommerce requiere una conexión activa. El modo solo Drive sigue protegiendo la tienda mientras preparas y revisas tus productos.</p>
+              <p className="p-muted">Comprueba la conexión en Sincronización. Las publicaciones y los cambios de stock requieren tu confirmación.</p>
             </section>}
             {moreTab === "exchange" && (
               <div className="p-two-column">

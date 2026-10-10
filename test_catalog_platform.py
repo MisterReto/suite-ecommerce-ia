@@ -128,6 +128,31 @@ def test_auth_roles_and_tenant_isolation(setup):
     assert client.get("/api/platform/products").status_code==401
 
 
+@pytest.mark.parametrize("job_status,expected", [(None,"pending"),("queued","pending"),("processing","pending"),("completed","connected"),("failed","error")])
+def test_store_connection_uses_worker_result_without_api_secrets(setup,monkeypatch,job_status,expected):
+    client,value,_=setup
+    monkeypatch.setenv("SUITE_DRIVE_ONLY","false")
+    monkeypatch.setenv("GENERATION_QUEUE_BACKEND","rq")
+    monkeypatch.setenv("IMAGE_WORKER_ORIGIN","https://rincon-catalog-worker.onrender.com")
+    for key in ("WC_CONSUMER_KEY","WC_CONSUMER_SECRET","WOOCOMMERCE_CONSUMER_KEY","WOOCOMMERCE_CONSUMER_SECRET"):
+        monkeypatch.delenv(key,raising=False)
+    with transaction() as db:
+        # A different tenant's success must never verify this tenant's store.
+        db.add(GenerationJob(tenant_id="other_"+uid(),actor=value["email"],kind="ecommerce_pull",request_key=uid(),status="completed"))
+        if job_status:
+            db.add(GenerationJob(tenant_id=value["platform_tenant"],actor=value["email"],kind="ecommerce_pull",request_key=uid(),status=job_status))
+    response=client.get("/api/platform/connections")
+    assert response.status_code==200
+    woo=next(item for item in response.json()["items"] if item["name"]=="WooCommerce")
+    assert woo["status"]==expected
+    assert "private-token" not in response.text and "private-refresh" not in response.text
+    monkeypatch.setenv("SUITE_DRIVE_ONLY","true")
+    woo=next(item for item in client.get("/api/platform/connections").json()["items"] if item["name"]=="WooCommerce")
+    assert woo["status"]=="disconnected" and "solo Drive" in woo["note"]
+    client.cookies.clear()
+    assert client.get("/api/platform/connections").status_code==401
+
+
 def test_versions_stock_events_and_full_families(setup):
     client,value,_=setup
     p=create(client)

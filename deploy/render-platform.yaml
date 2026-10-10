@@ -22,7 +22,7 @@ services:
   name: rincon-frontend
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: agent/stabilize-architecture-20261006
+  branch: feature/woocommerce-and-product-removal-20261009
   dockerfilePath: ./Dockerfile.frontend
   dockerContext: .
   plan: free
@@ -39,7 +39,7 @@ services:
   name: rincon-catalog-api
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: agent/stabilize-architecture-20261006
+  branch: feature/woocommerce-and-product-removal-20261009
   dockerfilePath: ./Dockerfile.api
   dockerContext: .
   plan: free
@@ -103,7 +103,7 @@ services:
   - key: SUITE_SERVICE_ROLE
     value: main
   - key: SUITE_DRIVE_ONLY
-    value: 'true'
+    value: 'false'
   - key: SYNC_SERVICE_URL
     fromService:
       type: web
@@ -115,9 +115,9 @@ services:
       name: suite-ecommerce-ia
       envVarKey: SYNC_SERVICE_SHARED_KEY
   - key: WC_WRITE_ENABLED
-    value: 'false'
+    sync: false
   - key: WP_MEDIA_WRITE_ENABLED
-    value: 'false'
+    sync: false
   - key: GOOGLE_SHEET_ID
     value: 1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE
   - key: GOOGLE_REDIRECT_BASE
@@ -129,7 +129,7 @@ services:
   name: rincon-catalog-worker
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: agent/stabilize-architecture-20261006
+  branch: feature/woocommerce-and-product-removal-20261009
   dockerfilePath: ./Dockerfile.worker
   dockerCommand: python -m catalog_platform.worker_web
   dockerContext: .
@@ -219,9 +219,9 @@ services:
       name: suite-ecommerce-ia
       envVarKey: WP_APP_PASSWORD
   - key: WC_WRITE_ENABLED
-    value: 'false'
+    sync: false
   - key: WP_MEDIA_WRITE_ENABLED
-    value: 'false'
+    sync: false
   - key: GOOGLE_SHEET_ID
     fromService:
       type: web

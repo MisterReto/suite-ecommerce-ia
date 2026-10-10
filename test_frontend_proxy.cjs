@@ -74,6 +74,14 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(session.status, 200, "Proxy response: " + output);
     assert.equal(session.headers.get("cache-control"), "no-store");
     assert.equal((await session.json()).cookie, cookie);
+    for (const tool of ["/inventory-sync", "/wc-health", "/wc-preview",
+      "/woocommerce-publish-preview", "/stock-preview-start", "/stock-preview-result"]) {
+      const response = await fetch(origin + tool, { headers: { Cookie: cookie } });
+      assert.equal(response.status, 200, "Forward WooCommerce tool: " + tool);
+      const received = await response.json();
+      assert.equal(received.path, tool, "Preserve tool URL");
+      assert.equal(received.cookie, cookie, "Preserve tool session");
+    }
     const image = Buffer.alloc(12_020_000, 42);
     const upload = await fetch(origin + "/api/uploads", { method: "POST", body: image,
       headers: { Origin: origin, Cookie: cookie, "Content-Type": "application/octet-stream" } });

@@ -9,6 +9,7 @@ on:
       - agent/catalog-platform
       - agent/stabilize-architecture-20261006
       - agent/restore-functional-parity-20261008
+      - feature/woocommerce-and-product-removal-20261009
   pull_request:
     branches:
       - agent/woocommerce-inventory-foundation

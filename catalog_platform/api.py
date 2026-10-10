@@ -1106,10 +1106,35 @@ def events(value=Depends(context)):
 @router.get("/connections")
 def connections(value=Depends(context)):
     from sync_bridge_protocol import setting
+    from store_connection import drive_only
+    from .worker_wakeup import configured as remote_worker_configured
 
     state = lambda keys: (
         "connected" if all(setting(k) for k in keys) else "disconnected"
     )
+    woo = {
+        "name": "WooCommerce",
+        "status": state(["WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"]),
+    }
+    if drive_only():
+        woo.update(status="disconnected", note="Conexión pausada por el modo solo Drive.")
+    elif remote_worker_configured():
+        # Store credentials live in the worker, not necessarily in the API.
+        # A configured queue alone is not proof of a successful store request.
+        with transaction() as db:
+            latest = db.scalar(
+                select(GenerationJob)
+                .where(GenerationJob.tenant_id == tenant(value),
+                       GenerationJob.kind == "ecommerce_pull")
+                .order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc())
+                .limit(1)
+            )
+            result = latest.status if latest else None
+        woo.update(status="pending", note="Consulta la tienda en Sincronización para comprobar la conexión del worker.")
+        if result == "completed":
+            woo.update(status="connected", note="La última consulta a la tienda terminó correctamente.")
+        elif result == "failed":
+            woo.update(status="error", note="La última consulta falló. Revisa el trabajo en Sincronización.")
     return {
         "items": [
             {
@@ -1124,10 +1149,7 @@ def connections(value=Depends(context)):
                     else "disconnected"
                 ),
             },
-            {
-                "name": "WooCommerce",
-                "status": state(["WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"]),
-            },
+            woo,
             {"name": "WordPress", "status": state(["WP_USERNAME", "WP_APP_PASSWORD"])},
             {
                 "name": "Loyverse",

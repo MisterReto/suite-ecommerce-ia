@@ -32,7 +32,9 @@ const config: NextConfig = {
             "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*",
             "/inventory-hub", "/inventory-manager", "/inventory-count", "/inventory-history",
             "/inventory-count-bulk", "/inventory-movement", "/inventory-review",
+            "/inventory-sync", "/wc-health", "/wc-preview",
             "/woocommerce-image-preview", "/wp-media-health", "/image-sync-one",
+            "/woocommerce-publish-preview", "/stock-preview-start", "/stock-preview-result",
             "/woocommerce-batch-sync", "/batch-create", "/batch-status", "/batch-step", "/batch-resume",
             "/woocommerce-product-sync", "/product-sync-one"]
           .map(source => ({ source, destination: upstream + source })),
