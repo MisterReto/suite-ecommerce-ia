@@ -1,4 +1,6 @@
 """Worker-side reads: real orders, ID mappings and identified stock snapshots."""
+# Lecturas WooCommerce, snapshots de pedidos/productos y asociación de identidades remotas.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from datetime import datetime, timezone, timedelta
 import hashlib
@@ -20,6 +22,7 @@ from .catalog import serialize, save_product, move_stock, audit
 from . import queue
 
 
+# Convierte fechas del proveedor a la representación usada por los snapshots.
 def parse_time(value):
     if not value:
         return None
@@ -34,6 +37,7 @@ def parse_time(value):
         return None
 
 
+# Inserta/actualiza un snapshot de pedido por su identidad WooCommerce.
 def store_order(db, tenant, data):
     stamp = parse_time(data.get("date_created_gmt"))
     if not stamp or not data.get("id"):
@@ -53,6 +57,7 @@ def store_order(db, tenant, data):
     order.ordered_at = stamp
 
 
+# Aplica una lectura remota a una ficha viva sin reactivar un tombstone eliminado.
 def apply_snapshot(db, product, data, event_id, actor):
     if product.status == "deleted":
         return False
@@ -89,6 +94,8 @@ def apply_snapshot(db, product, data, event_id, actor):
     return True
 
 
+# Consulta tienda por páginas con checkpoints; omite IDs eliminados y registra
+# snapshots/resultados.
 def refresh(job, owner, value=None, drive=None):
     from ecommerce_services import WooCommerceService, WordPressMediaService
 
@@ -313,6 +320,7 @@ def refresh(job, owner, value=None, drive=None):
     return True
 
 
+# Selecciona los campos remotos que se conservan en el catálogo local.
 def remote_fields(data):
     return {
         "sku": str(data["sku"]),
@@ -351,6 +359,7 @@ def remote_fields(data):
     }
 
 
+# Descarga y asocia la primera imagen remota cuando la importación explícita lo requiere.
 def copy_first_image(job, value, drive, product_id, data):
     images = data.get("images", [])
     if not images:

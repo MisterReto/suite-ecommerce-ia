@@ -1,4 +1,6 @@
 """Local product identity and atomic parent/variation append planning."""
+# Identidad del producto: código de barras, coincidencias, familias y planificación de filas padre/variante.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 from decimal import Decimal
 from os.path import commonprefix
 import re
@@ -9,17 +11,20 @@ from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, is_variable_parent, n
 BARCODE_COLUMN = 20  # U; A:N and S:T retain their current meaning.
 
 
+# Convierte vacíos/NaN a texto limpio sin transformar códigos en números.
 def text(value):
     if value is None or str(value).casefold() in {"nan", "none"}:
         return ""
     return str(value).strip()
 
 
+# Normaliza acentos y separadores para comparar nombres/marcas.
 def normalized(value):
     value = unicodedata.normalize("NFKD", text(value).casefold())
     return re.sub(r"[^a-z0-9]+", " ", "".join(c for c in value if not unicodedata.combining(c))).strip()
 
 
+# Valida EAN/UPC/GTIN y su dígito de control; conserva los ceros iniciales.
 def barcode(value):
     code = re.sub(r"[\s-]", "", text(value))
     if not code:
@@ -33,6 +38,7 @@ def barcode(value):
     return code
 
 
+# Crea una clave GTIN de 14 dígitos para cotejar distintas representaciones del mismo código.
 def barcode_key(value):
     try:
         return barcode(value).zfill(14) if text(value) else ""
@@ -40,6 +46,7 @@ def barcode_key(value):
         return ""  # Old malformed catalog values never establish identity.
 
 
+# Lee código o SKU numérico histórico; una máscara de padre no cuenta como código de barras.
 def record_barcode(row):
     """Read legacy numeric SKUs too, without treating a parent mask as a GTIN."""
     if is_variable_parent(row):
@@ -57,10 +64,12 @@ def record_barcode(row):
 MEASURE = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*(kg|ml|mg|g|l|oz|pz|pzas?|piezas?)\b")
 
 
+# Quita presentación del nombre para comparar posibles familias.
 def family_name(name):
     return re.sub(r"\s+", " ", MEASURE.sub("", text(name))).strip(" -(),")
 
 
+# Identifica la presentación que diferencia variantes.
 def presentation(value):
     match = MEASURE.search(text(value))
     if not match:
@@ -74,6 +83,7 @@ def presentation(value):
     return f"{(amount * factor).normalize()}{unit}"
 
 
+# Compara marcas normalizadas antes de proponer una familia.
 def same_brand(first, second):
     return bool(normalized(first)) and normalized(first) == normalized(second)
 
@@ -85,11 +95,13 @@ GENERIC_WORDS = {"de", "con", "para", "el", "la", "un", "una", "sabor", "color",
                  "producto", "bebida", "dulce", "snack", "salsa", "paquete", "botella"}
 
 
+# Produce una etiqueta legible para una posible familia sin alterar la ficha original.
 def family_label(name):
     words = family_name(name).split()
     return " ".join(word for word in words if normalized(word) not in VARIANT_WORDS).strip()
 
 
+# Mide similitud conservadora de familia considerando nombre y marca.
 def family_score(name, brand, row):
     if not same_brand(brand, row.get("Marca", row.get("marca", ""))):
         return 0.0
@@ -101,6 +113,7 @@ def family_score(name, brand, row):
     return len(wanted & candidate) / min(len(wanted), len(candidate))
 
 
+# Busca identidad exacta de código/SKU antes de sugerir otra familia.
 def find_duplicate(rows, candidate):
     code = barcode_key(record_barcode(candidate))
     sku = text(candidate.get("sku")).casefold()
@@ -139,6 +152,8 @@ def find_duplicate(rows, candidate):
     return None, ""
 
 
+# Devuelve coincidencia, padre sugerido y candidatos para revisión; no fusiona productos
+# automáticamente.
 def review_product(rows, candidate):
     duplicate, reason = find_duplicate(rows, candidate)
     parents = [r for r in rows if is_variable_parent(r)]
@@ -164,6 +179,8 @@ def review_product(rows, candidate):
             "recommendation": "Revisar una familia nueva con estas presentaciones." if related else "Guardar como simple; no hay evidencia de una familia registrada."}
 
 
+# Usa el prefijo común de GTIN distintos y enmascara el resto con x; sin variantes usa seis
+# dígitos y rechaza colisiones.
 def next_parent_sku(name, brand, rows, code=""):
     own_code = barcode(code)
     related = [record_barcode(r) for r in rows
@@ -191,6 +208,7 @@ def next_parent_sku(name, brand, rows, code=""):
     raise ValueError("No pude proponer un SKU padre libre. Captúralo manualmente.")
 
 
+# Interpreta filas existentes respetando encabezados y columnas canónicas.
 def records_from_values(values):
     rows = []
     for number, raw in enumerate(values[1:], 2):
@@ -202,6 +220,7 @@ def records_from_values(values):
     return rows
 
 
+# Planifica la escritura de padre/variante y relaciones antes del guardado explícito.
 def prepare_capture_updates(values, record):
     """Plan one values.batchUpdate: parent and child succeed in the same request."""
     rows = records_from_values(values)

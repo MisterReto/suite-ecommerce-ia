@@ -1,4 +1,6 @@
 """One Render worker. Browser-independent jobs reuse the frozen studio pipeline."""
+# Ejecución de un trabajo reclamado: imágenes, guardado, ecommerce y limpieza temporal.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from copy import deepcopy
 import hashlib
@@ -32,6 +34,8 @@ STOP = threading.Event()
 OWNER = secrets.token_urlsafe(24)
 
 
+# Descarga una referencia autorizada a un temporal del trabajo, sin compartir fotos entre
+# usuarios.
 def download_reference(drive, file_id, path):
     if hasattr(drive, "download_to"):
         return drive.download_to(file_id, path)
@@ -40,6 +44,7 @@ def download_reference(drive, file_id, path):
     return path
 
 
+# Calcula SHA-256 de un archivo para identificar el contenido de imagen.
 def file_checksum(path):
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
@@ -48,10 +53,12 @@ def file_checksum(path):
     return digest.hexdigest()
 
 
+# Resuelve el destino temporal de candidatos del job conservando los nombres establecidos.
 def candidate_folder(drive, job_id):
     return drive.folder(job_id, drive.folder("imagenes_temporales"))
 
 
+# Guarda el uso/coste registrado, incluso si una cancelación ya liberó el lease.
 def record_usage(job_id, api_key, initial):
     from gemini_gateway import usage_for_key
     final = usage_for_key(api_key)
@@ -65,6 +72,8 @@ def record_usage(job_id, api_key, initial):
             }}
 
 
+# Genera slots con el pipeline aceptado y persiste cada resultado; checkpoint y in_flight
+# protegen cancelación y llamadas pagadas.
 def generation(job, value, drive):
     from studio_api import runtime, asset, file_path
     from image_generation_service import ImageGenerationService
@@ -266,6 +275,8 @@ def generation(job, value, drive):
     return True
 
 
+# Publica ficha y medios aprobados solo después de validar versiones, identidad remota y
+# flags de escritura.
 def publication(job, value, drive):
     from ecommerce_services import WordPressMediaService, WooCommerceService
     from woocommerce_product_sync import resolve_taxonomies
@@ -431,6 +442,8 @@ def publication(job, value, drive):
     return True
 
 
+# Guarda un candidato aprobado en Drive mediante respaldo previo y versionado; conserva IDs e
+# historial.
 def save_asset(job, value, drive):
     with transaction() as db:
         record = db.scalar(select(GeneratedAsset).where(
@@ -460,6 +473,8 @@ def save_asset(job, value, drive):
     return True
 
 
+# Despacha por kind con la conexión cifrada del actor; no trata JobCancelled como error de
+# proveedor.
 def process(job):
     if job["kind"] == "webhook":
         from .webhooks import process_event
@@ -537,6 +552,8 @@ def process(job):
         runtime._eliminar_sesion(sid)
 
 
+# Reclama un ID SQL, renueva lease y ejecuta con checkpoints; cancelación y limpieza son
+# independientes del cierre del navegador.
 def execute_job(job_id):
     """RQ calls this bounded function with an ID, never a closure or secret."""
     job = queue.claim(OWNER, job_id)
@@ -585,6 +602,8 @@ def execute_job(job_id):
             pass
 
 
+# Entrada compatible de worker; usa el supervisor RQ cuando está configurado y conserva el
+# modo PostgreSQL anterior.
 def main():
     if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") == "rq":
         from .redis_worker import main as redis_main

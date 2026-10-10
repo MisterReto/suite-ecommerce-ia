@@ -1,3 +1,5 @@
+// Caché PWA de la carcasa pública; no guarda sesión, datos privados ni operaciones de API.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 /* UI shell only. Private photos, credentials, API responses and writes stay online. */
 const CACHE = 'rincon-shell-20261006-v3';
 const PUBLIC = ['/', '/logo.png', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png'];

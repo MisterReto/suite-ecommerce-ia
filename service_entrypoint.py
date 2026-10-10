@@ -1,4 +1,6 @@
 """API entrypoint with optional UI hosting for the compatible deployment."""
+# Arranque de FastAPI: selecciona el rol, registra rutas y ordena los controles de sesión y permisos.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import os
 from starlette.routing import Mount
 from catalog_platform.render_config import configure_redirect
@@ -26,6 +28,8 @@ if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
     fastapi_app.include_router(webhook_router)
 
 
+# Informa rol, versión y almacén de sesión sin consultar Drive ni ejecutar generación; no
+# sustituye el heartbeat del worker.
 @fastapi_app.get("/service-health")
 def service_health():
     return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": os.getenv("SUITE_SERVICE_ROLE", "main"),

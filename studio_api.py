@@ -1,4 +1,6 @@
 """FastAPI endpoints for the Next.js studio. All drafts/jobs/files belong to a session."""
+# API de captura: borrador, fotos, análisis, revisión y guardado; delega imágenes durables al worker.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +39,8 @@ CAPACITY = threading.BoundedSemaphore(8)
 LOCK = threading.RLock()
 
 
+# Ficha de captura validada: usa nombres históricos como nombre_producto y Marca; difiere del
+# Product SQL.
 class Product(BaseModel):
     sku: str = Field(default="", max_length=80, pattern=r"^[A-Za-z0-9_-]*$")
     name: str = Field(default="", max_length=180)
@@ -61,16 +65,19 @@ class Product(BaseModel):
     uncertain_fields: list[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=20)
 
 
+# Fotos frente/reverso y contexto que inician un borrador.
 class Capture(BaseModel):
     front_id: str = Field(max_length=64)
     back_id: str | None = Field(default=None, max_length=64)
     context: str = Field(default="", max_length=1000)
 
 
+# Datos de notas/contexto modificables de una captura.
 class CaptureNotes(BaseModel):
     context: str = Field(default="", max_length=1000)
 
 
+# Selección de slots y confirmación de coste de generación.
 class Generation(BaseModel):
     slots: list[str] = Field(default_factory=lambda: list(SLOTS), min_length=1, max_length=3)
     automatic_review: bool = False
@@ -78,6 +85,7 @@ class Generation(BaseModel):
     confirm_cost: bool = False
 
 
+# Errores/feedback y autorización de corrección de una imagen.
 class Correction(BaseModel):
     feedback: str = Field(default="", max_length=600)
     errors: list[str] = Field(default_factory=list, max_length=8)
@@ -86,19 +94,23 @@ class Correction(BaseModel):
     confirm_cost: bool = False
 
 
+# Confirmación de aprobación de un slot propio.
 class Approval(BaseModel):
     approved: bool
 
 
+# Carpeta Drive y configuración personal Gemini recibidas desde la interfaz.
 class Settings(BaseModel):
     api_key: SecretStr | None = None
     folder: str | None = Field(default=None, max_length=250)
 
 
+# Datos y confirmación del guardado explícito de una captura.
 class Save(BaseModel):
     confirm: bool
 
 
+# Valida/restaura la sesión antes de usar fotos, configuración o borrador.
 def authenticated_session(request: Request):
     value = runtime._obtener_sesion(request)
     if not value:
@@ -106,6 +118,7 @@ def authenticated_session(request: Request):
     return value
 
 
+# Dependencia de acceso que obtiene la sesión y sus preferencias personales actuales.
 def session(request: Request):
     value = authenticated_session(request)
     value.setdefault("file_namespace", secrets.token_urlsafe(24))
@@ -116,6 +129,7 @@ def session(request: Request):
     return value
 
 
+# Exige permiso de edición para modificar la captura o iniciar operaciones.
 def editor(request: Request):
     value = session(request)
     from catalog_platform.security import require_role
@@ -123,11 +137,13 @@ def editor(request: Request):
     return value
 
 
+# Comprueba conexión Google/carpeta y las condiciones necesarias para el flujo solicitado.
 def ready(value):
     if not value.get("gemini_key"):
         raise HTTPException(422, "Guarda tu clave de Gemini en Ajustes.")
 
 
+# Obtiene o crea el borrador propio de esta sesión.
 def draft(value):
     result = value.get("studio_draft")
     if not result:
@@ -135,6 +151,7 @@ def draft(value):
     return result
 
 
+# Impide una edición que colisionaría con el trabajo activo del borrador.
 def idle(value):
     from catalog_platform import studio_jobs
 
@@ -144,6 +161,7 @@ def idle(value):
         raise HTTPException(409, "Espera a que termine la operación actual.")
 
 
+# Convierte un archivo temporal de la sesión en una referencia visible para su dueño.
 def asset(value, path):
     root = Path(path).resolve()
     if root.parent != Path("/tmp") or not root.name.startswith(value["file_namespace"] + "_") or not root.is_file():
@@ -159,6 +177,7 @@ def asset(value, path):
     return key
 
 
+# Valida y localiza un archivo temporal dentro del espacio de la sesión.
 def file_path(value, key):
     path = value.get("studio_files", {}).get(key)
     if not path or not Path(path).is_file():
@@ -168,6 +187,7 @@ def file_path(value, key):
     return path
 
 
+# Serializa el borrador, productos, imágenes y estados para CaptureStudio.
 def view(value):
     current = value.get("studio_draft")
     if not current:
@@ -184,6 +204,7 @@ def view(value):
             "sync_error": current.get("sync_error"), "master_product_id": current.get("master_product_id")}
 
 
+# Convierte un error interno en mensaje público sin secretos.
 def error_message(exc, value):
     code = getattr(exc, "code", None)
     if code in {401, 403}:
@@ -203,6 +224,8 @@ def error_message(exc, value):
     return "No se pudo completar la operación. Tu borrador y las imágenes anteriores se conservan."
 
 
+# Ejecuta trabajos locales compatibles de texto/guardado; imágenes durables utilizan
+# studio_jobs cuando está habilitado.
 def start_job(value, label, action):
     with LOCK:
         idle(value)
@@ -251,6 +274,8 @@ def start_job(value, label, action):
     return JSONResponse({"job": dict(job)}, status_code=202)
 
 
+# Informa autenticación, carpeta y configuración; auth_only evita descargar imágenes durante
+# el login.
 @app.get("/api/session")
 def session_status(request: Request, auth_only: bool = False):
     value = runtime._obtener_sesion(request)
@@ -289,6 +314,8 @@ def session_status(request: Request, auth_only: bool = False):
             "draft": view(value), "job": active, "errors": runtime.ETIQUETAS_ERRORES}
 
 
+# Devuelve opciones de clasificación leídas de la hoja existente sin crear o sincronizar
+# Drive.
 @app.get("/api/catalog-taxonomy")
 def catalog_taxonomy(value=Depends(authenticated_session)):
     from catalog_platform.accounts import restore
@@ -300,6 +327,8 @@ def catalog_taxonomy(value=Depends(authenticated_session)):
     return choices_from_rows(rows, runtime.CATEGORIAS_DEFECTO, runtime.SUBCATEGORIAS_DEFECTO)
 
 
+# Valida/guarda carpeta y clave Gemini personal; mantiene conexión cifrada y borrador del
+# usuario.
 @app.post("/api/settings")
 def settings(data: Settings, request: Request, value=Depends(editor)):
     from catalog_platform.database import configured, transaction
@@ -353,6 +382,7 @@ def settings(data: Settings, request: Request, value=Depends(editor)):
     return {"ok": True, "message": "Ajustes guardados. La clave personal queda cifrada y persiste entre sesiones." if key else "Carpeta actualizada."}
 
 
+# Desconecta la clave personal y evita restaurarla desde snapshots antiguos.
 @app.delete("/api/settings/gemini")
 def remove_gemini(value=Depends(editor)):
     from catalog_platform.database import configured, transaction
@@ -368,6 +398,7 @@ def remove_gemini(value=Depends(editor)):
     return {"ok": True, "message": "Clave personal eliminada. Los nuevos trabajos requieren otra clave en Ajustes."}
 
 
+# Comprueba la clave configurada mediante la operación de diagnóstico existente.
 @app.post("/api/settings/gemini/test")
 def test_gemini(value=Depends(editor)):
     from catalog_platform.security import require_role
@@ -387,6 +418,7 @@ def test_gemini(value=Depends(editor)):
         raise HTTPException(422, error_message(exc, value)) from None
 
 
+# Valida foto recibida y la guarda en temporales del usuario con límites de formato/tamaño.
 @app.post("/api/uploads")
 async def upload(request: Request, image: UploadFile = File(), value=Depends(editor)):
     idle(value)
@@ -405,6 +437,7 @@ async def upload(request: Request, image: UploadFile = File(), value=Depends(edi
         await image.close()
 
 
+# Entrega únicamente un archivo perteneciente a la sesión autenticada.
 @app.get("/api/files/{key}")
 def get_file(key: str, download: bool = False, value=Depends(session)):
     path = file_path(value, key)
@@ -412,6 +445,7 @@ def get_file(key: str, download: bool = False, value=Depends(session)):
                         headers={"Cache-Control": "no-store"})
 
 
+# Crea el borrador a partir de frente/reverso y del contexto de captura.
 @app.post("/api/capture")
 def capture(data: Capture, value=Depends(editor)):
     idle(value)
@@ -430,6 +464,7 @@ def capture(data: Capture, value=Depends(editor)):
     return {"draft": view(value)}
 
 
+# Actualiza campos de borrador, valida barcode y recalcula SKU según la regla aceptada.
 @app.put("/api/draft")
 def update_product(data: Product, value=Depends(editor)):
     idle(value)
@@ -460,6 +495,7 @@ def update_product(data: Product, value=Depends(editor)):
     return {"draft": view(value)}
 
 
+# Actualiza las notas/contexto de la captura sin generar una imagen.
 @app.put("/api/capture-notes")
 def capture_notes(data: CaptureNotes, value=Depends(editor)):
     idle(value)
@@ -470,6 +506,7 @@ def capture_notes(data: CaptureNotes, value=Depends(editor)):
     return {"draft": view(value)}
 
 
+# Descarta el borrador recuperable del usuario; conserva productos ya guardados.
 @app.delete("/api/draft")
 def clear_draft(value=Depends(editor)):
     idle(value)
@@ -478,6 +515,7 @@ def clear_draft(value=Depends(editor)):
     return {"ok": True}
 
 
+# Analiza fotos/texto, identidad y clasificación utilizando vocabulario disponible.
 @app.post("/api/analyze")
 def analyze(request: Request, value=Depends(editor)):
     ready(value)
@@ -552,6 +590,7 @@ def analyze(request: Request, value=Depends(editor)):
     return start_job(value, "Analizando producto", action)
 
 
+# Investiga una propuesta de precio, sin publicar una escritura automática de tienda.
 @app.post("/api/research-price")
 def research_price(value=Depends(editor)):
     ready(value)
@@ -566,6 +605,7 @@ def research_price(value=Depends(editor)):
     return start_job(value, "Investigando precio", action)
 
 
+# Busca posibles presentaciones/variantes para que el usuario revise la familia.
 @app.post("/api/find-variants")
 def find_variants(request: Request, value=Depends(editor)):
     current = draft(value)
@@ -636,6 +676,8 @@ def make_image(value, current, slot, prompt, styles, *, feedback=(), automatic_r
         "message": "Imagen lista para tu revisión." if not qa else qa.get("resumen", "Revisa la imagen antes de guardarla.")}
 
 
+# Valida selección y confirmación de coste; delega la generación durable al worker en el
+# despliegue actual.
 @app.post("/api/generate")
 def generate_images(data: Generation, value=Depends(editor)):
     ready(value)
@@ -666,6 +708,7 @@ def generate_images(data: Generation, value=Depends(editor)):
     return start_job(value, "Generando imágenes", action)
 
 
+# Solicita una corrección de slot con feedback y conserva referencias/historial.
 @app.post("/api/images/{slot}/correct")
 def correct_image(slot: str, data: Correction, value=Depends(editor)):
     ready(value)
@@ -691,6 +734,7 @@ def correct_image(slot: str, data: Correction, value=Depends(editor)):
     return start_job(value, "Corrigiendo imagen", action)
 
 
+# Guarda la aprobación de un candidato propio y la refleja en su trabajo durable.
 @app.post("/api/images/{slot}/approve")
 def approve(slot: str, data: Approval, value=Depends(editor)):
     idle(value)
@@ -709,6 +753,7 @@ def approve(slot: str, data: Approval, value=Depends(editor)):
     return {"draft": view(value)}
 
 
+# Coteja código, duplicados y familia de la ficha actual.
 @app.post("/api/check-product")
 def check(request: Request, value=Depends(editor)):
     idle(value)
@@ -720,6 +765,7 @@ def check(request: Request, value=Depends(editor)):
     return {**result, "draft": view(value)}
 
 
+# Devuelve padres registrados para elegir una familia existente.
 @app.get("/api/parents")
 def parents(request: Request, value=Depends(session)):
     p = draft(value)["product"]
@@ -743,6 +789,7 @@ def parents(request: Request, value=Depends(session)):
             "candidates": list(available.values())}
 
 
+# Construye/revisa la portada de familia con la composición existente.
 @app.post("/api/family-cover")
 def family_cover(request: Request, value=Depends(editor)):
     current = draft(value)
@@ -757,6 +804,8 @@ def family_cover(request: Request, value=Depends(editor)):
     return start_job(value, "Preparando portada", action)
 
 
+# Guarda la captura confirmada con ProductCapture y registra el resultado durable para
+# recuperar respuestas perdidas.
 @app.post("/api/save")
 def save(data: Save, request: Request, value=Depends(editor)):
     current = draft(value)
@@ -812,6 +861,7 @@ def save(data: Save, request: Request, value=Depends(editor)):
     return start_job(value, "Guardando producto", action)
 
 
+# Busca una imagen asociada al registro identificado del inventario.
 @app.get("/api/matches/{sku}/image")
 def match_image(sku: str, value=Depends(session)):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sku):
@@ -828,6 +878,7 @@ def match_image(sku: str, value=Depends(session)):
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
+# Concilia un guardado pendiente entre Sheets y SQL sin repetir una generación.
 @app.post("/api/capture-sync")
 def repair_capture(value=Depends(editor)):
     current = draft(value)
@@ -837,6 +888,7 @@ def repair_capture(value=Depends(editor)):
     return start_job(value, "Reparando catálogo", lambda update: mirror(value, current))
 
 
+# Devuelve progreso/resultado del job local o durable que pertenece al usuario.
 @app.get("/api/jobs/{key}")
 def get_job(key: str, value=Depends(session)):
     from catalog_platform import studio_jobs
@@ -854,12 +906,14 @@ def get_job(key: str, value=Depends(session)):
         return {"job": dict(job), "draft": view(value)}
 
 
+# Devuelve el inventario compatible conectado a Drive/Sheets.
 @app.get("/api/catalog")
 def catalog(value=Depends(session)):
     _, sheet, rows = runtime.captura.snapshot(value)
     return {"rows": rows, "sheet_url": f"https://docs.google.com/spreadsheets/d/{sheet}/edit"}
 
 
+# Recupera el borrador propio para continuar una captura.
 @app.get("/api/draft")
 def get_draft(value=Depends(session)):
     return {"draft": view(value)}

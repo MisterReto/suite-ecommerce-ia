@@ -1,4 +1,6 @@
 """HTTP defenses shared by both public services; never records request bodies."""
+# Protección HTTP: Host/origen, sesión, límites de solicitudes y errores sin secretos.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 from collections import OrderedDict, deque
 import html
 import io
@@ -16,11 +18,13 @@ from starlette.concurrency import run_in_threadpool
 from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS
 
 
+# Sanea HTML de textos de producto antes de publicarlos o mostrarlos.
 def clean_html(value):
     return bleach.clean(str(value or ""), tags={"p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "a"},
         attributes={"a": ["href", "title"]}, protocols={"https", "http"}, strip=True)
 
 
+# Valida destinos de servicio para evitar enviar credenciales a un origen no autorizado.
 def validate_service_url(url):
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -38,6 +42,7 @@ def validate_service_url(url):
 
 
 
+# Comprueba contenido y tipo real de imagen, independientemente del nombre del archivo.
 def checked_image_type(filename, data):
     if not filename or any(c in filename for c in '\r\n"\\/'):
         raise ValueError("Nombre de imagen inválido.")
@@ -63,6 +68,7 @@ def checked_image_type(filename, data):
         raise ValueError("La imagen no es válida o supera las dimensiones permitidas.") from exc
 
 
+# Resume errores externos y elimina URLs/tokens/datos que no deben exponerse al usuario.
 def public_error(exc):
     if not isinstance(exc, (ValueError, RuntimeError)):
         return "No se pudo confirmar la operación. Revisa su estado antes de reintentar."
@@ -75,12 +81,15 @@ def public_error(exc):
     return html.escape(message[:300])
 
 
+# Contador local por ventana temporal para limitar solicitudes de un mismo ámbito.
 class WindowLimiter:
+    # Configura ventana y estructura de conteo local del proceso.
     def __init__(self, maximum=4096):
         self.entries = OrderedDict()
         self.lock = Lock()
         self.maximum = maximum
 
+    # Decide si la solicitud cabe en el límite vigente.
     def allow(self, key, limit, seconds=60):
         now = time.monotonic()
         with self.lock:
@@ -96,7 +105,10 @@ class WindowLimiter:
             return allowed
 
 
+# Valida Host/origen y límites, restaura sesión fuera del bucle asíncrono y aplica cabeceras
+# sin caché privada.
 class SecurityMiddleware:
+    # Recibe almacén de sesiones, revocación y restauración durable.
     def __init__(self, app, sessions=lambda: {}, expire=None, restore=None):
         self.app, self.sessions = app, sessions
         self.limiter = WindowLimiter()
@@ -104,6 +116,8 @@ class SecurityMiddleware:
         self.expire = expire or (lambda key: self.sessions().pop(key, None))
         self.restore = restore
 
+    # Protege cada solicitud; un fallo temporal al restaurar SQL devuelve 503 sin cerrar la
+    # sesión del navegador.
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)

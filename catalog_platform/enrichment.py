@@ -1,4 +1,6 @@
 """Text enrichment is a reviewable proposal; it never writes price or inventory."""
+# Propuesta de textos/clasificación por IA para revisión, sin aplicar precios o stock automáticamente.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import json
 from pathlib import Path
@@ -8,6 +10,8 @@ from .models import Product, Category
 from . import queue
 
 
+# Genera una propuesta de textos/clasificación con vocabulario existente; queda para revisión
+# y no cambia stock o precio automáticamente.
 def enrich(job, owner, value, drive):
     from studio_api import DESCRIPTION_RULES, clean_description, read_barcodes
     from gemini_gateway import GeminiClient, image_part, text_config, parse_json

@@ -1,4 +1,6 @@
 """Free Render web service: public health only, generation stays in RQ children."""
+# Entrada del worker gratuito: servidor HTTP mínimo de salud y supervisor de trabajos.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -7,6 +9,8 @@ import threading
 from . import redis_worker
 
 
+# Sirve únicamente salud/readiness por HTTP para el worker gratuito; no ejecuta imágenes en
+# la petición.
 def health_server(ready, port):
     class HealthHandler(BaseHTTPRequestHandler):
         def setup(self):
@@ -36,6 +40,7 @@ def health_server(ready, port):
     return ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
 
 
+# Arranca el health y mantiene el supervisor RQ en el proceso principal.
 def main():
     ready = threading.Event()
     server = health_server(ready, int(os.getenv("PORT", "10000")))

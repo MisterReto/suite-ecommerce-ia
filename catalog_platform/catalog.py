@@ -1,4 +1,6 @@
 """Catalog operations: optimistic edits, identified stock movements, stable IDs."""
+# Operaciones del catálogo por tenant, versionado, movimientos, auditoría y exportación.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import csv
 import io
@@ -39,6 +41,7 @@ FIELDS = (
 )
 
 
+# Convierte columnas SQL en una respuesta JSON, conservando fechas e identificadores.
 def serialize(record):
     result = {
         column.name: getattr(record, column.name) for column in record.__table__.columns
@@ -49,6 +52,8 @@ def serialize(record):
     return result
 
 
+# Busca el producto en el tenant y excluye fichas eliminadas; puede bloquear la fila para una
+# escritura.
 def product_for(db, tenant, product_id, lock=False):
     query = select(Product).where(Product.tenant_id == tenant, Product.id == product_id, Product.status != "deleted")
     if lock:
@@ -59,6 +64,7 @@ def product_for(db, tenant, product_id, lock=False):
     return product
 
 
+# Registra actor, operación y valores antes/después dentro de la misma transacción.
 def audit(
     db,
     tenant,
@@ -84,6 +90,7 @@ def audit(
     )
 
 
+# Aplica un movimiento identificado de inventario y evita repetir el mismo evento.
 def move_stock(
     db, product, quantity, source, event_id, actor, metadata=None, store_id=""
 ):
@@ -127,6 +134,7 @@ def move_stock(
     return movement
 
 
+# Valida versión, SKU y relación padre/variante antes de actualizar la ficha y su auditoría.
 def save_product(
     db,
     tenant,
@@ -260,6 +268,7 @@ def save_product(
     return product
 
 
+# Exporta el catálogo visible sin incluir productos eliminados.
 def csv_export(products):
     data = io.StringIO()
     writer = csv.DictWriter(data, fieldnames=(*FIELDS, "parent_sku"))

@@ -1,3 +1,6 @@
+// Identidad/estado/etiqueta del job de imagen que se observará para un aviso sonoro.
+// Avisos de inicio, éxito y fallo de imagen con Web Audio, consentimiento por gesto y deduplicación.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 type ImageJob = { id: string; status: string; label: string };
 const imageLabels = new Set(["Generando imágenes", "Corrigiendo imagen"]);
 const notes = {
@@ -7,6 +10,8 @@ const notes = {
 };
 
 /** One notice per job transition; audio never changes or retries a request. */
+// Controlador de avisos de imagen; evita repetir sonidos en cada polling y permite
+// silenciarlos.
 export class GenerationSounds {
   private context: AudioContext | null = null;
   private output: GainNode | null = null;
@@ -22,12 +27,14 @@ export class GenerationSounds {
     return Audio ? new Audio() : null;
   }) {}
 
+  // Actualiza preferencia y volumen en memoria; el componente conserva el ajuste.
   setEnabled(enabled: boolean) {
     this.enabled = enabled;
     if (this.output) this.output.gain.value = enabled ? 0.08 : 0;
   }
 
   // Called synchronously by a user gesture, before any API await (also Safari).
+  // Desbloquea Web Audio desde un gesto del usuario para que funcione en móvil.
   unlock() {
     if (!this.enabled) return;
     try {
@@ -42,6 +49,7 @@ export class GenerationSounds {
     } catch { /* A browser audio restriction must never block the studio. */ }
   }
 
+  // Compara la transición del job y emite inicio, fin o fallo una sola vez.
   observe(job: ImageJob | null | undefined, initiated = false) {
     if (!job || (!initiated && !imageLabels.has(job.label) && !this.jobs.has(job.id))) return;
     if (!["queued", "running", "completed", "failed"].includes(job.status)) return;
@@ -65,9 +73,12 @@ export class GenerationSounds {
     }
   }
 
+  // Programa tonos breves por tipo de aviso; no llama a proveedores ni descarga un audio
+  // externo.
   private play(frequencies: number[]) {
     const context = this.context;
     if (!this.enabled || !context || !this.output) return;
+    // Agenda notas en AudioContext después de asegurar que está operativo.
     const schedule = () => {
       if (!this.enabled || context !== this.context || !this.output) return;
       try {
@@ -96,6 +107,7 @@ export class GenerationSounds {
     } catch { /* Some browsers reject resume synchronously. */ }
   }
 
+  // Cierra el contexto de audio y limpia recursos al desmontar el componente.
   dispose() {
     const context = this.context;
     this.context = null;

@@ -1,8 +1,12 @@
+// Pantalla local de espera de /login; funciona con script inline aunque los chunks React no carguen.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import { Loader2, RefreshCw } from "lucide-react";
 import { recoverSession } from "@/lib/session-recovery";
 
 // A mobile browser can receive this HTML while a framework chunk is unavailable.
 // Readiness and the retry button must work without React hydration.
+// Inserta en el HTML una espera autocontenida y un botón Reintentar; no depende de que
+// hidrate React.
 function bootstrap() {
   return `(() => {
     const recover = ${recoverSession.toString()};
@@ -51,6 +55,8 @@ function bootstrap() {
   })();`;
 }
 
+// Renderiza Iniciando servidor y el script que decide volver al inicio o empezar OAuth tras
+// validar sesión.
 export default function ConnectGoogle() {
   return (
     <main style={{ minHeight: "100dvh", display: "grid", placeItems: "center", padding: 24 }}>

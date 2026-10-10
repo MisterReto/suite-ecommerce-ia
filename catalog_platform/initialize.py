@@ -1,4 +1,6 @@
 """Explicit initialization of a new empty staging DB; never migrate existing data."""
+# Inicialización optativa únicamente de una base vacía; no migra un esquema existente incompleto.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import os
 from sqlalchemy import inspect, text
@@ -6,6 +8,8 @@ from .database import engine_for
 from .models import Base
 
 
+# Con autorización del flag, crea tablas solo si la base está vacía; exige migración
+# explícita si existe un esquema incompleto.
 def initialize_empty_database():
     if os.getenv("INITIALIZE_EMPTY_DATABASE", "false").lower() != "true":
         return False

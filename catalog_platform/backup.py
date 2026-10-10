@@ -1,4 +1,6 @@
 """Create a restrictive PostgreSQL dump. No destructive restore/migration commands."""
+# Comando de respaldo privado PostgreSQL; no se ejecuta como parte de una lectura de catálogo.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import os
 from pathlib import Path
@@ -6,6 +8,8 @@ import subprocess
 from datetime import datetime, timezone
 
 
+# Genera un pg_dump privado; el archivo temporal debe exportarse antes de perder el
+# contenedor.
 def main():
     url = os.getenv("DATABASE_URL", "")
     if not url.startswith(("postgres://", "postgresql://")):

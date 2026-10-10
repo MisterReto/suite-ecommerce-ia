@@ -1,10 +1,14 @@
 """Classification choices from the connected Drive inventory; no writes."""
+# Lectura de categorías, subcategorías y etiquetas del inventario conectado; no escribe ni crea archivos.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 from catalog_capture import text
 from inventory_schema import split_category_path
 import os
 import re
 
 
+# Descubre y lee el inventario existente dentro de la carpeta autorizada; evita el adaptador
+# que crea/sincroniza hojas.
 def read_rows(runtime, value):
     """Discover an existing inventory without the create/synchronize adapter."""
     service = runtime._get_drive_service(value)
@@ -34,11 +38,14 @@ def read_rows(runtime, value):
     return runtime._leer_google_sheet(runtime._get_sheets_service(value), sheet).to_dict("records")
 
 
+# Extrae categoría/subcategoría tanto del camino combinado como de columnas históricas.
 def classification(row):
     category, subcategory = split_category_path(text(row.get("categorias")))
     return category or text(row.get("categoria")), subcategory or text(row.get("subcategoria"))
 
 
+# Construye opciones únicas de Drive, conserva ortografía y relaciona subcategorías con su
+# categoría; defaults solo para datos ausentes.
 def choices_from_rows(rows, default_categories=(), default_subcategories=()):
     categories, subcategories, tags = set(), {}, set()
     for row in rows:

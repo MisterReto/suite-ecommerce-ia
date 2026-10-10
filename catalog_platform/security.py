@@ -1,9 +1,13 @@
+# Cifrado de conexiones y comprobación de pertenencia/rol del usuario.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import json
 import os
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
 
 
+# Valida la clave de cifrado compartida; cambiarla sin migración impediría leer conexiones
+# existentes.
 def cipher():
     key = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
     if not key:
@@ -18,10 +22,12 @@ def cipher():
         ) from None
 
 
+# Cifra un objeto JSON antes de guardarlo como credenciales.
 def seal(data):
     return cipher().encrypt(json.dumps(data, ensure_ascii=False).encode()).decode()
 
 
+# Descifra y reconstruye una conexión; informa el fallo sin revelar su contenido.
 def unseal(data):
     try:
         return json.loads(cipher().decrypt(data.encode()))
@@ -31,6 +37,8 @@ def unseal(data):
         ) from None
 
 
+# Resuelve admin, editor o viewer desde la configuración y valida el formato del mapa de
+# roles.
 def role_for(email):
     try:
         roles = json.loads(os.getenv("APP_ROLE_MAP", "{}"))
@@ -46,6 +54,7 @@ def role_for(email):
     return role
 
 
+# Comprueba la pertenencia del correo al catálogo autorizado.
 def member(email):
     if not os.getenv("DATABASE_URL") and not os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
         return True
@@ -58,6 +67,8 @@ def member(email):
     return email.casefold() in {str(key).casefold() for key in roles}
 
 
+# Rechaza en servidor una operación si el usuario no pertenece al catálogo o carece del rol
+# requerido.
 def require_role(value, *roles):
     if (
         not member(value.get("email", ""))

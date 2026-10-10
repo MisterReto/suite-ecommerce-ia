@@ -4,6 +4,8 @@ Sheets remains the operational source during migration. SQL mirrors parent and
 child in one transaction; a failed mirror is repairable without writing Sheets
 again. Draft files are temporary Drive assets, scoped to store and actor.
 """
+# Puente entre captura/Sheets y catálogo SQL con recuperación de borrador y espejo por identidad.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 from copy import deepcopy
 from contextlib import contextmanager
 import hashlib
@@ -23,14 +25,18 @@ from .catalog import save_product, audit
 from .queue import request_lock
 
 
+# Resuelve la carpeta seleccionada que limita el puente captura/SQL.
 def root_for(value):
     return value.get("platform_tenant") or value.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 
+# Indica si el puente SQL está disponible para la sesión y carpeta actuales.
 def active(value):
     return configured() and member(value.get("email", "")) and bool(root_for(value))
 
 
+# Serializa el guardado compatible de captura para evitar duplicar una operación sobre
+# Sheets.
 @contextmanager
 def sheet_write_guard(value):
     """Serialize fresh-read + Sheet append across API processes for this store."""
@@ -42,12 +48,14 @@ def sheet_write_guard(value):
         yield
 
 
+# Normaliza el borrador de captura a una ficha que puede cotejarse en SQL.
 def candidate(product):
     return dict(sku=product["sku"], nombre_producto=product["name"], Marca=product["brand"],
                 gramaje=product["size"], codigo_barras=product["barcode"], sku_padre=product["parent_sku"],
                 atributo_nombre=product["attribute"], atributo_valor=product["attribute_value"])
 
 
+# Lee filas visibles del catálogo para coincidencias; excluye eliminadas.
 def master_rows(value):
     if not active(value):
         return []
@@ -69,6 +77,7 @@ def master_rows(value):
                 for p in records]
 
 
+# Traduce relaciones WooCommerce registradas a filas compatibles de captura.
 def woo_rows(value, product):
     from store_connection import drive_only
     from woocommerce_client import WooCommerceClient
@@ -132,6 +141,7 @@ def woo_rows(value, product):
     return rows, "WooCommerce consultado en lectura (búsqueda acotada)." if complete else "Lectura de WooCommerce incompleta: revisa una familia con más de 300 variaciones antes de guardar."
 
 
+# Coteja el borrador con el catálogo existente y sus identidades remotas.
 def check(value, product, include_woo=False):
     from studio_api import runtime
     _, _, sheet_rows = runtime.captura.snapshot(value)
@@ -166,6 +176,7 @@ def check(value, product, include_woo=False):
     return result
 
 
+# Guarda un borrador durable antes de una operación que deba recuperarse tras reinicio.
 def checkpoint(value, current):
     if not configured() or not member(value.get("email", "")):
         return
@@ -208,6 +219,7 @@ def checkpoint(value, current):
         put(db, root, value["email"], "capture_draft", state)
 
 
+# Registra que una captura ya quedó guardada y su resultado no debe enviarse dos veces.
 def mark_saved(db, value, current):
     """Update the durable save marker in the job transaction, without uploading files."""
     root, actor = root_for(value), value["email"]
@@ -227,6 +239,7 @@ def mark_saved(db, value, current):
     put(db, root, actor, "capture_draft", state)
 
 
+# Restaura el borrador durable propio al recuperar la sesión.
 def restore(value):
     if value.get("studio_draft") or not active(value):
         return
@@ -271,6 +284,7 @@ def restore(value):
                                        value["studio_files"][image["id"]], current["revision"])
 
 
+# Limpia el borrador recuperable de captura sin eliminar productos ni imágenes guardados.
 def clear(value):
     if active(value):
         with transaction() as db:
@@ -280,6 +294,8 @@ def clear(value):
     value["family_covers"] = {}
 
 
+# Recupera el resultado de un guardado ya confirmado para resolver una respuesta HTTP
+# perdida.
 def recover_saved(value, current):
     """A previously started write is verified in Sheets, never repeated blindly."""
     from studio_api import runtime
@@ -298,10 +314,12 @@ def recover_saved(value, current):
         pending(value, current)
 
 
+# Deriva una identidad estable del evento de guardado para deduplicarlo.
 def event_id(value, current):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, root_for(value) + ":" + value["email"] + ":" + current["revision"]))
 
 
+# Refleja filas identificadas del guardado en SQL conservando padres y variantes.
 def mirror_records(value, current, rows, images=None):
     """Atomic parent + child + mapping; replay never changes quantities again."""
     from .imports import normalize
@@ -376,6 +394,7 @@ def mirror_records(value, current, rows, images=None):
         return product.id
 
 
+# Coordina el espejo del resultado de captura y registra su estado.
 def mirror(value, current):
     if not active(value):
         current["sync_status"] = "sheets_only"
@@ -399,6 +418,7 @@ def mirror(value, current):
     current.pop("sync_error", None)
 
 
+# Describe una reconciliación de guardado pendiente para revisión.
 def pending(value, current):
     current["sync_status"] = "pending_repair"
     current["sync_error"] = "El producto quedó guardado en Sheets. Falta incorporarlo al catálogo maestro; reparar no repetirá el guardado en Sheets."

@@ -1,5 +1,10 @@
 # Archivos que conviene conocer
 
+**Lectura actual:** [guía de reparación del 10 de octubre](CODE_GUIDE.md) e
+[índice de funciones y objetos](FUNCTION_INDEX.md). Este mapa inicial conserva
+referencias históricas; la guía distingue el estado actual de sesiones, cola,
+WooCommerce y controles del catálogo.
+
 No hay carpetas nuevas `backend/routers` ficticias: este proyecto mantiene
 módulos Python en raíz y agrupa el catálogo nuevo en `catalog_platform/`.
 

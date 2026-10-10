@@ -1,14 +1,20 @@
 """Enforce read-only roles on API and existing administrative tools, server-side."""
+# Middleware de permisos de lectura/escritura para API y herramientas compatibles.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from .security import role_for, member
 
 
+# Aplica permisos a solicitudes HTTP; ocultar un botón en React no reemplaza este control.
 class RoleMiddleware:
+    # Recibe la aplicación y el acceso al almacén de sesiones.
     def __init__(self, app, sessions):
         self.app, self.sessions = app, sessions
 
+    # Rechaza cuentas no autorizadas y escrituras de usuarios viewer, conservando las rutas
+    # públicas definidas.
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)

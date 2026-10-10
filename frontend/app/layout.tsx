@@ -1,3 +1,5 @@
+// Layout, fuentes y metadata global de la interfaz/PWA.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import type { Metadata, Viewport } from "next";
 import "@fontsource/poppins/400.css";
 import "@fontsource/poppins/500.css";
@@ -17,6 +19,7 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = { themeColor: "#f60813", width: "device-width", initialScale: 1, viewportFit: "cover" };
 
+// Aplica idioma/layout, tipografía y metadata compartida; no guarda datos del catálogo.
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {

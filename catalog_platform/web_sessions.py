@@ -1,4 +1,6 @@
 """Encrypted browser sessions in the existing account table; no schema change."""
+# Sesiones de navegador cifradas en PostgreSQL; permite restaurarlas tras reiniciar la API.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import hashlib
 import re
@@ -17,12 +19,16 @@ _lock = RLock()
 _fields = ("email", "creds", "expires_at", "file_namespace")
 
 
+# Valida el identificador aleatorio de cookie y deriva su clave SHA-256; no almacena el
+# identificador original.
 def _tenant(sid):
     if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", sid):
         return None
     return "session:" + hashlib.sha256(sid.encode()).hexdigest()
 
 
+# Persiste cifrados correo, credenciales, vencimiento y espacio de archivos; no amplía la
+# caducidad de sesión.
 def save(sid, value):
     tenant = _tenant(sid)
     if not configured() or not tenant or not value.get("email") or not value.get("creds"):
@@ -34,6 +40,7 @@ def save(sid, value):
     value["_persistent_session"] = tenant
 
 
+# Borra la sesión durable al cerrar sesión para invalidar también las copias en memoria.
 def revoke(sid):
     tenant = _tenant(sid)
     if configured() and tenant:
@@ -43,6 +50,8 @@ def revoke(sid):
                 IntegrationAccount.provider == "web_session"))
 
 
+# Recupera una sesión vigente después de reiniciar la API y revalida caducidad, pertenencia,
+# allowlist y preferencias personales.
 def restore(sid):
     import app as runtime
     from oauth_guard import email_allowed

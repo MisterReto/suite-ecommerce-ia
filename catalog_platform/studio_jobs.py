@@ -1,4 +1,6 @@
 """Durable capture-image jobs; the accepted image functions stay in studio_api."""
+# Persistencia y recuperación de trabajos de captura que reutilizan el generador aceptado.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from copy import deepcopy
 import hashlib
@@ -15,10 +17,12 @@ from .security import require_role, member
 from . import queue
 
 
+# Selecciona la orquestación durable cuando STUDIO_IMAGE_JOBS=worker y existe SQL.
 def enabled():
     return os.getenv("STUDIO_IMAGE_JOBS", "local") == "worker"
 
 
+# Obtiene la carpeta autorizada de la captura que identifica el tenant del trabajo.
 def tenant_for(value):
     root = value.get("platform_tenant") or value.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     if not root:
@@ -27,11 +31,14 @@ def tenant_for(value):
     return root
 
 
+# Traduce el job SQL al contrato compatible de captura sin exponer conexión cifrada.
 def public_job(job):
     return {"id": job.id, "status": "running" if job.status == "processing" else job.status,
             "label": "Generando imágenes", "progress": job.progress, "message": job.message}
 
 
+# Busca el trabajo activo del actor, incluyendo Deteniendo, para evitar duplicar una
+# operación.
 def find_active(value):
     if not enabled() or not configured():
         return None
@@ -46,6 +53,7 @@ def find_active(value):
         return public_job(job) if job else None
 
 
+# Lee el consumo ya registrado de la generación para comparar el incremento del trabajo.
 def recorded_usage(value):
     if not configured() or not member(value.get("email", "")):
         return {}
@@ -63,6 +71,8 @@ def recorded_usage(value):
         return dict(row._mapping)
 
 
+# Valida confirmación/snapshot, guarda referencias y encola una captura o corrección
+# idempotente.
 def enqueue_capture(value, current, slots, data, corrections=()):
     from drive_service import DriveService
     from studio_api import runtime, file_path
@@ -128,6 +138,8 @@ def enqueue_capture(value, current, slots, data, corrections=()):
         return {"job": public_job(job), "status": "queued", "job_id": job.id}
 
 
+# Ejecuta la captura durable con el generador existente, checkpoints y persistencia de cada
+# candidato.
 def process_capture(job, value, drive, owner):
     from studio_api import runtime, asset, file_path
     from creative_pipeline import IMAGE_MODEL, plan_key, load_style_examples
@@ -193,6 +205,7 @@ def process_capture(job, value, drive, owner):
     return True
 
 
+# Reconstruye el borrador y los candidatos de un trabajo con referencias Drive.
 def restore(value, payload, job_id):
     from studio_api import runtime, asset
     from drive_service import DriveService
@@ -228,6 +241,7 @@ def restore(value, payload, job_id):
         loaded[marker] = True
 
 
+# Consulta un trabajo autorizado y recupera sus resultados para la interfaz de captura.
 def get_job(value, job_id):
     from studio_api import view
 
@@ -244,6 +258,7 @@ def get_job(value, job_id):
     return {"job": public, "draft": view(value)}
 
 
+# Recupera el último trabajo propio después de iniciar una sesión nueva.
 def recover_latest(value):
     if not configured() or not member(value.get("email", "")):
         return
@@ -267,6 +282,7 @@ def recover_latest(value):
     restore(value, payload, job_id)
 
 
+# Marca el trabajo como guardado para no recuperarlo como un borrador pendiente.
 def record_saved(value, current):
     """Remember the existing capture save; never repeat a Sheet write on recovery."""
     from .capture_bridge import mark_saved
@@ -287,6 +303,7 @@ def record_saved(value, current):
               after={"sku": current["product"]["sku"], "revision": current["revision"]})
 
 
+# Persiste aprobación/rechazo de un slot conservando el estado de una cancelación.
 def record_approval(value, slot, approved):
     job_id = value.get("studio_asset_jobs", {}).get(slot)
     if not job_id:

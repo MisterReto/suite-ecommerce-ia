@@ -1,4 +1,6 @@
 "use client";
+// Pantalla principal Platform: navegación, catálogo SQL, trabajos, inventario, conexiones y confirmaciones.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -35,7 +37,10 @@ import { recoverSession } from "@/lib/session-recovery";
 import DriveClassification from "@/components/DriveClassification";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
+// Nombres de las cinco secciones de navegación; no son permisos del servidor.
 type Section = "home" | "products" | "generate" | "inventory" | "more";
+// Copia JSON de Product SQL para la interfaz; version debe enviarse en las escrituras
+// correspondientes.
 type Product = {
   id: string;
   sku: string;
@@ -64,6 +69,7 @@ type Product = {
   loyverse_item_id?: string;
   last_woocommerce_sync?: string;
 };
+// Metadata y referencia Drive de una imagen del catálogo.
 type Picture = {
   id: string;
   drive_file_id: string;
@@ -71,6 +77,7 @@ type Picture = {
   status: string;
   metadata_json: Record<string, unknown>;
 };
+// Plan creativo y fuentes de investigación mostrados junto al candidato.
 type Brief = {
   lifestyle?: string;
   comercial?: string;
@@ -78,6 +85,7 @@ type Brief = {
   sources?: { title: string; url: string }[];
   search_suggestions?: string;
 };
+// Candidato generado, estado de revisión, slot e historial de correcciones.
 type Asset = {
   provider: string;
   model: string;
@@ -98,6 +106,7 @@ type Asset = {
     height?: number;
   };
 };
+// Trabajo durable con actor, estado, progreso y payload; cancelling sigue siendo activo.
 type Job = {
   id: string;
   actor: string;
@@ -115,6 +124,7 @@ type Job = {
     product?: { name?: string; sku?: string };
   };
 };
+// Evento de sincronización mostrado en el historial.
 type Event = {
   id: string;
   product_id?: string;
@@ -126,6 +136,7 @@ type Event = {
   created_at: string;
   job_id?: string;
 };
+// Respuesta compuesta de ficha, variantes, imágenes, movimientos y trabajos.
 type Detail = {
   product: Product;
   images: Picture[];
@@ -143,6 +154,7 @@ type Detail = {
   sync_events: Event[];
   variants: Product[];
 };
+// Estado público de sesión; no contiene tokens Google ni la clave Gemini.
 type Session = {
   authenticated: boolean;
   email?: string;
@@ -152,6 +164,7 @@ type Session = {
   image_model?: string;
   estimated_image_usd?: number | null;
 };
+// Configuración, rol y readiness de plataforma/worker para habilitar controles.
 type Status = {
   ready: boolean;
   configured: boolean;
@@ -160,6 +173,7 @@ type Status = {
   role: string;
   message: string;
 };
+// Datos agregados de Inicio basados en registros/snapshots reales.
 type Dashboard = {
   stats: Record<string, number>;
   activity: { id: string; action: string; created_at: string }[];
@@ -175,6 +189,7 @@ type Dashboard = {
     }[];
   };
 };
+// Selección/coste cotizados antes de confirmar generación.
 type Quote = {
   products: number;
   images: number;
@@ -184,6 +199,7 @@ type Quote = {
   estimate_token: string;
   note: string;
 };
+// Resultado de previsualización que debe revisarse antes de importar.
 type Preview = {
   preview_id: string;
   rows: number;
@@ -191,6 +207,7 @@ type Preview = {
   sample: { sku: string; name: string }[];
   note: string;
 };
+// Datos y acción del modal de confirmación; abrirlo todavía no ejecuta la escritura.
 type Confirm = {
   title: string;
   text: string;
@@ -232,6 +249,7 @@ const kinds = [
     note: "Composición artística del producto",
   },
 ];
+// Formatea importes para mostrar al usuario.
 const currency = (n: number | null | undefined) =>
   n == null
     ? "—"
@@ -239,6 +257,7 @@ const currency = (n: number | null | undefined) =>
         style: "currency",
         currency: "MXN",
       }).format(n);
+// Formatea fechas operativas según el navegador.
 const date = (v?: string) =>
   v
     ? new Date(v).toLocaleString("es-MX", {
@@ -248,9 +267,12 @@ const date = (v?: string) =>
         minute: "2-digit",
       })
     : "—";
+// Construye la URL privada de imagen servida por la API.
 const pictureUrl = (id: string) =>
   "/api/platform/images/" + encodeURIComponent(id);
+// Considera queued, processing y cancelling como trabajos todavía activos.
 const active = (job: Job) => ["queued", "processing", "cancelling"].includes(job.status);
+// Crea la ficha vacía del formulario de producto sin persistirla.
 const blank = (): Product => ({
   id: "",
   sku: "",
@@ -274,6 +296,7 @@ const blank = (): Product => ({
   sync_status: "pending",
   version: 1,
 });
+// Error HTTP con estado e información de respuesta perdida/incertidumbre.
 class ApiError extends Error {
   constructor(
     message: string,
@@ -282,6 +305,8 @@ class ApiError extends Error {
     super(message);
   }
 }
+// Envía solicitudes con cookie de mismo origen y timeout; no reintenta automáticamente
+// escrituras o generaciones.
 async function api<T>(
   path: string,
   method = "GET",
@@ -330,11 +355,13 @@ async function api<T>(
     clearTimeout(timer);
   }
 }
+// Muestra la etiqueta visual de un estado existente.
 function Badge({ value }: { value: string }) {
   return (
     <span className={"p-badge " + value}>{stateLabel[value] || value}</span>
   );
 }
+// Muestra una explicación cuando una lista/pantalla no tiene elementos.
 function Empty({ title, text }: { title: string; text: string }) {
   return (
     <div className="p-empty">
@@ -345,6 +372,8 @@ function Empty({ title, text }: { title: string; text: string }) {
   );
 }
 
+// Organiza estado, carga, navegación y acciones de la app; la autorización efectiva vive en
+// la API.
 export default function Platform() {
   const [section, setSection] = useState<Section>("home");
   const [moreTab, setMoreTab] = useState("connections");
@@ -408,6 +437,7 @@ export default function Platform() {
   const ready = session.authenticated && status.ready;
   const workerCanQueue = status.worker_can_queue ?? status.worker_ready;
   const stoppableJobs = jobs.filter(job => active(job) && canEdit && (isAdmin || job.actor === session.email));
+  // Cambia sección/tab y referencia de navegación del navegador.
   const go = useCallback((target: Section) => {
     location.hash = target;
     setSection(target);
@@ -415,6 +445,8 @@ export default function Platform() {
     setEditing(false);
     setError("");
   }, []);
+  // Conserva una clave request_key por intención confirmada para recuperar envíos sin
+  // duplicarlos.
   const attempt = async (action: () => Promise<void>) => {
     if (busy || submitting.current) return;
     submitting.current = true;
@@ -432,6 +464,8 @@ export default function Platform() {
       setBusy(false);
     }
   };
+  // Envía una operación durable con la misma clave idempotente si debe resolverse una
+  // respuesta perdida.
   const durablePost = async (path: string, body: Record<string, unknown>) => {
     const signature = JSON.stringify([path, body]);
     const request_key = operationKeys.current.get(signature) || crypto.randomUUID();
@@ -447,6 +481,7 @@ export default function Platform() {
       throw e;
     }
   };
+  // Recupera sesión y configuración base antes de cargar operaciones privadas.
   const reloadBase = useCallback(async () => {
     const s = await recoverSession<Session>();
     setSession(s);
@@ -455,6 +490,7 @@ export default function Platform() {
     setStatus(st);
     return { s, st };
   }, []);
+  // Actualiza trabajos, imágenes y resumen operativo desde SQL.
   const reloadOperations = useCallback(async () => {
     const [d, j, a, st] = await Promise.all([
       api<Dashboard>("/api/platform/dashboard"),
@@ -467,6 +503,7 @@ export default function Platform() {
     setAssets(a.items);
     setStatus(st);
   }, []);
+  // Carga la página/selección/filtros actuales del catálogo.
   const loadProducts = useCallback(async () => {
     const data = await api<{ items: Product[]; total: number }>(
       `/api/platform/products?q=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&offset=${offset}&limit=50`,
@@ -475,6 +512,7 @@ export default function Platform() {
     setTotal(data.total);
   }, [query, filter, offset]);
   useEffect(() => {
+    // Interpreta el hash de navegación para recuperar la sección seleccionada.
     const change = () => {
       const hash = location.hash.slice(1);
       if (nav.some((n) => n.id === hash)) setSection(hash as Section);
@@ -489,8 +527,10 @@ export default function Platform() {
         if (hash === "settings") setMoreTab("settings");
       }
     };
+    // Refleja falta de conexión del navegador en la interfaz.
     const disconnected = () => { setOnline(false); setReconnecting(false); };
     let recovering = false;
+    // Recupera sesión al volver conexión/foco, agrupando solicitudes simultáneas.
     const connected = () => {
       if (recovering) return;
       recovering = true;
@@ -501,6 +541,7 @@ export default function Platform() {
         .catch((e) => setError(`No se pudo reconectar: ${e.message}`))
         .finally(() => { recovering = false; setReconnecting(false); setLoading(false); });
     };
+    // Solicita reconexión cuando la pestaña vuelve a estar visible y hay red.
     const resumed = () => {
       if (document.visibilityState === "visible" && navigator.onLine) connected();
     };
@@ -533,6 +574,7 @@ export default function Platform() {
   useEffect(() => {
     if (!ready || !online) return;
     let stopped = false;
+    // Callback de polling que actualiza trabajos y trata un 401 como sesión no autenticada.
     const run = () =>
       reloadOperations().catch((e) => {
         if (!stopped) {
@@ -568,6 +610,7 @@ export default function Platform() {
     modalRef.current?.focus();
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // Gestiona Escape y foco del modal para teclado/accesibilidad.
     const keys = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !busy) {
         setConfirm(null);
@@ -597,6 +640,7 @@ export default function Platform() {
       previous?.focus();
     };
   }, [confirm, selectedAsset, busy]);
+  // Obtiene la ficha completa por UUID antes de abrirla o editarla.
   const openProduct = async (id: string) => {
     const data = await api<Detail>("/api/platform/products/" + id);
     setDetail(data);
@@ -605,10 +649,13 @@ export default function Platform() {
     setAttributeText(JSON.stringify(data.product.attributes, null, 2));
     setEditing(false);
   };
+  // Abre confirmación y limpia la aceptación previa de incertidumbre.
   const ask = (value: Confirm) => {
     setUncertainChecked(false);
     setConfirm(value);
   };
+  // Confirma retirada de la app y envía UUID/version; no borra archivos Drive, hojas ni
+  // tienda.
   const deleteProduct = (product: Product) => ask({
     title: "Eliminar producto",
     text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
@@ -625,6 +672,7 @@ export default function Platform() {
       setNotice("Producto eliminado del catálogo de la app.");
     },
   });
+  // Confirma los IDs visibles: uno o lote; trabajos creados después no quedan incluidos.
   const stopJobs = (targets: Job[]) => ask({
     title: targets.length === 1 ? "Detener proceso" : `Detener ${targets.length} procesos`,
     text: "Los procesos en cola se cancelan al momento. Si una operación ya empezó, se esperará a que termine y se conservarán sus resultados; después no se iniciarán más pasos.",
@@ -639,6 +687,7 @@ export default function Platform() {
       setNotice("Cancelación guardada. Los procesos iniciados se detendrán al terminar su operación actual.");
     },
   });
+  // Envía una operación durable confirmada y actualiza su progreso.
   const operation = async (path: string) => {
     await durablePost(path, {
       confirm: true,
@@ -648,6 +697,7 @@ export default function Platform() {
     );
     await reloadOperations();
   };
+  // Valida atributos de formulario y guarda la ficha con el contrato/versionado de API.
   const saveProduct = async () => {
     let attrs;
     try {
@@ -666,6 +716,7 @@ export default function Platform() {
     await loadProducts();
     setNotice("Producto guardado en el catálogo maestro.");
   };
+  // Sube y asocia una referencia al producto autorizado.
   const uploadReference = async (file: File) => {
     if (!form.id)
       throw new Error("Guarda la ficha antes de agregar referencias.");
@@ -681,6 +732,7 @@ export default function Platform() {
       "Referencia guardada. La IA la utilizará para conservar el producto.",
     );
   };
+  // Pide lectura de código de barras de la foto elegida.
   const scan = async (file: File) => {
     const data = new FormData();
     data.append("image", file);
@@ -699,6 +751,8 @@ export default function Platform() {
     setFilter("all");
     go("products");
   };
+  // Cotiza/confirma o encola el lote de generación seleccionado con deduplicación de
+  // intención.
   const batch = () => ({
     product_ids: selectionMode === "selected" ? selected : [],
     category: selectionMode === "category" ? category : null,
@@ -708,6 +762,7 @@ export default function Platform() {
     quality: "native",
     automatic_review: automaticReview,
   });
+  // Abre los datos de un candidato para revisar o corregir.
   const reviewAsset = async (asset: Asset) => {
     setSelectedAsset(asset);
     setFeedback("");
@@ -722,6 +777,7 @@ export default function Platform() {
       await api<Detail>("/api/platform/products/" + asset.product_id),
     );
   };
+  // Persiste aprobación/rechazo y actualiza la lista de candidatos.
   const approve = async (state: "approved" | "rejected") => {
     if (!selectedAsset) return;
     await api(`/api/platform/assets/${selectedAsset.id}/review`, "POST", {
@@ -736,6 +792,8 @@ export default function Platform() {
         : "Imagen rechazada; el archivo se conserva.",
     );
   };
+  // Confirma expresamente el reintento del trabajo y conserva controles de
+  // coste/incertidumbre.
   const retry = (job: Job) =>
     ask({
       title: "Reintentar trabajo",

@@ -1,3 +1,5 @@
+# Runtime compartido de OAuth, sesiones, Drive/Sheets y funciones históricas; contiene partes del generador protegidas.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 # ==========================================
 # IMPORTANTE: estas variables deben quedar ANTES de importar oauthlib,
 # porque la librería las lee al momento de importarse.
@@ -57,6 +59,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 
+# Exige una variable de arranque y falla sin mostrar su valor secreto.
 def _env_requerida(nombre):
     valor = os.environ.get(nombre)
     if not valor:
@@ -243,10 +246,12 @@ def _construir_correccion(errores_seleccionados, texto_libre, historial):
 SESSIONS = {}
 
 
+# Genera el identificador aleatorio que recibirá la cookie de sesión.
 def _nueva_session_id():
     return secrets.token_urlsafe(32)
 
 
+# Revoca la sesión SQL, retira su copia local y limpia solo temporales de esa sesión.
 def _eliminar_sesion(session_id):
     from catalog_platform.web_sessions import revoke
     revoke(session_id)
@@ -258,6 +263,8 @@ def _eliminar_sesion(session_id):
                 path.unlink(missing_ok=True)
 
 
+# Actualiza el registro en memoria y persiste la sesión cuando el almacén durable está
+# disponible.
 def _guardar_sesion(clave_sesion, **kwargs):
     """Crea o actualiza una sesión y conserva su ID dentro del registro.
 
@@ -282,6 +289,7 @@ def _guardar_sesion(clave_sesion, **kwargs):
     SESSIONS[clave_sesion].update(value)
 
 
+# Obtiene la sesión validada desde la cookie y retira sesiones caducadas.
 def _obtener_sesion(request: FastAPIRequest):
     if request is None:
         return None
@@ -295,6 +303,7 @@ def _obtener_sesion(request: FastAPIRequest):
     return session
 
 
+# Devuelve sesión o error de acceso para las funciones compatibles.
 def _validar_sesion(request: FastAPIRequest, requiere_api_key=True):
     """Devuelve (sesion, mensaje_error). Si mensaje_error no es None, hay que abortar."""
     sesion = _obtener_sesion(request)
@@ -312,6 +321,8 @@ fastapi_app = FastAPI(title="El Rincón de Asia · Suite e-commerce", docs_url=N
 fastapi_app.mount("/suite-static", StaticFiles(directory=STATIC_DIR), name="suite-static")
 
 
+# Emite estado/PKCE y redirige a Google; el frontend actual llega aquí por /auth/start
+# después de comprobar salud.
 @fastapi_app.get("/login")
 def login():
     flow = Flow.from_client_config(CLIENT_CONFIG, scopes=DRIVE_SCOPES, redirect_uri=GOOGLE_REDIRECT_URI, autogenerate_code_verifier=True)
@@ -335,6 +346,8 @@ def login():
     return resp
 
 
+# Consume estado una vez, intercambia el código, valida cuenta y crea cookie/sesión segura
+# antes de volver al frontend.
 @fastapi_app.get("/auth/callback")
 def auth_callback(request: FastAPIRequest):
     """Intercambia el 'code' por el token.
@@ -394,6 +407,7 @@ def auth_callback(request: FastAPIRequest):
         return PlainTextResponse("No pude completar el acceso a Google. Vuelve a conectar Drive.", status_code=500)
 
 
+# Revoca la sesión y elimina la cookie mediante una solicitud explícita.
 @fastapi_app.post("/logout")
 def logout(request: FastAPIRequest):
     session_id = request.cookies.get("session_id")
@@ -406,6 +420,7 @@ def logout(request: FastAPIRequest):
 # ==========================================
 # 2. UTILIDADES DE GOOGLE DRIVE (por usuario)
 # ==========================================
+# Construye el cliente Drive con las credenciales del usuario autenticado.
 def _get_drive_service(sesion):
     from google_credentials import dedicated_credentials
     from drive_service import DriveService
@@ -420,6 +435,7 @@ def _get_drive_service(sesion):
     return DriveService(build("drive", "v3", credentials=creds, cache_discovery=False))
 
 
+# Construye el cliente Sheets con la misma conexión Google de la sesión.
 def _get_sheets_service(sesion):
     """Cliente de Google Sheets usando las mismas credenciales de Drive."""
     from google_credentials import dedicated_credentials
@@ -430,6 +446,8 @@ def _get_sheets_service(sesion):
     return build("sheets", "v4", credentials=creds)
 
 
+# Resuelve o crea una carpeta en el flujo histórico de preparación; no usar como lectura de
+# taxonomía.
 def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     query = f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     query += f" and '{parent_id}' in parents" if parent_id else " and 'root' in parents"
@@ -444,6 +462,7 @@ def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     return carpeta['id']
 
 
+# Busca un archivo existente por nombre, carpeta y tipo MIME.
 def _buscar_archivo(service, nombre, parent_id, mime_type=None):
     query = f"name = '{nombre}' and '{parent_id}' in parents and trashed = false"
     if mime_type:
@@ -1141,6 +1160,8 @@ def _migrar_csv_legacy(service, sheets_service, carpeta_raiz_id, spreadsheet_id,
     return len(filas)
 
 
+# Prepara la estructura histórica Drive/Sheets; puede escribir, por eso la clasificación usa
+# un lector separado.
 def _preparar_estructura(service, sesion=None):
     """Asegura carpetas, imágenes y un Google Sheet nativo con formato Gabo nueva.
 
@@ -1193,6 +1214,7 @@ def _preparar_estructura(service, sesion=None):
     return carpeta_raiz_id, carpeta_imagenes_id, spreadsheet_id, logo_id
 
 
+# Extrae un ID de carpeta de una URL Drive o de un ID introducido por el usuario.
 def _extraer_folder_id(texto):
     """Acepta una URL de carpeta de Drive o un ID puro y devuelve el ID."""
     if not texto:
@@ -1207,6 +1229,7 @@ def _extraer_folder_id(texto):
     return texto  # asumimos que ya nos pasaron el ID directamente
 
 
+# Lee filas de la hoja canónica mediante Sheets y las devuelve como tabla por encabezados.
 def _leer_google_sheet(sheets_service, spreadsheet_id):
     resultado = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
@@ -1224,6 +1247,7 @@ def _leer_google_sheet(sheets_service, spreadsheet_id):
     return pd.DataFrame(filas, columns=COLUMNAS_INVENTARIO)
 
 
+# Añade una fila del guardado histórico respetando columnas y sincronización existente.
 def _agregar_fila_google_sheet(sesion, spreadsheet_id, registro):
     sheets_service = _get_sheets_service(sesion)
     fila = _fila_formato_gabo(registro)
@@ -1250,6 +1274,8 @@ def _agregar_fila_google_sheet(sesion, spreadsheet_id, registro):
     return spreadsheet_id
 
 
+# Obtiene el inventario compatible de la sesión; puede preparar estructura, no sirve para una
+# lectura sin escrituras.
 def _cargar_df(sesion):
     service = _get_drive_service(sesion)
     _, _, spreadsheet_id, _ = _preparar_estructura(service, sesion)
@@ -1307,6 +1333,8 @@ def limpiar_texto_sku(texto):
     return texto.upper()
 
 
+# Respaldo aceptado de diez caracteres: marca 3, nombre 3 y gramaje 4; se usa cuando no hay
+# código válido.
 def generar_sku_logica(nombre, marca, gramaje):
     """Genera un SKU de EXACTAMENTE 10 caracteres: Marca (3) + Nombre (3) + Gramaje (4).
     Si algún segmento es más corto, se rellena con 'X'; si es más largo, se recorta."""
@@ -1944,6 +1972,7 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: FastAPIReq
     yield "\n".join(messages), *outputs, [], [], []
 
 
+# Guarda la ficha confirmada con su tipo, padre y campos en el inventario histórico.
 def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, atributo_nombre,
                            atributo_valor, precio, cat, subcat, etiquetas,
                            desc_corta, desc_larga, request: FastAPIRequest):
@@ -2131,6 +2160,7 @@ def cargar_estado_inicial(request: FastAPIRequest):
     return html, field_update(choices=cats), field_update(choices=subcats)
 
 
+# Guarda la clave Gemini en la sesión/configuración compatible sin imprimirla.
 def guardar_api_key(api_key_input, request: FastAPIRequest):
     sesion = _obtener_sesion(request)
     if not sesion:

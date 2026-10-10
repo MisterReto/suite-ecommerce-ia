@@ -1,4 +1,6 @@
 """Wake a free Render web worker for actual queued work; never keep it alive."""
+# Aviso de arranque al worker gratuito mediante su health público, sin credenciales.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import logging
 import os
@@ -14,6 +16,7 @@ _pending = False
 _last_attempt = 0.0
 
 
+# Valida el origen HTTPS onrender.com del worker antes de construir la URL de salud.
 def health_url():
     origin = os.getenv("IMAGE_WORKER_ORIGIN", "").rstrip("/")
     if not origin:
@@ -28,6 +31,7 @@ def health_url():
     return origin + "/service-health"
 
 
+# Indica si hay un worker gratuito configurado que pueda recibir el aviso de arranque.
 def configured():
     try:
         return bool(health_url()) and os.getenv("GENERATION_QUEUE_BACKEND") == "rq"
@@ -35,6 +39,7 @@ def configured():
         return False
 
 
+# Agrupa avisos concurrentes de trabajos confirmados en un hilo de arranque.
 def notify():
     """Coalesce cold starts in a daemon; accepted HTTP requests do not wait."""
     global _pending, _last_attempt
@@ -55,6 +60,8 @@ def notify():
     return True
 
 
+# Hace una lectura de salud sin cookies ni secretos y con tiempo limitado; no genera ni
+# reintenta una escritura.
 def _wake():
     global _pending
     try:

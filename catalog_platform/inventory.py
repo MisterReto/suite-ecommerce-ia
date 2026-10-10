@@ -1,4 +1,6 @@
 """One identified stock operation. Refuses to overwrite a newly changed store."""
+# Escritura explícita de stock comprobando entidad, valor inicial y resultado remoto.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from sqlalchemy import select
 import os
@@ -8,6 +10,8 @@ from .models import InventoryMovement, SyncEvent, GenerationJob, now
 from . import queue
 
 
+# Identifica producto/variante, coteja stock remoto previo y confirma la escritura
+# autorizada; no reintenta una cantidad incierta a ciegas.
 def sync_stock(job, owner):
     if os.getenv("STOCK_AUTHORITY", "app") != "app":
         raise ValueError(

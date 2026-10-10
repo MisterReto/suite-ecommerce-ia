@@ -1,4 +1,6 @@
 "use client";
+// Captura de producto: fotos, borrador, análisis, familia, generación, revisión y guardado compatible.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GenerationSounds } from "@/lib/generation-sounds";
@@ -30,6 +32,8 @@ import {
   X,
 } from "lucide-react";
 
+// Ficha de borrador de captura; sus campos se traducen al contrato de studio_api, no al
+// formulario SQL directamente.
 type Product = {
   sku: string;
   name: string;
@@ -53,12 +57,15 @@ type Product = {
   attributes?: Record<string, string>;
   uncertain_fields?: string[];
 };
+// Coincidencia de inventario/tienda que el usuario debe revisar antes de guardar.
 type Match = {sku: string; nombre_producto: string; Marca?: string; precio?: number | string;
   atributo_nombre?: string; atributo_valor?: string | string[]; sku_padre?: string;
   product_id?: string; image_url?: string; _source?: string; attributes?: Record<string, string | string[]>;
   matching_attributes?: string[]; different_attributes?: string[]};
+// Resultado de coincidencias, padres posibles y recomendación de familia.
 type IdentityReview = {status: string; case: string; message: string; recommendation: string;
   suggested?: string; duplicate?: Match; parents: Match[]; candidates: Match[]; sources?: string[]};
+// Slot/imagen de borrador con estado de aprobación y referencia propia.
 type Picture = {
   id: string;
   approved: boolean;
@@ -66,6 +73,7 @@ type Picture = {
   history: string[];
   qa?: { resumen?: string; aprobada?: boolean };
 };
+// Investigación creativa asociada a las imágenes del borrador.
 type Brief = {
   lifestyle: string;
   comercial: string;
@@ -74,6 +82,7 @@ type Brief = {
   sources: { title: string; url: string }[];
   search_suggestions: string;
 };
+// Producto, fotos, contexto, brief, aprobación e historial de la captura actual.
 type Draft = {
   revision: string;
   front_id: string;
@@ -92,6 +101,7 @@ type Draft = {
   sync_error?: string;
   master_product_id?: string;
 };
+// Respuesta compatible del job local/durable de captura.
 type Job = {
   id: string;
   status: string;
@@ -99,6 +109,7 @@ type Job = {
   progress: number;
   message: string;
 };
+// Estado público de cuenta, carpeta, Gemini y borrador recuperado.
 type Session = {
   authenticated: boolean;
   email?: string;
@@ -119,7 +130,9 @@ type Session = {
     job?: LoyJob;
   };
 };
+// Fila del inventario histórico que se muestra en consultas de captura.
 type CatalogRow = Record<string, string | number>;
+// Fila de coincidencia de las herramientas Loyverse compatibles.
 type LoyRow = {
   sku: string;
   name: string;
@@ -130,6 +143,7 @@ type LoyRow = {
   detail: string;
   eligible: boolean;
 };
+// Progreso de un trabajo compatible Loyverse, separado de la cola SQL de imágenes.
 type LoyJob = {
   id: string;
   state: string;
@@ -167,7 +181,10 @@ const initial: Product = {
   uncertain_fields: [],
 };
 
+// Compara campos normalizados de dos borradores para no reemplazar una edición más reciente
+// con una respuesta vieja.
 function sameProduct(a: Product, b: Product) {
+  // Normaliza un valor de campo para comparar versiones del borrador.
   const normalize = (value: unknown): unknown => value && typeof value === "object" && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value).sort(([x], [y]) => x.localeCompare(y)).map(([key, item]) => [key, normalize(item)]))
     : value;
@@ -196,10 +213,14 @@ const slots = [
     tone: "commercial",
   },
 ];
+// Construye la URL de un temporal propio o una imagen privada recuperada.
 const fileUrl = (id: string) => "/api/files/" + encodeURIComponent(id);
+// Incluye Deteniendo entre trabajos activos para evitar otra generación mientras termina la
+// llamada actual.
 const activeJob = (job?: Job | null) =>
   !!job && ["queued", "running", "cancelling"].includes(job.status);
 
+// Error del cliente HTTP de captura con estado/resultado incierto.
 class ApiError extends Error {
   constructor(
     message: string,
@@ -209,6 +230,8 @@ class ApiError extends Error {
   }
 }
 
+// Envía JSON o fotos con cookies y timeout; conserva errores de sesión y no repite llamadas
+// pagadas.
 async function api<T>(
   path: string,
   method = "GET",
@@ -259,6 +282,7 @@ async function api<T>(
   }
 }
 
+// Renderiza un campo etiquetado con el control de formulario que recibe.
 function Field({
   label,
   hint,
@@ -279,6 +303,7 @@ function Field({
   );
 }
 
+// Selector/preview de foto con interacción móvil y borrado del borrador.
 function PhotoUpload({
   name,
   id,
@@ -346,6 +371,7 @@ function PhotoUpload({
   );
 }
 
+// Conserva la secuencia capturar, identificar, revisar, generar y guardar del flujo aceptado.
 export default function CaptureStudio({
   embedded = false,
   initialSection = "studio",
@@ -415,6 +441,7 @@ export default function CaptureStudio({
     imageCount === 0 ||
     Object.values(draft?.images || {}).every((i) => i.approved);
 
+  // Aplica una respuesta de borrador sin sobreescribir una edición más reciente.
   const applyDraft = useCallback((value: Draft | null | undefined) => {
     if (!value) {
       setDraft(null); setProduct(initial); setFront(undefined); setBack(undefined); setContext("");
@@ -427,6 +454,7 @@ export default function CaptureStudio({
     setContext(value.context);
   }, []);
 
+  // Recupera sesión/borrador después de arranque en frío o reconexión.
   const refresh = useCallback(async () => {
     const data = await recoverSession<Session>();
     setSession(data);
@@ -443,6 +471,7 @@ export default function CaptureStudio({
   }, [applyDraft]);
 
   useEffect(() => {
+    // Notifica cambios del borrador a los controles de captura.
     const change = () =>
       setSection(
         ["studio", "catalog", "loyverse", "settings", "help"].includes(
@@ -525,6 +554,7 @@ export default function CaptureStudio({
     if (job && !activeJob(job)) generationKeys.current.clear();
   }, [job?.id, job?.status]);
 
+  // Conserva la clave idempotente de la intención de generación/corrección.
   const attempt = async (action: () => Promise<void>) => {
     if (busy || submitting.current) return;
     submitting.current = true;
@@ -540,8 +570,10 @@ export default function CaptureStudio({
       setPosting(false);
     }
   };
+  // Actualiza un campo local y marca que falta persistir la edición.
   const edit = <K extends keyof Product>(field: K, value: Product[K]) =>
     setProduct((p) => ({ ...p, [field]: value }));
+  // Guarda fotos/contexto necesarios para que la API conozca la captura actual.
   const ensureCapture = async () => {
     if (!front) throw new Error("Sube la foto frontal del producto.");
     if (draft && draft.front_id === front && (draft.back_id || undefined) === back) {
@@ -558,6 +590,7 @@ export default function CaptureStudio({
     });
     setDraft(result.draft);
   };
+  // Guarda el producto editado antes de analizar, generar o enviar otra operación.
   const persist = async () => {
     await ensureCapture();
     const result = await api<{ draft: Draft }>("/api/draft", "PUT", product);
@@ -565,6 +598,8 @@ export default function CaptureStudio({
     setProduct((latest) => sameProduct(latest, product) ? result.draft.product : latest);
     return result.draft;
   };
+  // Inicia una acción de captura y observa el job resultante, usando
+  // confirmación/idempotencia cuando procede.
   const run = async (path: string, body: unknown = {}) => {
     if (path === "/api/generate" || path.endsWith("/correct")) {
       const fingerprint = JSON.stringify([path, draft?.revision, body]);
@@ -586,6 +621,7 @@ export default function CaptureStudio({
       if (result.job?.status === "failed") setError(result.job.message);
     }
   };
+  // Sube frente/reverso y actualiza la captura sin mezclar respuestas de una foto anterior.
   const upload = (which: "front" | "back", file: File) =>
     attempt(async () => {
       if (file.size > 12_000_000)
@@ -604,6 +640,7 @@ export default function CaptureStudio({
       } else setDraft(null);
       setMessage("Foto lista. Analiza el producto o captura sus datos.");
     });
+  // Consulta el inventario conectado para revisar fichas existentes.
   const loadCatalog = () =>
     attempt(async () => {
       const data = await api<{ rows: CatalogRow[]; sheet_url: string }>(
@@ -613,6 +650,8 @@ export default function CaptureStudio({
       setSheetUrl(data.sheet_url);
       setCatalogLoaded(true);
     });
+  // Retira una foto del borrador local/captura; no elimina un archivo de producto guardado en
+  // Drive.
   const removePhoto = (which: "front" | "back") => attempt(async () => {
     if (which === "front") {
       await api("/api/draft", "DELETE"); setFront(undefined); setBack(undefined); setDraft(null); setProduct(initial);
@@ -625,6 +664,7 @@ export default function CaptureStudio({
       }
     }
   });
+  // Consulta padres existentes y propuestas de relación de familia.
   const loadParents = () =>
     attempt(async () => {
       await persist();
@@ -642,6 +682,7 @@ export default function CaptureStudio({
         attribute: result.attribute,
       }));
     });
+  // Aplica una familia elegida por el usuario al borrador y la persiste.
   const chooseFamily = (mode: string) => attempt(async () => {
     await ensureCapture();
     const selected = draft?.identity_review?.suggested || "";
@@ -653,6 +694,7 @@ export default function CaptureStudio({
     setProduct({...next, parent_sku: r.parent_sku, parent_name: r.parent_name, attribute: r.attribute});
     setMessage("Familia propuesta. Revisa el atributo y prepara su portada antes de guardar.");
   });
+  // Cambia el paso visible de la captura.
   const go = (name: string) => {
     if (embedded) setSection(name);
     else location.hash = name;

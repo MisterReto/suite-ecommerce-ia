@@ -24,6 +24,10 @@ cambian automáticamente proveedor, modelo, prompts ni referencias.
 
 ## Entender y controlar la aplicación
 
+Empieza por la [guía del código y de reparación](docs/CODE_GUIDE.md) y el
+[índice de funciones y objetos](docs/FUNCTION_INDEX.md): indican qué archivo
+revisar según el fallo y qué reglas conservar al modificarlo.
+
 [Arquitectura](docs/ARCHITECTURE.md) · [Mapa del código](docs/CODE_MAP.md) · [Solicitudes paso a paso](docs/REQUEST_FLOWS.md) · [Generación](docs/IMAGE_GENERATION_FLOW.md) · [Glosario](docs/GLOSSARY.md)
 
 [Modelo de datos](docs/DATA_MODEL.md) · [Drive/Sheets](docs/DRIVE_AND_SHEETS.md) · [WooCommerce](docs/WOOCOMMERCE.md) · [Loyverse futuro](docs/LOYVERSE_FUTURE.md) · [Render](docs/RENDER_SERVICES.md) · [Variables](docs/ENVIRONMENT_VARIABLES.md)
@@ -32,17 +36,20 @@ cambian automáticamente proveedor, modelo, prompts ni referencias.
 
 [Plan obligatorio de pruebas](TEST_PLAN.md) · [Evidencia y límites](docs/VERIFICATION.md)
 
-Producción continúa en `41d0599` con los dos servicios históricos. Esta rama
-extiende la plataforma existente; no reconstruye la app. No se ejecutaron
-generaciones pagadas ni escrituras reales. La activación depende del pase real
-ordenado: si falla generación en pasos 5–9, detener nuevas integraciones.
+Los dos servicios históricos conservan `41d0599`. La app separada utiliza
+`rincon-frontend`, `rincon-catalog-api` y `rincon-catalog-worker`, con sesiones
+durables, conectividad WooCommerce y controles de eliminar/cancelar en la rama
+`feature/woocommerce-and-product-removal-20261009`. La base funcional de la guía
+actual es `ba19067`; esta entrega añade comentarios y documentación sin cambiar
+el código ejecutable. El pase manual real y las pruebas que realizan escrituras
+se distinguen de las pruebas automáticas con proveedores/datos sintéticos.
 
-El Blueprint ya desplegó frontend, API y worker separados en staging gratuito,
-junto con PostgreSQL/Key Value free, sin modificar los dos servicios históricos.
-La interfaz abre; acceso administrativo, callback Google y pase real siguen
-pendientes. PostgreSQL de pruebas vence el **5 de noviembre de 2026**.
-El Dockerfile compatible conserva el modo exportado. Ver IDs/URLs y evidencia
-en [Render](docs/RENDER_SERVICES.md).
+El Blueprint configura los tres servicios separados gratuitos sin modificar los
+dos históricos. El Dockerfile compatible conserva el modo exportado. Los
+documentos iniciales del 6 de octubre mantienen su contexto histórico: para
+sesiones, clasificación, WooCommerce y controles actuales consultar la nueva
+guía y los documentos específicos enlazados desde ella. Ver IDs/URLs y evidencia
+en [Render](docs/RENDER_SERVICES.md) y [controles](docs/CATALOG_CONTROLS.md).
 
 Para ejecutar la protección del generador, conservar el historial git del commit aceptado; CI hace checkout con `fetch-depth: 0`.
 

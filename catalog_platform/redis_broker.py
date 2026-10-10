@@ -1,4 +1,6 @@
 """RQ transports only SQL job IDs. SQL checkpoints remain authoritative."""
+# Entrega de IDs SQL a RQ y reconciliación de trabajos si Redis no recibió una entrega.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import logging
 import os
@@ -17,6 +19,7 @@ log = logging.getLogger("rincon.queue")
 QUEUE_NAME = "rincon-image-jobs"
 
 
+# Construye/reutiliza la conexión Redis correspondiente a la URL configurada.
 @lru_cache(maxsize=2)
 def connection_for(url):
     if not url.startswith(("redis://", "rediss://", "unix://")):
@@ -25,6 +28,7 @@ def connection_for(url):
                           health_check_interval=30, max_connections=12)
 
 
+# Obtiene Redis desde el entorno del proceso.
 def connection():
     url = os.getenv("REDIS_URL", "")
     if not url:
@@ -32,6 +36,7 @@ def connection():
     return connection_for(url)
 
 
+# Comprueba disponibilidad de Redis sin consumir un trabajo.
 def reachable():
     try:
         return bool(connection().ping())
@@ -39,10 +44,12 @@ def reachable():
         return False
 
 
+# Construye la cola RQ con serialización JSON.
 def rq_queue():
     return Queue(QUEUE_NAME, connection=connection(), serializer=JSONSerializer)
 
 
+# Entrega solo el UUID SQL, con deduplicación de despacho; no serializa fotos o credenciales.
 def publish_one(job_id):
     client = connection()
     # Concurrent API/reconciler deliveries cannot enqueue the same ID together.
@@ -74,6 +81,7 @@ def publish_one(job_id):
         return True
 
 
+# Publica IDs de una transacción ya confirmada y conserva SQL como respaldo si Redis falla.
 def publish_committed(ids):
     if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") != "rq":
         return
@@ -86,6 +94,8 @@ def publish_committed(ids):
         log.warning("Entrega RQ pendiente; el job permanece guardado en SQL.")
 
 
+# Revisa la bandeja SQL En cola y recupera entregas pendientes; un trabajo Cancelado no
+# vuelve a ejecutarse.
 def reconcile():
     from .queue import recover_expired
 

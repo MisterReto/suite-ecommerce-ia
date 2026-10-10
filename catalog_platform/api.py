@@ -1,4 +1,6 @@
 """Authenticated catalog API. HTTP validates/enqueues; workers execute remote writes."""
+# Rutas del catálogo SQL, inventario, generación, cancelación, revisión, importación y publicación.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from datetime import datetime, timezone
 import hashlib
@@ -34,6 +36,8 @@ from .queue import available, worker_ready, request_lock, dispatch, request_canc
 router = APIRouter(prefix="/api/platform")
 
 
+# Resuelve sesión, conexión, credenciales personales y carpeta autorizada antes de operar el
+# catálogo.
 def context(request: Request):
     from studio_api import runtime
 
@@ -83,22 +87,28 @@ def context(request: Request):
     return value
 
 
+# Obtiene la carpeta que delimita los datos de esta solicitud.
 def tenant(value):
     return value["platform_tenant"]
 
 
+# Obtiene el correo autenticado que queda en trabajos y auditoría.
 def actor(value):
     return value.get("email", "usuario")
 
 
+# Exige rol admin o editor para una escritura.
 def edit(value):
     require_role(value, "admin", "editor")
 
 
+# Exige rol administrador para operaciones sensibles como eliminar o publicar.
 def admin(value):
     require_role(value, "admin")
 
 
+# Contrato de ficha editable; limita texto, atributos, etiquetas y versión recibidos por la
+# API.
 class ProductInput(BaseModel):
     sku: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     barcode: str = Field(default="", max_length=40)
@@ -119,6 +129,7 @@ class ProductInput(BaseModel):
     stock: float | None = Field(default=0, ge=0, le=1000000, allow_inf_nan=False)
     version: int | None = None
 
+    # Limita la estructura y tamaño de atributos para evitar payloads descontrolados.
     @field_validator("attributes")
     @classmethod
     def bounded_attributes(cls, value):
@@ -136,6 +147,7 @@ class ProductInput(BaseModel):
                 raise ValueError("Opciones de atributo demasiado grandes.")
         return value
 
+    # Limita cantidad y longitud de etiquetas del producto.
     @field_validator("tags")
     @classmethod
     def bounded_tags(cls, value):
@@ -144,6 +156,7 @@ class ProductInput(BaseModel):
         return list(dict.fromkeys(value))
 
 
+# Selección de productos, slots, cantidad y revisión automática para una cotización/lote.
 class BatchInput(BaseModel):
     product_ids: list[str] = Field(default_factory=list, max_length=300)
     category: str | None = Field(default=None, max_length=160)
@@ -158,12 +171,15 @@ class BatchInput(BaseModel):
     automatic_review: bool = False
 
 
+# Añade confirmación, request_key y token de estimación a la selección que se enviará al
+# worker.
 class EnqueueInput(BatchInput):
     request_key: str = Field(min_length=12, max_length=100)
     estimate_token: str = Field(min_length=64, max_length=64)
     confirm: bool
 
 
+# Contrato del estado/rol de imagen que el usuario revisa.
 class ReviewInput(BaseModel):
     status: str = Field(pattern=r"^(approved|rejected)$")
     role: str = Field(
@@ -171,12 +187,14 @@ class ReviewInput(BaseModel):
     )
 
 
+# Feedback y autorización de coste para corregir un candidato.
 class CorrectionInput(BaseModel):
     feedback: str = Field(min_length=1, max_length=600)
     confirm_cost: bool
     request_key: str = Field(min_length=12, max_length=100)
 
 
+# Cantidad y datos de un movimiento de inventario.
 class StockInput(BaseModel):
     quantity: float = Field(ge=0, le=1000000, allow_inf_nan=False)
     event_id: str = Field(min_length=12, max_length=200)
@@ -184,18 +202,24 @@ class StockInput(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+# Confirmación explícita requerida para una operación.
 class ConfirmInput(BaseModel):
     confirm: bool
 
 
+# Confirmación y versión esperada de la ficha que se va a retirar.
 class DeleteProductInput(ConfirmInput):
     version: int = Field(ge=1)
 
 
+# Confirmación y lista limitada a 100 IDs; no interpreta Detener todos como una consulta
+# abierta.
 class CancelJobsInput(ConfirmInput):
     job_ids: list[str] = Field(min_length=1, max_length=100)
 
 
+# Describe configuración, rol y disponibilidad real/capacidad de cola; distingue worker
+# activo de worker despertable.
 @router.get("/status")
 def status(request: Request):
     from studio_api import runtime
@@ -236,6 +260,7 @@ def status(request: Request):
     return result
 
 
+# Lista y filtra fichas visibles por tenant con paginación; omite eliminadas.
 @router.get("/products")
 def products(
     q: str = "",
@@ -292,6 +317,8 @@ def products(
         return {"items": items, "total": count}
 
 
+# Crea una ficha validada en SQL y registra su auditoría; no publica automáticamente en
+# WooCommerce.
 @router.post("/products", status_code=201)
 def create_product(data: ProductInput, value=Depends(context)):
     edit(value)
@@ -313,6 +340,8 @@ def create_product(data: ProductInput, value=Depends(context)):
         raise HTTPException(422, str(exc)) from None
 
 
+# Devuelve ficha, variantes, imágenes, trabajos, movimientos y eventos del producto
+# autorizado.
 @router.get("/products/{product_id}")
 def get_product(product_id: str, value=Depends(context)):
     with transaction() as db:
@@ -351,6 +380,8 @@ def get_product(product_id: str, value=Depends(context)):
         }
 
 
+# Guarda cambios de ficha con versión esperada y auditoría; no reemplaza una edición
+# concurrente.
 @router.put("/products/{product_id}")
 def update_product(product_id: str, data: ProductInput, value=Depends(context)):
     edit(value)
@@ -371,6 +402,8 @@ def update_product(product_id: str, data: ProductInput, value=Depends(context)):
         raise HTTPException(422, str(exc)) from None
 
 
+# Retira solo la ficha de la app: bloquea fila, valida versión/familia/trabajos, guarda
+# tombstone y libera SKU sin borrar Drive o WooCommerce.
 @router.delete("/products/{product_id}")
 def delete_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
     admin(value)
@@ -413,6 +446,7 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
         return {"ok": True, "product_id": product.id}
 
 
+# Registra un movimiento local identificado y su auditoría.
 @router.post("/products/{product_id}/stock")
 def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
     edit(value)
@@ -458,10 +492,12 @@ def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
         return {"movement": serialize(movement)}
 
 
+# Identifica un upload temporal propio para una referencia o lectura de código.
 class ReferenceInput(BaseModel):
     upload_id: str = Field(max_length=64)
 
 
+# Asocia una referencia de imagen autorizada al producto; valida pertenencia y límites.
 @router.post("/products/{product_id}/reference")
 def reference(product_id: str, data: ReferenceInput, value=Depends(context)):
     edit(value)
@@ -516,6 +552,7 @@ def reference(product_id: str, data: ReferenceInput, value=Depends(context)):
         return {"image": serialize(item)}
 
 
+# Sirve una imagen privada del producto desde Drive mediante la sesión autorizada.
 @router.get("/images/{image_id}")
 def image(image_id: str, download: bool = False, value=Depends(context)):
     from studio_api import runtime
@@ -546,6 +583,8 @@ def image(image_id: str, download: bool = False, value=Depends(context)):
     )
 
 
+# Resuelve exactamente los productos y variantes que se van a cotizar; excluye padres y
+# eliminados.
 def selection(db, value, data, lock=False):
     from creative_pipeline import SLOTS
 
@@ -600,6 +639,7 @@ def selection(db, value, data, lock=False):
     return rows, references, count
 
 
+# Obtiene el coste estimado por imagen del modelo configurado.
 def image_unit(model):
     import math
 
@@ -617,6 +657,7 @@ def image_unit(model):
     return value
 
 
+# Calcula cantidad/coste y vincula la cotización a selección, modelo y versiones.
 def estimate(db, value, data, lock=False):
     from creative_pipeline import IMAGE_MODEL
 
@@ -648,6 +689,7 @@ def estimate(db, value, data, lock=False):
     )
 
 
+# Valida confirmación, límites y token de cotización antes de aceptar una operación pagada.
 def guard_cost(cost):
     import math
 
@@ -664,6 +706,7 @@ def guard_cost(cost):
         raise HTTPException(422, "El costo estimado supera el límite configurado o no está disponible.")
 
 
+# Devuelve una cotización para revisión; no genera imágenes.
 @router.post("/generation/estimate")
 def generation_estimate(data: BatchInput, value=Depends(context)):
     edit(value)
@@ -671,6 +714,7 @@ def generation_estimate(data: BatchInput, value=Depends(context)):
         return estimate(db, value, data)[0]
 
 
+# Crea lote y trabajos durables con idempotencia, snapshot y confirmación de gasto.
 @router.post("/generation/jobs", status_code=202)
 def enqueue(data: EnqueueInput, value=Depends(context)):
     edit(value)
@@ -760,6 +804,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
         return {"batch_id": batch.id, "status": "queued", "jobs": jobs}
 
 
+# Lista los lotes de generación del catálogo autorizado.
 @router.get("/generation/batches")
 def batches(value=Depends(context)):
     with transaction() as db:
@@ -775,6 +820,7 @@ def batches(value=Depends(context)):
         return {"items": result}
 
 
+# Lista estados y progreso de trabajos; incluye actor para mostrar permisos de cancelación.
 @router.get("/jobs")
 def jobs(value=Depends(context)):
     with transaction() as db:
@@ -791,6 +837,8 @@ def jobs(value=Depends(context)):
         }
 
 
+# Valida permisos del actor y aplica la cancelación de una fila bloqueada con una sola
+# entrada de auditoría.
 def cancel_locked(db, job, value):
     if role_for(actor(value)) != "admin" and job.actor != actor(value):
         raise HTTPException(403, "Solo puedes detener tus propios procesos.")
@@ -805,6 +853,8 @@ def cancel_locked(db, job, value):
     return serialize(job)
 
 
+# Detiene un trabajo confirmado del tenant; una solicitud repetida conserva el mismo
+# resultado.
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, data: ConfirmInput, value=Depends(context)):
     edit(value)
@@ -821,6 +871,8 @@ def cancel_job(job_id: str, data: ConfirmInput, value=Depends(context)):
         return {"job": cancel_locked(db, job, value)}
 
 
+# Detiene únicamente los IDs confirmados y revierte el lote entero si falla alguna
+# autorización.
 @router.post("/jobs/cancel")
 def cancel_jobs(data: CancelJobsInput, value=Depends(context)):
     edit(value)
@@ -836,6 +888,7 @@ def cancel_jobs(data: CancelJobsInput, value=Depends(context)):
         return {"jobs": [cancel_locked(db, job, value) for job in rows]}
 
 
+# Lista candidatos de imagen y estados de revisión de fichas visibles.
 @router.get("/assets")
 def assets(value=Depends(context)):
     with transaction() as db:
@@ -859,6 +912,8 @@ def assets(value=Depends(context)):
         }
 
 
+# Cambia la aprobación/rechazo del candidato y registra auditoría; conserva un job Cancelado
+# o Deteniendo.
 @router.post("/assets/{asset_id}/review")
 def review(asset_id: str, data: ReviewInput, value=Depends(context)):
     edit(value)
@@ -929,6 +984,8 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
         return {"asset": serialize(asset)}
 
 
+# Encola una corrección con feedback, referencia anterior y confirmación de coste; conserva
+# el asset previo.
 @router.post("/assets/{asset_id}/correct", status_code=202)
 def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
     edit(value)
@@ -1001,11 +1058,13 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
         return {"job": serialize(job)}
 
 
+# Clave idempotente y confirmación de coste para una regeneración.
 class RegenerationInput(BaseModel):
     confirm_cost: bool
     request_key: str = Field(min_length=12, max_length=100)
 
 
+# Encola un nuevo candidato con referencias del producto y coste confirmado.
 @router.post("/assets/{asset_id}/regenerate", status_code=202)
 def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
     edit(value)
@@ -1030,11 +1089,14 @@ def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
                              product_id, model, cost)
 
 
+# Confirmación y request_key idempotente de publicación u operación.
 class PublishInput(BaseModel):
     confirm: bool
     request_key: str = Field(min_length=12, max_length=100)
 
 
+# Encola el guardado explícito de un candidato aprobado; no lo publica por sí solo en la
+# tienda.
 @router.post("/assets/{asset_id}/save", status_code=202)
 def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(context)):
     edit(value)
@@ -1051,6 +1113,7 @@ def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(contex
     return enqueue_operation(value, "asset_save", data.request_key, payload, pid)
 
 
+# Encola publicación WooCommerce con permisos, flags y snapshot/versiones comprobados.
 @router.post("/products/{product_id}/publish", status_code=202)
 def publish(product_id: str, data: PublishInput, value=Depends(context)):
     admin(value)
@@ -1111,6 +1174,7 @@ def publish(product_id: str, data: PublishInput, value=Depends(context)):
         return {"job": serialize(job)}
 
 
+# Resume catálogo visible, trabajos, actividad y últimos snapshots reales de pedidos.
 @router.get("/dashboard")
 def dashboard(value=Depends(context)):
     with transaction() as db:
@@ -1190,6 +1254,7 @@ def dashboard(value=Depends(context)):
         }
 
 
+# Lista historial de sincronizaciones del tenant.
 @router.get("/events")
 def events(value=Depends(context)):
     with transaction() as db:
@@ -1206,6 +1271,7 @@ def events(value=Depends(context)):
         }
 
 
+# Describe estados de integración sin exponer credenciales.
 @router.get("/connections")
 def connections(value=Depends(context)):
     from sync_bridge_protocol import setting
@@ -1264,6 +1330,7 @@ def connections(value=Depends(context)):
     }
 
 
+# Encola una consulta de tienda, diferenciada de una importación completa.
 @router.post("/ecommerce/refresh", status_code=202)
 def ecommerce_refresh(data: PublishInput, value=Depends(context)):
     admin(value)
@@ -1272,6 +1339,7 @@ def ecommerce_refresh(data: PublishInput, value=Depends(context)):
     return enqueue_operation(value, "ecommerce_pull", data.request_key, {})
 
 
+# Encola una importación explícita WooCommerce con confirmación y respaldo.
 @router.post("/import/woocommerce", status_code=202)
 def import_woocommerce(data: PublishInput, value=Depends(context)):
     admin(value)
@@ -1282,6 +1350,8 @@ def import_woocommerce(data: PublishInput, value=Depends(context)):
     )
 
 
+# Crea una operación durable e idempotente y persiste la conexión del actor antes de
+# entregarla.
 def enqueue_operation(
     value, kind, request_key, payload, product_id=None, model="", estimated_cost=None
 ):
@@ -1344,6 +1414,7 @@ def enqueue_operation(
         return {"job": serialize(job)}
 
 
+# Previsualiza filas de inventario Sheets sin confirmar su importación al catálogo.
 @router.post("/import/sheets")
 def preview_sheet(value=Depends(context)):
     admin(value)
@@ -1373,6 +1444,7 @@ def preview_sheet(value=Depends(context)):
     }
 
 
+# Valida y previsualiza un CSV/XLSX recibido antes de autorizar la importación.
 @router.post("/import/file")
 async def preview_file(source: UploadFile = File(), value=Depends(context)):
     admin(value)
@@ -1407,10 +1479,12 @@ async def preview_file(source: UploadFile = File(), value=Depends(context)):
     }
 
 
+# Referencia de la previsualización/importación que el usuario confirma.
 class ImportConfirm(PublishInput):
     preview_id: str = Field(max_length=64)
 
 
+# Confirma la importación revisada y crea el trabajo correspondiente.
 @router.post("/import/commit", status_code=202)
 def commit_import(data: ImportConfirm, value=Depends(context)):
     admin(value)
@@ -1466,10 +1540,13 @@ def commit_import(data: ImportConfirm, value=Depends(context)):
     return result
 
 
+# Confirmación explícita del reintento de un trabajo existente.
 class RetryInput(PublishInput):
     uncertainty_reviewed: bool = False
 
 
+# Exige una decisión explícita antes de repetir un fallo; conserva protección de resultados
+# inciertos y deduplicación.
 @router.post("/jobs/{job_id}/retry", status_code=202)
 def retry(job_id: str, data: RetryInput, value=Depends(context)):
     edit(value)
@@ -1506,6 +1583,7 @@ def retry(job_id: str, data: RetryInput, value=Depends(context)):
     return enqueue_operation(value, kind, data.request_key, payload, pid, model, cost)
 
 
+# Convierte una imagen autorizada existente en referencia del producto.
 @router.post("/products/{product_id}/reference-from-image/{image_id}")
 def reference_from_image(product_id: str, image_id: str, value=Depends(context)):
     edit(value)
@@ -1552,6 +1630,7 @@ def reference_from_image(product_id: str, image_id: str, value=Depends(context))
         return {"ok": True}
 
 
+# Entrega CSV o XLSX del catálogo visible; no modifica el inventario conectado.
 @router.get("/export")
 def export(format: str = "csv", value=Depends(context)):
     with transaction() as db:
@@ -1605,6 +1684,7 @@ def export(format: str = "csv", value=Depends(context)):
         )
 
 
+# Encola una propuesta IA de textos y clasificación para revisión.
 @router.post("/products/{product_id}/enrich", status_code=202)
 def enrich_product(product_id: str, data: PublishInput, value=Depends(context)):
     edit(value)
@@ -1639,6 +1719,7 @@ def enrich_product(product_id: str, data: PublishInput, value=Depends(context)):
     )
 
 
+# Lee códigos de una fotografía autorizada; no cambia un producto por sí solo.
 @router.post("/barcode")
 def barcode(data: ReferenceInput, value=Depends(context)):
     from studio_api import file_path, read_barcodes
@@ -1646,6 +1727,7 @@ def barcode(data: ReferenceInput, value=Depends(context)):
     return {"codes": read_barcodes(file_path(value, data.upload_id))}
 
 
+# Encola una escritura de stock confirmada sobre la entidad remota identificada.
 @router.post("/products/{product_id}/sync-stock", status_code=202)
 def sync_stock(product_id: str, data: PublishInput, value=Depends(context)):
     edit(value)
@@ -1674,6 +1756,7 @@ def sync_stock(product_id: str, data: PublishInput, value=Depends(context)):
     return enqueue_operation(value, "stock_sync", data.request_key, payload, product_id)
 
 
+# Marca como revisada una referencia original, conservando permisos y auditoría.
 @router.post("/products/{product_id}/images/{image_id}/approve-original")
 def approve_original(
     product_id: str, image_id: str, data: PublishInput, value=Depends(context)

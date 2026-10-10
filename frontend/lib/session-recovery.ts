@@ -1,6 +1,10 @@
+// Arranque de API y recuperación acotada de sesión: solo reintenta lecturas GET.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 /* Retry readiness and the read-only session endpoint, never writes or OAuth codes. */
 // Keep this function self-contained: /login also embeds it in its HTML so
 // readiness still runs if React's external chunks cannot load on a cold start.
+// Despierta API sin credenciales y verifica health/sesión por proxy durante un máximo de tres
+// minutos; solo reintenta GET.
 export async function recoverSession<T extends { authenticated: boolean }>(signal?: AbortSignal, authOnly = false): Promise<T> {
   const REQUEST_TIMEOUT_MS = 45_000;
   const RETRY_DELAY_MS = 3_000;
@@ -11,6 +15,7 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
   // never trusted as readiness: health and session still use the UI proxy.
   const wakeOrigin = process.env.NEXT_PUBLIC_SUITE_API_ORIGIN;
   const wake = new AbortController();
+  // Aborta el aviso de arranque directo cuando vence su plazo o se cancela la recuperación.
   const cancelWake = () => wake.abort();
   signal?.addEventListener("abort", cancelWake, { once: true });
   const wakeTimer = setTimeout(cancelWake, REQUEST_TIMEOUT_MS);
@@ -29,11 +34,14 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
     signal?.removeEventListener("abort", cancelWake);
   }
 
+  // Crea el error AbortError usado al abandonar/cambiar un intento.
   function aborted() { return new DOMException("Recovery cancelled", "AbortError"); }
 
+  // Lee JSON válido por el dominio frontend con cookie y plazo acotado por petición.
   async function read(path: string, deadline: number, signal?: AbortSignal) {
     if (signal?.aborted) throw aborted();
     const controller = new AbortController();
+    // Aborta una lectura cuyo plazo ha vencido o cuya recuperación fue cancelada.
     const cancel = () => controller.abort();
     signal?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(cancel, Math.min(REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
@@ -50,11 +58,14 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
     }
   }
 
+  // Espera entre lecturas conservando la posibilidad de cancelar el intento.
   function pause(ms: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
       if (signal?.aborted) return reject(aborted());
+      // Resuelve la espera y limpia el listener de cancelación.
       const finish = () => { signal?.removeEventListener("abort", cancel); resolve(); };
       const timer = setTimeout(finish, ms);
+      // Cancela el temporizador y rechaza la espera si el usuario abandona el intento.
       const cancel = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); reject(aborted()); };
       signal?.addEventListener("abort", cancel, { once: true });
     });

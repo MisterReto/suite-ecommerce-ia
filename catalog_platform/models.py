@@ -1,4 +1,6 @@
 """Metadata only: image binaries stay in Drive, credentials are encrypted."""
+# Objetos SQL: catálogo, imágenes, trabajos, conexiones cifradas y auditoría; las fotos permanecen en Drive.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from datetime import datetime, timezone
 import uuid
@@ -17,24 +19,31 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
+# Crea el UUID interno; la identidad del registro no depende del SKU.
 def uid():
     return str(uuid.uuid4())
 
 
+# Devuelve una fecha UTC con zona horaria para el historial.
 def now():
     return datetime.now(timezone.utc)
 
 
+# Registro declarativo de tablas SQLAlchemy; no representa un producto.
 class Base(DeclarativeBase):
     pass
 
 
+# Campos compartidos id, tenant_id y created_at; tenant_id limita los datos a una
+# carpeta/tienda.
 class Record:
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(String(120), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+# Ficha SQL con UUID, SKU, barcode, familia, precios/stock, IDs remotos y versión; deleted es
+# una retirada lógica, no un borrado externo.
 class Product(Record, Base):
     __tablename__ = "rincon_products"
     __table_args__ = (UniqueConstraint("tenant_id", "sku"),)
@@ -80,6 +89,7 @@ class Product(Record, Base):
     )
 
 
+# Relaciona UUID padre e hijo y atributos de la variante dentro del mismo tenant.
 class ProductVariant(Record, Base):
     __tablename__ = "rincon_product_variants"
     __table_args__ = (UniqueConstraint("tenant_id", "child_product_id"),)
@@ -88,6 +98,8 @@ class ProductVariant(Record, Base):
     attributes: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Metadata de una imagen y su Drive ID, rol, checksum y dimensiones; no almacena los bytes de
+# la fotografía.
 class ProductImage(Record, Base):
     __tablename__ = "rincon_product_images"
     product_id: Mapped[str] = mapped_column(
@@ -104,18 +116,23 @@ class ProductImage(Record, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Entidad SQL de categoría; las opciones de captura actuales se leen de Drive mediante
+# catalog_taxonomy.
 class Category(Record, Base):
     __tablename__ = "rincon_categories"
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
     name: Mapped[str] = mapped_column(String(160))
 
 
+# Entidad SQL de marca única por tenant.
 class Brand(Record, Base):
     __tablename__ = "rincon_brands"
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
     name: Mapped[str] = mapped_column(String(120))
 
 
+# Historial de cantidades antes/después y evento origen, con unicidad para evitar aplicar un
+# movimiento dos veces.
 class InventoryMovement(Record, Base):
     __tablename__ = "rincon_inventory_movements"
     __table_args__ = (
@@ -134,6 +151,7 @@ class InventoryMovement(Record, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Agrupa los trabajos confirmados de una selección y conserva su estimación de coste.
 class GenerationBatch(Record, Base):
     __tablename__ = "rincon_generation_batches"
     __table_args__ = (UniqueConstraint("tenant_id", "request_key"),)
@@ -144,6 +162,8 @@ class GenerationBatch(Record, Base):
     estimated_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+# Unidad durable de ejecución: actor, request_key, tipo, payload, progreso, lease y estado;
+# in_flight impide repetir llamadas inciertas.
 class GenerationJob(Record, Base):
     __tablename__ = "rincon_generation_jobs"
     __table_args__ = (
@@ -177,6 +197,8 @@ class GenerationJob(Record, Base):
     )
 
 
+# Candidato generado asociado a producto, job e imagen; conserva slot, muestra, raw Drive ID,
+# revisión e historial de correcciones.
 class GeneratedAsset(Record, Base):
     __tablename__ = "rincon_generated_assets"
     __table_args__ = (UniqueConstraint("job_id", "slot", "sample"),)
@@ -197,6 +219,8 @@ class GeneratedAsset(Record, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# Conexión cifrada por tenant, proveedor y actor; también guarda sesiones web/perfil sin
+# exponer secretos al navegador.
 class IntegrationAccount(Record, Base):
     __tablename__ = "rincon_integration_accounts"
     __table_args__ = (UniqueConstraint("tenant_id", "provider", "actor"),)
@@ -209,6 +233,8 @@ class IntegrationAccount(Record, Base):
     )
 
 
+# Relación explícita entre UUID interno e ID externo de producto/variante; evita depender
+# solo del SKU.
 class IntegrationMapping(Record, Base):
     __tablename__ = "rincon_integration_mappings"
     __table_args__ = (
@@ -221,6 +247,7 @@ class IntegrationMapping(Record, Base):
     parent_external_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
 
+# Resultado trazable de una operación entre sistemas, con origen, destino y mensaje.
 class SyncEvent(Record, Base):
     __tablename__ = "rincon_sync_events"
     product_id: Mapped[str | None] = mapped_column(
@@ -234,6 +261,7 @@ class SyncEvent(Record, Base):
     job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+# Evento externo recibido y deduplicado, con payload cifrado y estado de procesamiento.
 class WebhookEvent(Record, Base):
     __tablename__ = "rincon_webhook_events"
     __table_args__ = (
@@ -252,6 +280,8 @@ class WebhookEvent(Record, Base):
     encrypted_payload: Mapped[str] = mapped_column(Text)
 
 
+# Registro de actor, acción y valores antes/después para revisar o conciliar una
+# modificación.
 class AuditLog(Record, Base):
     __tablename__ = "rincon_audit_logs"
     actor: Mapped[str] = mapped_column(String(240))
@@ -263,6 +293,8 @@ class AuditLog(Record, Base):
     result: Mapped[str] = mapped_column(String(40), default="completed")
 
 
+# Señal reciente del supervisor y su versión; un health HTTP disponible no prueba que el
+# consumidor esté activo.
 class WorkerHeartbeat(Base):
     __tablename__ = "rincon_worker_heartbeats"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -270,6 +302,8 @@ class WorkerHeartbeat(Base):
     version: Mapped[str] = mapped_column(String(100), default="")
 
 
+# Copia local de un pedido WooCommerce para consultas y métricas, sin inventar ventas ni
+# escribir el pedido remoto.
 class OrderSnapshot(Record, Base):
     __tablename__ = "rincon_order_snapshots"
     __table_args__ = (UniqueConstraint("tenant_id", "woocommerce_id"),)

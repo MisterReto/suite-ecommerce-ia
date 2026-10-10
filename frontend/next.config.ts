@@ -1,3 +1,5 @@
+// Modo standalone/export y proxy al origen API validado; conserva cookies y sirve /login localmente.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import type { NextConfig } from "next";
 
 const separate = process.env.SUITE_FRONTEND_MODE === "standalone";
@@ -23,6 +25,8 @@ const config: NextConfig = {
   ...(separate ? {
     // Match the API upload allowance plus multipart overhead.
     experimental: { proxyClientMaxBodySize: 13_000_000 },
+    // Sirve /login localmente, dirige /auth/start al login de FastAPI y conserva el proxy de
+    // API/callback con el origen validado.
     async rewrites() {
       return { beforeFiles: [
         // Serve the waiting screen locally; issue OAuth state only after API readiness.
@@ -40,6 +44,8 @@ const config: NextConfig = {
           .map(source => ({ source, destination: upstream + source })),
       ], afterFiles: [], fallback: [] };
     },
+    // Aplica políticas HTTP y no-store al login; la CSP permite únicamente el origen API
+    // público configurado para arranque.
     async headers() {
       return [{
         source: "/:path*",

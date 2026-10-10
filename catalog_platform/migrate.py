@@ -1,4 +1,6 @@
 """Initial additive schema only. Never drops or rewrites existing Sheets/SQL data."""
+# Comando explícito de preparación aditiva del esquema SQL.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import os
 from sqlalchemy import inspect, text
@@ -6,6 +8,8 @@ from .database import engine_for
 from .models import Base
 
 
+# Ejecuta preparación aditiva del esquema desde un comando explícito; no es un downgrade ni
+# un borrado de datos.
 def main():
     url = os.getenv("DATABASE_URL", "")
     if not url:

@@ -1,4 +1,6 @@
 """Explicit import preview/commit. Originals and operational catalog are backed up."""
+# Importación revisada de CSV/XLSX/Sheets/WooCommerce, con respaldo y sin resucitar eliminados.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import csv
 import io
@@ -13,6 +15,7 @@ from .security import seal
 from . import queue
 
 
+# Convierte filas externas al contrato de producto sin inventar cantidades ausentes.
 def normalize(rows):
     from .api import ProductInput
 
@@ -105,6 +108,7 @@ def normalize(rows):
     return results, errors
 
 
+# Valida CSV/XLSX recibido y extrae filas con límites de tamaño/estructura.
 def parse_file(filename, raw):
     if len(raw) > 2_000_000:
         raise ValueError("El archivo supera 2 MB. Divide la importación.")
@@ -144,6 +148,7 @@ def parse_file(filename, raw):
     return normalize(rows)
 
 
+# Guarda un respaldo explícito antes de aplicar una importación autorizada.
 def backup_catalog(db, tenant, drive):
     snapshot = {
         "created": datetime.now(timezone.utc).isoformat(),
@@ -167,6 +172,7 @@ def backup_catalog(db, tenant, drive):
     )
 
 
+# Procesa las filas confirmadas con checkpoints, identidad por tenant y auditoría.
 def execute_import(job, value, drive, owner):
     payload = job["payload"]
     rows = payload["rows"]
@@ -252,6 +258,7 @@ def execute_import(job, value, drive, owner):
     return True
 
 
+# Asocia imágenes existentes por el naming aceptado; no reorganiza originales en Drive.
 def attach_historic_images(job, data, product_id, drive_index, drive, owner):
     from woocommerce_image_sync import resolve_product_images
     from PIL import Image

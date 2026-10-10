@@ -1,4 +1,6 @@
 """Transactional PostgreSQL and post-commit delivery; no implicit data migrations."""
+# Transacciones PostgreSQL y publicación de IDs de trabajos después del commit.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from contextlib import contextmanager
 from functools import lru_cache
@@ -7,10 +9,13 @@ from sqlalchemy import create_engine, event, exc
 from sqlalchemy.orm import sessionmaker
 
 
+# Indica si existe una dirección de base de datos configurada.
 def configured():
     return bool(os.getenv("DATABASE_URL"))
 
 
+# Reutiliza un pool pequeño y rechaza conexiones heredadas por fork; SQLite queda reservado a
+# pruebas.
 @lru_cache(maxsize=2)
 def engine_for(url):
     if url.startswith(("postgres://", "postgresql://")):
@@ -31,10 +36,13 @@ def engine_for(url):
         )
     engine = create_engine(url, **options)
 
+    # Registra el PID propietario de cada conexión SQL nueva.
     @event.listens_for(engine, "connect")
     def mark_process(connection, record):
         record.info["pid"] = os.getpid()
 
+    # Obliga al proceso hijo RQ a abrir su propio socket SQL en lugar de usar el del
+    # supervisor.
     @event.listens_for(engine, "checkout")
     def require_own_connection(connection, record, proxy):
         # RQ forks jobs. A child must open its own socket, leaving the parent's
@@ -46,6 +54,8 @@ def engine_for(url):
     return engine
 
 
+# Confirma o revierte la operación completa; despierta al worker y entrega IDs a Redis solo
+# después del commit.
 @contextmanager
 def transaction():
     url = os.getenv("DATABASE_URL", "")

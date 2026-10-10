@@ -1,9 +1,13 @@
 """Derive the staging OAuth callback from Render's public frontend origin."""
+# Derivación del callback Google desde el dominio público cuando no hay uno explícito.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import os
 import re
 
 
+# Conserva GOOGLE_REDIRECT_URI explícita o la deriva del origen público del frontend; evita
+# que Google vuelva al dominio de API.
 def configure_redirect():
     if os.getenv("GOOGLE_REDIRECT_URI"):
         return

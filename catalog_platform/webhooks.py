@@ -1,4 +1,6 @@
 """Signed, durable and idempotent webhook intake. Heavy work follows in the queue."""
+# Verificación de firma, deduplicación y procesamiento durable de eventos externos.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import base64
 import hashlib
@@ -24,6 +26,7 @@ from . import queue
 router = APIRouter()
 
 
+# Comprueba la firma del cuerpo recibido antes de aceptar un evento externo.
 def signature_valid(raw, signature, secret):
     expected = base64.b64encode(
         hmac.new(secret.encode(), raw, hashlib.sha256).digest()
@@ -31,6 +34,7 @@ def signature_valid(raw, signature, secret):
     return bool(signature) and hmac.compare_digest(expected, signature)
 
 
+# Valida, deduplica y guarda cifrado el evento antes de encolar su procesamiento.
 async def receive(provider, request):
     if not configured():
         raise HTTPException(503, "La recepción durable aún no está configurada.")
@@ -128,18 +132,22 @@ async def receive(provider, request):
         return {"accepted": True, "duplicate": True}
 
 
+# Entrada del webhook WooCommerce que delega la verificación y persistencia.
 @router.post("/webhooks/woocommerce", status_code=202)
 @router.post("/api/webhooks/woocommerce", status_code=202)
 async def woocommerce(request: Request):
     return await receive("woocommerce", request)
 
 
+# Entrada preparada para Loyverse, sujeta a la configuración de esa integración.
 @router.post("/webhooks/loyverse", status_code=202)
 @router.post("/api/webhooks/loyverse", status_code=202)
 async def loyverse(request: Request):
     return await receive("loyverse", request)
 
 
+# Aplica un evento identificado con checkpoints y conserva el estado sin resucitar productos
+# retirados.
 def process_event(job, owner):
     with transaction() as db:
         event = db.scalar(

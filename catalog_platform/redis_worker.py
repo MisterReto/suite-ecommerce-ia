@@ -1,4 +1,6 @@
 """Render supervisor: RQ processes, SQL heartbeat and outbox reconciliation."""
+# Supervisor de procesos RQ, heartbeat SQL y reconciliación periódica.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import logging
 import os
@@ -12,6 +14,8 @@ from . import queue, redis_broker
 from .security import cipher
 
 
+# Valida el número de procesos de imagen entre 1 y 8; aumentar este valor puede aumentar RAM
+# y gasto.
 def concurrency():
     try:
         value = int(os.getenv("IMAGE_WORKER_CONCURRENCY", "1"))
@@ -22,6 +26,8 @@ def concurrency():
     return value
 
 
+# Inicia el pool RQ, actualiza heartbeat y reconcilia SQL cada cinco segundos; un pool
+# terminado provoca el reinicio del servicio.
 def main(ready=None):
     from .render_config import configure_redirect
     configure_redirect()
@@ -40,6 +46,8 @@ def main(ready=None):
          "--num-workers", str(count), "--logging-level", "WARNING"],
         start_new_session=True,
     )
+    # Detiene el grupo de procesos y retira la señal de readiness al recibir una señal de
+    # apagado.
     def shutdown(*_):
         stopped.set()
         if ready is not None:
