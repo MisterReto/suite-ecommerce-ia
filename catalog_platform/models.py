@@ -134,6 +134,16 @@ class InventoryMovement(Record, Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class GenerationBatch(Record, Base):
+    __tablename__ = "rincon_generation_batches"
+    __table_args__ = (UniqueConstraint("tenant_id", "request_key"),)
+    actor: Mapped[str] = mapped_column(String(240))
+    request_key: Mapped[str] = mapped_column(String(100))
+    product_count: Mapped[int] = mapped_column(Integer)
+    image_count: Mapped[int] = mapped_column(Integer)
+    estimated_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class GenerationJob(Record, Base):
     __tablename__ = "rincon_generation_jobs"
     __table_args__ = (
@@ -142,6 +152,9 @@ class GenerationJob(Record, Base):
     )
     product_id: Mapped[str | None] = mapped_column(
         ForeignKey("rincon_products.id"), nullable=True
+    )
+    batch_id: Mapped[str | None] = mapped_column(
+        ForeignKey("rincon_generation_batches.id"), nullable=True, index=True
     )
     actor: Mapped[str] = mapped_column(String(240))
     kind: Mapped[str] = mapped_column(String(30), default="generation")

@@ -17,6 +17,7 @@ from .models import (
     Product,
     ProductImage,
     GenerationJob,
+    GenerationBatch,
     GeneratedAsset,
     InventoryMovement,
     IntegrationAccount,
@@ -28,7 +29,7 @@ from .models import (
 from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
 from .accounts import persist
-from .queue import available, request_lock
+from .queue import available, worker_ready, request_lock, dispatch, request_cancel
 
 router = APIRouter(prefix="/api/platform")
 
@@ -50,8 +51,8 @@ def context(request: Request):
         )
     if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
         value["carpeta_raiz_id_manual"] = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-    if not value.get("gemini_key") and os.getenv("AI_API_KEY"):
-        value["gemini_key"] = os.environ["AI_API_KEY"]
+    from .accounts import restore
+    restore(value)
     if not value.get("platform_tenant"):
         from drive_service import DriveService
 
@@ -183,6 +184,18 @@ class StockInput(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+class ConfirmInput(BaseModel):
+    confirm: bool
+
+
+class DeleteProductInput(ConfirmInput):
+    version: int = Field(ge=1)
+
+
+class CancelJobsInput(ConfirmInput):
+    job_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 @router.get("/status")
 def status(request: Request):
     from studio_api import runtime
@@ -192,6 +205,7 @@ def status(request: Request):
         "configured": configured(),
         "ready": False,
         "worker_ready": False,
+        "worker_can_queue": False,
         "authenticated": bool(value),
         "role": role_for(value.get("email", "")) if value else "viewer",
     }
@@ -202,8 +216,19 @@ def status(request: Request):
         with transaction() as db:
             db.scalar(select(Product.id).limit(1))
             result.update(
-                ready=True, worker_ready=available(db), message="Catálogo preparado."
+                ready=True, worker_ready=worker_ready(db),
+                worker_can_queue=available(db), message="Catálogo preparado."
             )
+            # Retry a failed cold start only while an authorized user's actual
+            # queued jobs exist. Idle status polling never keeps a worker alive.
+            if value and member(value.get("email", "")) and not result["worker_ready"]:
+                pending = db.scalar(select(GenerationJob.id).where(
+                    GenerationJob.tenant_id == value.get("platform_tenant", ""),
+                    GenerationJob.status == "queued",
+                ).limit(1))
+                if pending:
+                    from .worker_wakeup import notify
+                    notify()
     except Exception:
         result["message"] = (
             "Revisa DATABASE_URL, el esquema y CREDENTIAL_ENCRYPTION_KEY del servidor."
@@ -220,7 +245,7 @@ def products(
     value=Depends(context),
 ):
     with transaction() as db:
-        query = select(Product).where(Product.tenant_id == tenant(value))
+        query = select(Product).where(Product.tenant_id == tenant(value), Product.status != "deleted")
         if q:
             pattern = "%" + q[:180].replace("%", "\\%").replace("_", "\\_") + "%"
             query = query.where(
@@ -319,6 +344,7 @@ def get_product(product_id: str, value=Depends(context)):
                     select(Product).where(
                         Product.tenant_id == tenant(value),
                         Product.parent_id == product.id,
+                        Product.status != "deleted",
                     )
                 )
             ],
@@ -343,6 +369,48 @@ def update_product(product_id: str, data: ProductInput, value=Depends(context)):
         raise HTTPException(409, "Ese SKU ya pertenece a otro producto.") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+
+
+@router.delete("/products/{product_id}")
+def delete_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
+    admin(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma que quieres eliminar este producto del catálogo de la app.")
+    with transaction() as db:
+        product = db.scalar(select(Product).where(
+            Product.tenant_id == tenant(value), Product.id == product_id,
+        ).with_for_update())
+        if not product:
+            raise HTTPException(404, "Producto no disponible.")
+        if product.status == "deleted":
+            return {"ok": True, "product_id": product.id, "replayed": True}
+        if product.version != data.version:
+            raise HTTPException(409, "El producto cambió. Recarga antes de eliminarlo.")
+        if db.scalar(select(Product.id).where(
+            Product.tenant_id == tenant(value), Product.parent_id == product.id,
+            Product.status != "deleted",
+        ).limit(1)):
+            raise HTTPException(409, "Elimina primero las variantes de esta familia.")
+        pending = db.scalars(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.product_id == product.id,
+            GenerationJob.status.in_(["queued", "processing", "cancelling"]),
+        ).order_by(GenerationJob.id).with_for_update()).all()
+        if any(job.status != "queued" for job in pending):
+            raise HTTPException(409, "Detén el proceso del producto y espera a que aparezca como Cancelado antes de eliminarlo.")
+        before = serialize(product)
+        for job in pending:
+            request_cancel(job)
+            audit(db, tenant(value), actor(value), "job.cancelled", product.id,
+                  after={"job_id": job.id, "reason": "product.deleted"})
+        # A tombstone retains references, remote IDs and stock/job history. The
+        # original SKU is audited and released for an explicitly created record.
+        product.status = "deleted"
+        product.sync_status = "deleted"
+        product.sku = "deleted_" + product.id.replace("-", "")
+        product.version += 1
+        audit(db, tenant(value), actor(value), "product.deleted", product.id, before,
+              {"scope": "app", "cancelled_job_ids": [job.id for job in pending]})
+        return {"ok": True, "product_id": product.id}
 
 
 @router.post("/products/{product_id}/stock")
@@ -371,7 +439,7 @@ def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
                 GenerationJob.product_id == product_id,
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.kind.in_(["publication", "stock_sync"]),
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(
@@ -486,7 +554,8 @@ def selection(db, value, data, lock=False):
     ):
         raise HTTPException(422, "Tipos de imagen inválidos.")
     query = select(Product).where(
-        Product.tenant_id == tenant(value), Product.product_type != "variable"
+        Product.tenant_id == tenant(value), Product.product_type != "variable",
+        Product.status != "deleted",
     )
     if data.product_ids:
         query = query.where(Product.id.in_(list(set(data.product_ids))))
@@ -503,7 +572,7 @@ def selection(db, value, data, lock=False):
     if not rows or data.product_ids and len(rows) != len(set(data.product_ids)):
         raise HTTPException(422, "La selección incluye productos no disponibles.")
     count = len(rows) * len(data.slots) * data.quantity
-    if count > int(os.getenv("MAX_BATCH_IMAGES", "300")):
+    if count > int(os.getenv("MAX_IMAGES_PER_BATCH", os.getenv("MAX_BATCH_IMAGES", "300"))):
         raise HTTPException(
             422, "El lote supera el límite de imágenes. Divide la selección."
         )
@@ -553,6 +622,7 @@ def estimate(db, value, data, lock=False):
 
     rows, refs, count = selection(db, value, data, lock)
     unit = image_unit(IMAGE_MODEL)
+    guard_cost(count * unit if unit is not None else None)
     contract = {
         "products": [(p.id, p.version) for p in rows],
         "references": refs,
@@ -576,6 +646,22 @@ def estimate(db, value, data, lock=False):
         rows,
         refs,
     )
+
+
+def guard_cost(cost):
+    import math
+
+    configured = os.getenv("MAX_ESTIMATED_BATCH_COST", "")
+    if not configured:
+        return
+    try:
+        maximum = float(configured)
+    except ValueError:
+        raise RuntimeError("MAX_ESTIMATED_BATCH_COST debe ser un importe en USD.") from None
+    if not math.isfinite(maximum) or maximum < 0:
+        raise RuntimeError("MAX_ESTIMATED_BATCH_COST debe ser finito y no negativo.")
+    if cost is None or cost > maximum:
+        raise HTTPException(422, "El costo estimado supera el límite configurado o no está disponible.")
 
 
 @router.post("/generation/estimate")
@@ -603,7 +689,14 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             )
         ).all()
         if old:
-            return {"jobs": [serialize(job) for job in old], "replayed": True}
+            if any(job.kind != "generation" or job.actor != actor(value)
+                   or job.payload.get("slots") != data.slots
+                   or job.payload.get("quantity") != data.quantity
+                   or bool(job.payload.get("automatic_review")) != data.automatic_review for job in old):
+                raise HTTPException(409, "request_key ya corresponde a otra solicitud.")
+            if data.product_ids and set(data.product_ids) != {job.product_id for job in old}:
+                raise HTTPException(409, "request_key ya corresponde a otros productos.")
+            return {"batch_id": old[0].batch_id, "jobs": [serialize(job) for job in old], "replayed": True}
         quoted, rows, references = estimate(db, value, data, True)
         if quoted["estimate_token"] != data.estimate_token:
             raise HTTPException(409, "El lote cambió. Consulta la estimación otra vez.")
@@ -612,13 +705,20 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
                 503, "No hay worker conectado. No se aceptó ni cobró el lote."
             )
         persist(db, tenant(value), actor(value), value)
+        batch = GenerationBatch(
+            tenant_id=tenant(value), actor=actor(value), request_key=data.request_key,
+            product_count=len(rows), image_count=quoted["images"],
+            estimated_cost=quoted["estimated_usd"],
+        )
+        db.add(batch)
+        db.flush()
         jobs = []
         for product in rows:
             if db.scalar(
                 select(GenerationJob.id).where(
                     GenerationJob.product_id == product.id,
                     GenerationJob.tenant_id == tenant(value),
-                    GenerationJob.status.in_(["queued", "processing"]),
+                    GenerationJob.status.in_(["queued", "processing", "cancelling"]),
                 )
             ):
                 raise HTTPException(409, f"{product.sku} ya tiene un trabajo activo.")
@@ -634,6 +734,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             job = GenerationJob(
                 tenant_id=tenant(value),
                 product_id=product.id,
+                batch_id=batch.id,
                 actor=actor(value),
                 request_key=data.request_key,
                 payload=payload,
@@ -646,6 +747,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             )
             db.add(job)
             db.flush()
+            dispatch(db, job)
             jobs.append(serialize(job))
             audit(
                 db,
@@ -655,7 +757,22 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
                 product.id,
                 after={"job_id": job.id, "estimated_cost": job.estimated_cost},
             )
-        return {"jobs": jobs}
+        return {"batch_id": batch.id, "status": "queued", "jobs": jobs}
+
+
+@router.get("/generation/batches")
+def batches(value=Depends(context)):
+    with transaction() as db:
+        records = db.scalars(select(GenerationBatch)
+                             .where(GenerationBatch.tenant_id == tenant(value))
+                             .order_by(GenerationBatch.created_at.desc()).limit(50)).all()
+        result = []
+        for batch in records:
+            states = dict(db.execute(select(GenerationJob.status, func.count())
+                                     .where(GenerationJob.batch_id == batch.id)
+                                     .group_by(GenerationJob.status)).all())
+            result.append({**serialize(batch), "job_states": states})
+        return {"items": result}
 
 
 @router.get("/jobs")
@@ -674,13 +791,58 @@ def jobs(value=Depends(context)):
         }
 
 
+def cancel_locked(db, job, value):
+    if role_for(actor(value)) != "admin" and job.actor != actor(value):
+        raise HTTPException(403, "Solo puedes detener tus propios procesos.")
+    if job.status in {"queued", "processing"}:
+        before = job.status
+        request_cancel(job)
+        audit(db=db, tenant=tenant(value), actor=actor(value),
+              action="job.cancel_requested", product_id=job.product_id,
+              before={"status": before}, after={"job_id": job.id, "status": job.status})
+    elif job.status == "cancelling":
+        request_cancel(job)
+    return serialize(job)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, data: ConfirmInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma que quieres detener el proceso.")
+    with transaction() as db:
+        job = db.scalar(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.id == job_id,
+        ).with_for_update())
+        if not job:
+            raise HTTPException(404, "Trabajo no disponible.")
+        if job.status not in {"queued", "processing", "cancelling", "cancelled"}:
+            raise HTTPException(409, "El proceso ya terminó; no se puede detener.")
+        return {"job": cancel_locked(db, job, value)}
+
+
+@router.post("/jobs/cancel")
+def cancel_jobs(data: CancelJobsInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma los procesos que quieres detener.")
+    ids = set(data.job_ids)
+    with transaction() as db:
+        rows = db.scalars(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.id.in_(ids),
+        ).order_by(GenerationJob.id).with_for_update()).all()
+        if len(rows) != len(ids):
+            raise HTTPException(404, "Uno de los trabajos no está disponible.")
+        return {"jobs": [cancel_locked(db, job, value) for job in rows]}
+
+
 @router.get("/assets")
 def assets(value=Depends(context)):
     with transaction() as db:
         rows = db.execute(
             select(GeneratedAsset, Product)
             .join(Product, Product.id == GeneratedAsset.product_id)
-            .where(GeneratedAsset.tenant_id == tenant(value))
+            .where(GeneratedAsset.tenant_id == tenant(value), Product.status != "deleted")
             .order_by(GeneratedAsset.created_at.desc())
             .limit(100)
         ).all()
@@ -720,7 +882,7 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
                 GenerationJob.product_id == asset.product_id,
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.kind == "publication",
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(
@@ -744,7 +906,7 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
                 other.role = "gallery"
         db.flush()
         job = db.get(GenerationJob, asset.job_id)
-        if job.status not in {"processing", "queued"}:
+        if job.status not in {"processing", "queued", "cancelling", "cancelled"}:
             states = set(
                 db.scalars(
                     select(GeneratedAsset.status).where(GeneratedAsset.job_id == job.id)
@@ -795,7 +957,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
             select(GenerationJob.id).where(
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.product_id == asset.product_id,
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -803,6 +965,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
             raise HTTPException(503, "No hay worker conectado.")
         persist(db, tenant(value), actor(value), value)
         source = db.get(GenerationJob, asset.job_id)
+        guard_cost(image_unit(source.model))
         payload = {
             **source.payload,
             "slots": [asset.slot],
@@ -826,6 +989,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
         )
         db.add(job)
         db.flush()
+        dispatch(db, job)
         audit(
             db,
             tenant(value),
@@ -837,9 +1001,54 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
         return {"job": serialize(job)}
 
 
+class RegenerationInput(BaseModel):
+    confirm_cost: bool
+    request_key: str = Field(min_length=12, max_length=100)
+
+
+@router.post("/assets/{asset_id}/regenerate", status_code=202)
+def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm_cost:
+        raise HTTPException(422, "Confirma el nuevo consumo de IA.")
+    with transaction() as db:
+        asset = db.scalar(select(GeneratedAsset).where(
+            GeneratedAsset.id == asset_id, GeneratedAsset.tenant_id == tenant(value)))
+        if not asset:
+            raise HTTPException(404, "Imagen no disponible.")
+        source = db.get(GenerationJob, asset.job_id)
+        cost = image_unit(source.model)
+        guard_cost(cost)
+        payload = {**source.payload, "slots": [asset.slot], "quantity": 1,
+                   "completed_keys": [], "in_flight": None,
+                   "previous_asset_id": asset.id,
+                   "product": serialize(product_for(db, tenant(value), asset.product_id))}
+        for field in ("previous_raw_id", "feedback", "history"):
+            payload.pop(field, None)
+        product_id, model = asset.product_id, source.model
+    return enqueue_operation(value, "generation", data.request_key, payload,
+                             product_id, model, cost)
+
+
 class PublishInput(BaseModel):
     confirm: bool
     request_key: str = Field(min_length=12, max_length=100)
+
+
+@router.post("/assets/{asset_id}/save", status_code=202)
+def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma el guardado de la imagen aprobada.")
+    with transaction() as db:
+        asset = db.scalar(select(GeneratedAsset).where(
+            GeneratedAsset.id == asset_id, GeneratedAsset.tenant_id == tenant(value)))
+        if not asset or asset.status not in {"approved", "published"}:
+            raise HTTPException(422, "Aprueba la imagen antes de guardarla.")
+        product = product_for(db, tenant(value), asset.product_id)
+        payload = {"asset_id": asset.id, "version": product.version}
+        pid = product.id
+    return enqueue_operation(value, "asset_save", data.request_key, payload, pid)
 
 
 @router.post("/products/{product_id}/publish", status_code=202)
@@ -863,7 +1072,7 @@ def publish(product_id: str, data: PublishInput, value=Depends(context)):
             select(GenerationJob.id).where(
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.product_id == product_id,
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -914,17 +1123,19 @@ def dashboard(value=Depends(context)):
             )
 
         stats = {
-            "products": count(Product),
+            "products": count(Product, Product.status != "deleted"),
             "pending_products": count(Product, Product.status == "pending"),
-            "low_stock": count(Product, Product.stock.between(1, 5)),
-            "out_of_stock": count(Product, Product.stock == 0),
-            "sync_errors": count(Product, Product.sync_status == "error"),
+            "low_stock": count(Product, Product.stock.between(1, 5), Product.status != "deleted"),
+            "out_of_stock": count(Product, Product.stock == 0, Product.status != "deleted"),
+            "sync_errors": count(Product, Product.sync_status == "error", Product.status != "deleted"),
             "pending_jobs": count(
-                GenerationJob, GenerationJob.status.in_(["queued", "processing"])
+                GenerationJob, GenerationJob.status.in_(["queued", "processing", "cancelling"])
             ),
             "completed_images": count(
                 GeneratedAsset,
                 GeneratedAsset.status.in_(["completed", "approved", "published"]),
+                GeneratedAsset.product_id.in_(select(Product.id).where(
+                    Product.tenant_id == tenant(value), Product.status != "deleted")),
             ),
         }
         activity = [
@@ -998,10 +1209,35 @@ def events(value=Depends(context)):
 @router.get("/connections")
 def connections(value=Depends(context)):
     from sync_bridge_protocol import setting
+    from store_connection import drive_only
+    from .worker_wakeup import configured as remote_worker_configured
 
     state = lambda keys: (
         "connected" if all(setting(k) for k in keys) else "disconnected"
     )
+    woo = {
+        "name": "WooCommerce",
+        "status": state(["WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"]),
+    }
+    if drive_only():
+        woo.update(status="disconnected", note="Conexión pausada por el modo solo Drive.")
+    elif remote_worker_configured():
+        # Store credentials live in the worker, not necessarily in the API.
+        # A configured queue alone is not proof of a successful store request.
+        with transaction() as db:
+            latest = db.scalar(
+                select(GenerationJob)
+                .where(GenerationJob.tenant_id == tenant(value),
+                       GenerationJob.kind == "ecommerce_pull")
+                .order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc())
+                .limit(1)
+            )
+            result = latest.status if latest else None
+        woo.update(status="pending", note="Consulta la tienda en Sincronización para comprobar la conexión del worker.")
+        if result == "completed":
+            woo.update(status="connected", note="La última consulta a la tienda terminó correctamente.")
+        elif result == "failed":
+            woo.update(status="error", note="La última consulta falló. Revisa el trabajo en Sincronización.")
     return {
         "items": [
             {
@@ -1012,14 +1248,11 @@ def connections(value=Depends(context)):
                 "name": "IA · Gemini",
                 "status": (
                     "connected"
-                    if value.get("gemini_key") or os.getenv("AI_API_KEY")
+                    if value.get("gemini_key")
                     else "disconnected"
                 ),
             },
-            {
-                "name": "WooCommerce",
-                "status": state(["WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"]),
-            },
+            woo,
             {"name": "WordPress", "status": state(["WP_USERNAME", "WP_APP_PASSWORD"])},
             {
                 "name": "Loyverse",
@@ -1061,14 +1294,24 @@ def enqueue_operation(
             )
         )
         if previous:
+            if previous.kind != kind or previous.product_id != product_id or previous.actor != actor(value):
+                raise HTTPException(409, "request_key ya corresponde a otra operación.")
+            if any(previous.payload.get(field) != payload.get(field)
+                   for field in ("asset_id", "previous_asset_id", "retry_of")):
+                raise HTTPException(409, "request_key ya corresponde a otro resultado.")
             return {"job": serialize(previous)}
+        if kind in {"generation", "studio_generation"}:
+            guard_cost(estimated_cost)
+            count = len(payload["slots"]) * payload.get("quantity", 1)
+            if count > int(os.getenv("MAX_IMAGES_PER_BATCH", os.getenv("MAX_BATCH_IMAGES", "300"))):
+                raise HTTPException(422, "El intento supera MAX_IMAGES_PER_BATCH.")
         if product_id:
             product_for(db, tenant(value), product_id, True)
             if db.scalar(
                 select(GenerationJob.id).where(
                     GenerationJob.tenant_id == tenant(value),
                     GenerationJob.product_id == product_id,
-                    GenerationJob.status.in_(["queued", "processing"]),
+                    GenerationJob.status.in_(["queued", "processing", "cancelling"]),
                 )
             ):
                 raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -1089,6 +1332,7 @@ def enqueue_operation(
         )
         db.add(job)
         db.flush()
+        dispatch(db, job)
         audit(
             db,
             tenant(value),
@@ -1313,7 +1557,7 @@ def export(format: str = "csv", value=Depends(context)):
     with transaction() as db:
         products = db.scalars(
             select(Product)
-            .where(Product.tenant_id == tenant(value))
+            .where(Product.tenant_id == tenant(value), Product.status != "deleted")
             .order_by(Product.sku)
         ).all()
         audit(

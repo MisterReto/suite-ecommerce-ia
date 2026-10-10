@@ -183,6 +183,7 @@ def execute_import(job, value, drive, owner):
     for index, data in enumerate(
         sorted(rows, key=lambda r: 0 if r["product_type"] == "variable" else 1)
     ):
+        queue.checkpoint(job["id"], owner)
         if str(index) in payload.get("completed_keys", []):
             continue
         with transaction() as db:

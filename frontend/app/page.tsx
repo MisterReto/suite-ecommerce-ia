@@ -24,11 +24,15 @@ import {
   Settings2,
   ShoppingBag,
   Sparkles,
+  Square,
+  Trash2,
   Upload,
   WifiOff,
   X,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { recoverSession } from "@/lib/session-recovery";
+import DriveClassification from "@/components/DriveClassification";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
 type Section = "home" | "products" | "generate" | "inventory" | "more";
@@ -75,6 +79,8 @@ type Brief = {
   search_suggestions?: string;
 };
 type Asset = {
+  provider: string;
+  model: string;
   id: string;
   image_id: string;
   product_id: string;
@@ -94,6 +100,7 @@ type Asset = {
 };
 type Job = {
   id: string;
+  actor: string;
   kind: string;
   product_id: string;
   status: string;
@@ -141,12 +148,15 @@ type Session = {
   email?: string;
   gemini_configured?: boolean;
   folder?: string;
+  folder_id?: string;
   image_model?: string;
+  estimated_image_usd?: number | null;
 };
 type Status = {
   ready: boolean;
   configured: boolean;
   worker_ready: boolean;
+  worker_can_queue?: boolean;
   role: string;
   message: string;
 };
@@ -198,6 +208,8 @@ const nav = [
 const stateLabel: Record<string, string> = {
   queued: "En cola",
   processing: "Procesando",
+  cancelling: "Deteniendo",
+  cancelled: "Cancelado",
   completed: "Para revisar",
   failed: "Error",
   approved: "Aprobada",
@@ -238,7 +250,7 @@ const date = (v?: string) =>
     : "—";
 const pictureUrl = (id: string) =>
   "/api/platform/images/" + encodeURIComponent(id);
-const active = (job: Job) => ["queued", "processing"].includes(job.status);
+const active = (job: Job) => ["queued", "processing", "cancelling"].includes(job.status);
 const blank = (): Product => ({
   id: "",
   sku: "",
@@ -293,7 +305,12 @@ async function api<T>(
           : JSON.stringify(body)
         : undefined,
     });
-    const data = await response.json();
+    const data = await response.json().catch(() => {
+      throw new ApiError(
+        "El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",
+        response.ok ? 503 : response.status,
+      );
+    });
     if (!response.ok)
       throw new ApiError(
         typeof data.detail === "string"
@@ -340,10 +357,14 @@ export default function Platform() {
     message: "Cargando…",
   });
   const [loading, setLoading] = useState(true);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const operationKeys = useRef(new Map<string, string>());
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [online, setOnline] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -368,6 +389,7 @@ export default function Platform() {
   const [automaticReview, setAutomaticReview] = useState(false);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [generationTab, setGenerationTab] = useState("batch");
+  const [captureVisible, setCaptureVisible] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [comparison, setComparison] = useState<Detail | null>(null);
   const [feedback, setFeedback] = useState("");
@@ -384,6 +406,8 @@ export default function Platform() {
   const canEdit = session.authenticated && status.role !== "viewer";
   const isAdmin = status.role === "admin";
   const ready = session.authenticated && status.ready;
+  const workerCanQueue = status.worker_can_queue ?? status.worker_ready;
+  const stoppableJobs = jobs.filter(job => active(job) && canEdit && (isAdmin || job.actor === session.email));
   const go = useCallback((target: Section) => {
     location.hash = target;
     setSection(target);
@@ -392,7 +416,8 @@ export default function Platform() {
     setError("");
   }, []);
   const attempt = async (action: () => Promise<void>) => {
-    if (busy) return;
+    if (busy || submitting.current) return;
+    submitting.current = true;
     setBusy(true);
     setError("");
     setNotice("");
@@ -403,27 +428,44 @@ export default function Platform() {
       if (e instanceof ApiError && e.status === 401)
         setSession({ authenticated: false });
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
+  const durablePost = async (path: string, body: Record<string, unknown>) => {
+    const signature = JSON.stringify([path, body]);
+    const request_key = operationKeys.current.get(signature) || crypto.randomUUID();
+    operationKeys.current.set(signature, request_key);
+    try {
+      const result = await api(path, "POST", { ...body, request_key });
+      operationKeys.current.delete(signature);
+      return result;
+    } catch (e) {
+      // An uncertain network response must reuse the same intent on retry.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        operationKeys.current.delete(signature);
+      throw e;
+    }
+  };
   const reloadBase = useCallback(async () => {
-    const [s, st] = await Promise.all([
-      api<Session>("/api/session"),
-      api<Status>("/api/platform/status"),
-    ]);
+    const s = await recoverSession<Session>();
     setSession(s);
+    setSessionChecked(true);
+    const st = await api<Status>("/api/platform/status");
     setStatus(st);
     return { s, st };
   }, []);
   const reloadOperations = useCallback(async () => {
-    const [d, j, a] = await Promise.all([
+    const [d, j, a, st] = await Promise.all([
       api<Dashboard>("/api/platform/dashboard"),
       api<{ items: Job[] }>("/api/platform/jobs"),
       api<{ items: Asset[] }>("/api/platform/assets"),
+      api<Status>("/api/platform/status"),
     ]);
     setDashboard(d);
     setJobs(j.items);
     setAssets(a.items);
+    setStatus(st);
   }, []);
   const loadProducts = useCallback(async () => {
     const data = await api<{ items: Product[]; total: number }>(
@@ -447,21 +489,37 @@ export default function Platform() {
         if (hash === "settings") setMoreTab("settings");
       }
     };
-    const connection = () => setOnline(navigator.onLine);
+    const disconnected = () => { setOnline(false); setReconnecting(false); };
+    let recovering = false;
+    const connected = () => {
+      if (recovering) return;
+      recovering = true;
+      setOnline(true);
+      setReconnecting(true);
+      setError("");
+      reloadBase()
+        .catch((e) => setError(`No se pudo reconectar: ${e.message}`))
+        .finally(() => { recovering = false; setReconnecting(false); setLoading(false); });
+    };
+    const resumed = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) connected();
+    };
     change();
-    connection();
+    setOnline(navigator.onLine);
     window.addEventListener("hashchange", change);
-    window.addEventListener("online", connection);
-    window.addEventListener("offline", connection);
-    reloadBase()
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+    window.addEventListener("online", connected);
+    window.addEventListener("offline", disconnected);
+    window.addEventListener("focus", resumed);
+    document.addEventListener("visibilitychange", resumed);
+    connected();
     if ("serviceWorker" in navigator)
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     return () => {
       window.removeEventListener("hashchange", change);
-      window.removeEventListener("online", connection);
-      window.removeEventListener("offline", connection);
+      window.removeEventListener("online", connected);
+      window.removeEventListener("offline", disconnected);
+      window.removeEventListener("focus", resumed);
+      document.removeEventListener("visibilitychange", resumed);
     };
   }, [reloadBase]);
   useEffect(() => {
@@ -551,10 +609,39 @@ export default function Platform() {
     setUncertainChecked(false);
     setConfirm(value);
   };
+  const deleteProduct = (product: Product) => ask({
+    title: "Eliminar producto",
+    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
+    label: "Eliminar producto",
+    action: async () => {
+      await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
+      setDetail(null);
+      setEditing(false);
+      setProducts(previous => previous.filter(item => item.id !== product.id));
+      setSelected(previous => previous.filter(id => id !== product.id));
+      setQuote(null);
+      if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
+      await Promise.all([loadProducts(), reloadOperations()]);
+      setNotice("Producto eliminado del catálogo de la app.");
+    },
+  });
+  const stopJobs = (targets: Job[]) => ask({
+    title: targets.length === 1 ? "Detener proceso" : `Detener ${targets.length} procesos`,
+    text: "Los procesos en cola se cancelan al momento. Si una operación ya empezó, se esperará a que termine y se conservarán sus resultados; después no se iniciarán más pasos.",
+    label: targets.length === 1 ? "Detener proceso" : "Detener todos",
+    action: async () => {
+      if (targets.length === 1) {
+        await api(`/api/platform/jobs/${targets[0].id}/cancel`, "POST", { confirm: true });
+      } else {
+        await api("/api/platform/jobs/cancel", "POST", { confirm: true, job_ids: targets.map(job => job.id) });
+      }
+      await reloadOperations();
+      setNotice("Cancelación guardada. Los procesos iniciados se detendrán al terminar su operación actual.");
+    },
+  });
   const operation = async (path: string) => {
-    await api(path, "POST", {
+    await durablePost(path, {
       confirm: true,
-      request_key: crypto.randomUUID(),
     });
     setNotice(
       "Trabajo en cola. Puedes cerrar el navegador y consultar su progreso después.",
@@ -658,10 +745,9 @@ export default function Platform() {
       label: "Autorizar intento",
       uncertain: !!job.payload.in_flight,
       action: async () => {
-        await api(`/api/platform/jobs/${job.id}/retry`, "POST", {
+        await durablePost(`/api/platform/jobs/${job.id}/retry`, {
           confirm: true,
           uncertainty_reviewed: true,
-          request_key: crypto.randomUUID(),
         });
         await reloadOperations();
       },
@@ -809,13 +895,22 @@ export default function Platform() {
             </button>
           )}
         </div>
-        {loading && (
+        {(loading || reconnecting) && (
           <div className="inline-loading">
             <Loader2 className="spin" size={22} />
-            Cargando tu espacio…
+            Iniciando servidor y recuperando tu sesión…
           </div>
         )}
-        {!loading && !session.authenticated && (
+        {!loading && !reconnecting && !sessionChecked && (
+          <div className="p-alert" role="status">
+            <span>El servidor aún no está disponible.</span>
+            <button onClick={() => {
+              setLoading(true); setError("");
+              void reloadBase().catch(e => setError(e.message)).finally(() => setLoading(false));
+            }}>Reintentar conexión</button>
+          </div>
+        )}
+        {!loading && sessionChecked && !session.authenticated && (
           <div className="p-welcome">
             <img src="/logo.png" width={76} height={76} alt="" />
             <div>
@@ -851,8 +946,9 @@ export default function Platform() {
           <div className="p-alert">
             <CircleAlert size={20} />
             <span>
-              El worker está desconectado. Puedes consultar y editar el
-              catálogo; las nuevas operaciones en cola esperan su configuración.
+              {workerCanQueue
+                ? "El proceso de imágenes está en reposo o iniciándose. Puedes enviar una operación; quedará guardada en cola mientras arranca."
+                : "El proceso de imágenes está desconectado. Puedes consultar y editar el catálogo; las nuevas operaciones en cola esperan su configuración."}
             </span>
           </div>
         )}
@@ -1051,7 +1147,25 @@ export default function Platform() {
           </>
         )}
 
-        {(section === "products" || section === "inventory") && ready && (
+        {section === "products" && (
+          <div className="p-chips p-tabs">
+            <button className={!captureVisible ? "active" : ""} onClick={() => setCaptureVisible(false)}>Catálogo</button>
+            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Sparkles size={17} /> Nuevo producto con IA</button>
+          </div>
+        )}
+        {section === "generate" && (
+          <div className="p-chips p-tabs">
+            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Camera size={17} /> Capturar producto</button>
+            {captureVisible && <button onClick={() => { setCaptureVisible(false); setGenerationTab("batch"); }}>Generación masiva</button>}
+          </div>
+        )}
+        <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || section === "inventory") && !ready && !loading && session.authenticated))}>
+          <CaptureStudio embedded initialSection={section === "more" ? "settings" : !captureVisible && (section === "products" || section === "inventory") ? "catalog" : "studio"}
+            onOpenProduct={id => { setCaptureVisible(false); go("products"); attempt(() => openProduct(id)); }}
+            onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured, folder: data.folder, folder_id: data.folder_id}))}
+            onSaved={() => { if (ready) loadProducts().catch(e => setError(e.message)); }} />
+        </div>
+        {(section === "products" || section === "inventory") && ready && !(section === "products" && captureVisible) && (
           <>
             {!detail && !editing && (
               <>
@@ -1130,15 +1244,16 @@ export default function Platform() {
                     }
                   >
                     {products.map((p) => (
-                      <button
+                      <article
                         className={
                           section === "inventory"
                             ? "p-inventory-card"
                             : "p-product-card"
                         }
                         key={p.id}
-                        onClick={() => attempt(() => openProduct(p.id))}
                       >
+                        <button className="p-card-open" aria-label={`Abrir producto ${p.name}`} disabled={busy}
+                          onClick={() => attempt(() => openProduct(p.id))}>
                         {section === "products" && (
                           <div className="p-product-photo">
                             {p.image_id ? (
@@ -1193,7 +1308,16 @@ export default function Platform() {
                             </small>
                           </div>
                         </div>
-                      </button>
+                        </button>
+                        {isAdmin && section === "products" && (
+                          <div className="p-product-actions">
+                            <button className="button secondary p-danger" disabled={busy || !online}
+                              aria-label={`Eliminar ${p.name}`} onClick={() => deleteProduct(p)}>
+                              <Trash2 size={17} /> Eliminar
+                            </button>
+                          </div>
+                        )}
+                      </article>
                     ))}
                   </div>
                 ) : (
@@ -1237,6 +1361,12 @@ export default function Platform() {
                   <ArrowLeft size={18} />
                   Volver al catálogo
                 </button>
+                {detail && isAdmin && !editing && (
+                  <button className="button secondary p-danger" disabled={busy || !online}
+                    onClick={() => deleteProduct(detail.product)}>
+                    <Trash2 size={18} /> Eliminar producto
+                  </button>
+                )}
                 {editing ? (
                   <section className="p-card">
                     <h2>{form.id ? "Editar producto" : "Nuevo producto"}</h2>
@@ -1252,8 +1382,6 @@ export default function Platform() {
                           ["sku", "SKU"],
                           ["barcode", "Código de barras"],
                           ["brand", "Marca"],
-                          ["category", "Categoría"],
-                          ["subcategory", "Subcategoría"],
                         ].map(([key, label]) => (
                           <label key={key}>
                             {label}
@@ -1267,6 +1395,12 @@ export default function Platform() {
                             />
                           </label>
                         ))}
+                        <DriveClassification value={form}
+                          onChange={value => setForm(previous => ({ ...previous, ...value }))}
+                          enabled={canEdit}
+                          folderKey={(session.email || "") + ":" + (session.folder_id || session.folder || "")}
+                          disabled={busy}
+                        />
                         <label>
                           Tipo
                           <select
@@ -1347,21 +1481,6 @@ export default function Platform() {
                             setForm({
                               ...form,
                               long_description: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <label className="p-form-field">
-                        Etiquetas, separadas por comas
-                        <input
-                          value={form.tags.join(", ")}
-                          onChange={(e) =>
-                            setForm({
-                              ...form,
-                              tags: e.target.value
-                                .split(",")
-                                .map((t) => t.trim())
-                                .filter(Boolean),
                             })
                           }
                         />
@@ -1515,7 +1634,7 @@ export default function Platform() {
                                 </button>
                                 <button
                                   className="button secondary"
-                                  disabled={busy || !status.worker_ready}
+                                  disabled={busy || !workerCanQueue}
                                   onClick={() =>
                                     ask({
                                       title: "Generar datos con IA",
@@ -1548,7 +1667,7 @@ export default function Platform() {
                             {isAdmin && (
                               <button
                                 className="button primary"
-                                disabled={busy || !status.worker_ready}
+                                disabled={busy || !workerCanQueue}
                                 onClick={() =>
                                   ask({
                                     title: form.woocommerce_product_id
@@ -1750,7 +1869,7 @@ export default function Platform() {
                                 </button>
                                 <button
                                   className="button secondary"
-                                  disabled={busy || !status.worker_ready}
+                                  disabled={busy || !workerCanQueue}
                                   onClick={() =>
                                     ask({
                                       title: "Sincronizar stock",
@@ -1807,10 +1926,10 @@ export default function Platform() {
           </>
         )}
 
-        {section === "generate" && (
+        {section === "generate" && !captureVisible && (
           <>
             {!ready ? (
-              <CaptureStudio embedded />
+              <p className="p-muted">Captura y analiza un producto aquí. La generación masiva estará disponible al activar el catálogo maestro.</p>
             ) : (
               <>
                 <div className="p-chips p-tabs">
@@ -2068,20 +2187,18 @@ export default function Platform() {
                           <p>{quote.note}</p>
                           <button
                             className="button primary p-full"
-                            disabled={busy || !status.worker_ready}
+                            disabled={busy || !workerCanQueue}
                             onClick={() =>
                               ask({
                                 title: "Confirmar generación",
-                                text: `${quote.products} productos · ${quote.images} imágenes · ${quote.provider}. Estimación ${quote.estimated_usd == null ? "no disponible" : `USD $${quote.estimated_usd.toFixed(3)}`} más consumo variable. Las imágenes quedarán para revisión.`,
+                                text: `${quote.products} productos · ${quote.images} imágenes · ${quote.provider} · ${quote.model}. Estimación ${quote.estimated_usd == null ? "no disponible" : `USD $${quote.estimated_usd.toFixed(3)}`} más consumo variable. Las imágenes quedarán para revisión.`,
                                 label: "Generar lote",
                                 action: async () => {
-                                  await api(
+                                  await durablePost(
                                     "/api/platform/generation/jobs",
-                                    "POST",
                                     {
                                       ...batch(),
                                       confirm: true,
-                                      request_key: crypto.randomUUID(),
                                       estimate_token: quote.estimate_token,
                                     },
                                   );
@@ -2139,7 +2256,15 @@ export default function Platform() {
                   ))}
                 {generationTab === "jobs" && (
                   <section className="p-card">
-                    <h2>Trabajos y progreso</h2>
+                    <div className="p-jobs-title">
+                      <h2>Trabajos y progreso</h2>
+                      {stoppableJobs.length > 1 && (
+                        <button className="button secondary p-danger" disabled={busy || !online}
+                          onClick={() => stopJobs(stoppableJobs)}>
+                          <Square size={17} /> Detener todos ({stoppableJobs.length})
+                        </button>
+                      )}
+                    </div>
                     {jobs.length ? (
                       jobs.map((j) => (
                         <div className="p-job" key={j.id}>
@@ -2154,6 +2279,7 @@ export default function Platform() {
                                 {j.payload.product?.name ||
                                   {
                                     publication: "Publicación WooCommerce",
+                                    studio_generation: "Generación de imágenes",
                                     import: "Importación de catálogo",
                                     ecommerce_pull: "Consulta WooCommerce",
                                     enrichment: "Datos con IA",
@@ -2174,6 +2300,12 @@ export default function Platform() {
                                 ? ` · estimado USD $${j.estimated_cost.toFixed(3)}`
                                 : ""}
                             </small>
+                            {stoppableJobs.some(job => job.id === j.id) && (
+                              <button className="button secondary p-danger" disabled={busy || !online}
+                                onClick={() => stopJobs([j])}>
+                                <Square size={16} /> Detener proceso
+                              </button>
+                            )}
                             {j.status === "failed" && canEdit && (
                               <button
                                 className="p-link"
@@ -2207,6 +2339,7 @@ export default function Platform() {
                 ["sync", "Sincronización"],
                 ["exchange", "Importar / Exportar"],
                 ["settings", "Ajustes"],
+                ["tools", "Herramientas de Drive"],
                 ["help", "Ayuda"],
               ].map(([id, label]) => (
                 <button
@@ -2252,6 +2385,11 @@ export default function Platform() {
                       <h2>{c.name}</h2>
                       <Badge value={c.status} />
                       {c.note && <p>{c.note}</p>}
+                      {c.name === "WooCommerce" && isAdmin && (
+                        <button className="button secondary" onClick={() => setMoreTab("sync")}>
+                          Comprobar conexión
+                        </button>
+                      )}
                     </section>
                   ))}
                 </div>
@@ -2276,9 +2414,6 @@ export default function Platform() {
                 </div>
               </>
             )}
-            {moreTab === "settings" && (
-              <CaptureStudio embedded initialSection="settings" />
-            )}
             {moreTab === "sync" && (
               <section className="p-card">
                 <div className="p-card-title">
@@ -2286,7 +2421,7 @@ export default function Platform() {
                   {isAdmin && ready && (
                     <button
                       className="button secondary"
-                      disabled={busy || !status.worker_ready}
+                      disabled={busy || !workerCanQueue}
                       onClick={() =>
                         ask({
                           title: "Consultar WooCommerce",
@@ -2358,6 +2493,16 @@ export default function Platform() {
                 </button>
               </section>
             )}
+            {moreTab === "tools" && <section className="p-card">
+              <h2>Herramientas de tu inventario</h2>
+              <p>Consulta el inventario operativo y utiliza las herramientas del tutorial con tu misma cuenta. Cada escritura conserva su revisión y confirmación.</p>
+              <div className="p-chips">
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/inventory-hub">Conteo, movimientos y comparación Sheets–WooCommerce</a>
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-image-preview">Revisar Drive y WordPress</a>
+                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-batch-sync">Publicación masiva, pausa y reanudación</a>
+              </div>
+              <p className="p-muted">Comprueba la conexión en Sincronización. Las publicaciones y los cambios de stock requieren tu confirmación.</p>
+            </section>}
             {moreTab === "exchange" && (
               <div className="p-two-column">
                 <section className="p-card">
@@ -2396,7 +2541,7 @@ export default function Platform() {
                     <button
                       className="button secondary"
                       disabled={
-                        !isAdmin || !ready || !status.worker_ready || busy
+                        !isAdmin || !ready || !workerCanQueue || busy
                       }
                       onClick={() =>
                         ask({
@@ -2437,7 +2582,7 @@ export default function Platform() {
                         <button
                           className="button primary"
                           disabled={
-                            busy || !status.worker_ready || !preview.rows
+                            busy || !workerCanQueue || !preview.rows
                           }
                           onClick={() =>
                             ask({
@@ -2517,9 +2662,12 @@ export default function Platform() {
                   <li>
                     <strong>Prepara el producto</strong>
                     <p>
-                      Importa o crea la ficha en Productos. Añade una foto
-                      original como referencia para la IA.
+                      Abre Productos → Nuevo producto con IA o Generar → Capturar producto. Toma la foto frontal o elígela desde la galería; añade el reverso y tus observaciones si los necesitas.
                     </p>
+                  </li>
+                  <li>
+                    <strong>Analiza y revisa coincidencias</strong>
+                    <p>Gemini propone datos editables. Revisa si el producto ya existe, pertenece a un padre o necesita una familia nueva. Prepara la portada con fotografías reales.</p>
                   </li>
                   <li>
                     <strong>Genera las imágenes</strong>
@@ -2539,7 +2687,7 @@ export default function Platform() {
                   <li>
                     <strong>Publica y sincroniza</strong>
                     <p>
-                      Un administrador publica las imágenes aprobadas en
+                      Guarda la captura revisada para incorporarla a Sheets y al catálogo maestro. Si queda una sincronización pendiente, repárala desde la captura. Un administrador publica las imágenes aprobadas en
                       WordPress y WooCommerce. El inventario registra cada
                       movimiento por separado.
                     </p>
@@ -2586,12 +2734,12 @@ export default function Platform() {
         {(section === "products" || section === "inventory") &&
           !ready &&
           !loading && (
-            session.authenticated ? <><div className="p-alert"><Cloud size={18}/><span>Catálogo histórico de Drive · disponible durante la activación de PostgreSQL.</span></div><CaptureStudio embedded initialSection="catalog"/></> : <Empty title="Conecta tu catálogo" text="En Más puedes conectar tu cuenta de Google Drive."/>
+            session.authenticated ? <div className="p-alert"><Cloud size={18}/><span>Catálogo histórico de Drive · disponible durante la activación de PostgreSQL.</span></div> : <Empty title="Conecta tu catálogo" text="En Más puedes conectar tu cuenta de Google Drive."/>
           )}
         <footer className="p-footer">
           <img src="/logo.png" width={23} height={23} alt="" />
           <span>El Rincón de Asia · De Asia para tu casa.</span>
-          <small>{online ? "En línea" : "Sin conexión"}</small>
+          <small role="status">{reconnecting ? "Reconectando…" : online ? "En línea" : "Sin conexión"}</small>
         </footer>
         {busy && (
           <div className="p-busy" role="status">
@@ -2710,6 +2858,36 @@ export default function Platform() {
               >
                 Ver producto
               </button>
+              {canEdit && ["approved", "published"].includes(selectedAsset.status) && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Guardar imagen aprobada",
+                    text: "Se guardará en imagenes_generadas con su nombre compatible. Si existe una versión anterior, se conservará un respaldo antes de sustituirla. Publicar en la tienda es otra acción.",
+                    label: "Guardar en Drive",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/save`, {
+                        confirm: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Guardar aprobada en Drive</button>
+              )}
+              {canEdit && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Regenerar un candidato",
+                    text: `1 producto · 1 imagen · ${selectedAsset.provider} · ${selectedAsset.model}. Estimado: ${selectedAsset.estimated_correction_usd != null ? `USD $${selectedAsset.estimated_correction_usd.toFixed(3)}` : "no disponible"}; investigación y revisión pueden añadir consumo. Se usarán las referencias originales y se conservará la imagen anterior.`,
+                    label: "Confirmar generación",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/regenerate`, {
+                        confirm_cost: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Regenerar</button>
+              )}
             </div>
             {selectedAsset.metadata_json.qa?.resumen && (
               <p className="p-muted">
@@ -2798,7 +2976,7 @@ export default function Platform() {
                 )}
                 <button
                   className="button secondary"
-                  disabled={busy || !status.worker_ready || !feedback.trim()}
+                  disabled={busy || !workerCanQueue || !feedback.trim()}
                   onClick={() => {
                     const asset = selectedAsset;
                     const correction = feedback;
@@ -2808,13 +2986,11 @@ export default function Platform() {
                       text: `Se creará una nueva imagen conservando la anterior. Estimación de salida: ${asset.estimated_correction_usd == null ? "tarifa no configurada" : `USD $${asset.estimated_correction_usd.toFixed(3)}`}, más entradas y revisión si aplica. Confirma el consumo adicional.`,
                       label: "Regenerar",
                       action: async () => {
-                        await api(
+                        await durablePost(
                           `/api/platform/assets/${asset.id}/correct`,
-                          "POST",
                           {
                             feedback: correction,
                             confirm_cost: true,
-                            request_key: crypto.randomUUID(),
                           },
                         );
                         await reloadOperations();

@@ -248,6 +248,8 @@ def _nueva_session_id():
 
 
 def _eliminar_sesion(session_id):
+    from catalog_platform.web_sessions import revoke
+    revoke(session_id)
     session = SESSIONS.pop(session_id, None)
     namespace = (session or {}).get("file_namespace", "")
     if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", namespace):
@@ -272,9 +274,12 @@ def _guardar_sesion(clave_sesion, **kwargs):
         if len(SESSIONS) >= 500:
             raise RuntimeError("Servicio ocupado. Vuelve a conectar Drive en unos minutos.")
         SESSIONS[clave_sesion] = {}
-    SESSIONS[clave_sesion].update(kwargs)
-    SESSIONS[clave_sesion]["session_id"] = clave_sesion
-    SESSIONS[clave_sesion]["expires_at"] = time.time() + 8 * 3600
+    from catalog_platform.web_sessions import save
+    value = dict(SESSIONS[clave_sesion], **kwargs)
+    value["session_id"] = clave_sesion
+    value["expires_at"] = time.time() + 8 * 3600
+    save(clave_sesion, value)
+    SESSIONS[clave_sesion].update(value)
 
 
 def _obtener_sesion(request: FastAPIRequest):
@@ -1145,10 +1150,17 @@ def _preparar_estructura(service, sesion=None):
         raise RuntimeError("No hay una sesión de Google disponible.")
     carpeta_manual = sesion.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     if os.getenv("DATABASE_URL") and carpeta_manual:
-        # In the master-catalog architecture Sheets is an import source only.
-        # Discover historic dependencies without creating or synchronizing sheets.
+        # Preserve the operational Sheet during the SQL transition. Discovery
+        # must not create or synchronize existing sheets on a read request.
+        if hasattr(service, "root_id"):
+            service.root_id = carpeta_manual
         images=_buscar_archivo(service,NOMBRE_SUBCARPETA_IMAGENES,carpeta_manual,"application/vnd.google-apps.folder")
-        sheet=_buscar_archivo(service,NOMBRE_GOOGLE_SHEET,carpeta_manual,"application/vnd.google-apps.spreadsheet")
+        sheet=os.getenv("GOOGLE_SHEET_ID") or _buscar_archivo(service,NOMBRE_GOOGLE_SHEET,carpeta_manual,"application/vnd.google-apps.spreadsheet")
+        if os.getenv("GOOGLE_SHEET_ID"):
+            from drive_service import DriveService
+            boundary = DriveService(service, carpeta_manual)
+            if not boundary.owns(sheet) or boundary.metadata(sheet).get("mimeType") != "application/vnd.google-apps.spreadsheet":
+                raise ValueError("GOOGLE_SHEET_ID no es una hoja nativa de la carpeta autorizada.")
         return carpeta_manual,images,sheet,_buscar_archivo(service,NOMBRE_LOGO,carpeta_manual)
     if carpeta_manual:
         carpeta_raiz_id = carpeta_manual
@@ -1176,7 +1188,7 @@ def _preparar_estructura(service, sesion=None):
         except Exception as e:
             # El inventario principal sigue disponible; el usuario verá el error
             # al guardar si la sincronización vuelve a fallar.
-            print(f"⚠️ No se pudo sincronizar '{NOMBRE_HOJA_VARIABLE}': {e}")
+            print(f"⚠️ No se pudo sincronizar '{NOMBRE_HOJA_VARIABLE}': {type(e).__name__}")
     logo_id = _buscar_archivo(service, NOMBRE_LOGO, carpeta_raiz_id)
     return carpeta_raiz_id, carpeta_imagenes_id, spreadsheet_id, logo_id
 
@@ -1246,6 +1258,17 @@ def _cargar_df(sesion):
 
 
 def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local):
+    from drive_service import DriveService
+    if os.getenv("STUDIO_IMAGE_JOBS") == "worker" and isinstance(service, DriveService):
+        # Preserve the capture adapter and canonical ID, adding a backup only
+        # for the explicitly enabled separated mode before any replacement.
+        import hashlib
+        digest = hashlib.sha256()
+        with open(ruta_local, "rb") as stream:
+            for chunk in iter(lambda: stream.read(512 * 1024), b""):
+                digest.update(chunk)
+        return service.save_approved(ruta_local, nombre_archivo, carpeta_imagenes_id,
+                                     "capture-" + digest.hexdigest())["id"]
     media = MediaFileUpload(ruta_local, mimetype='image/jpeg', resumable=False)
     existente_id = _buscar_archivo(service, nombre_archivo, carpeta_imagenes_id)
     if existente_id:

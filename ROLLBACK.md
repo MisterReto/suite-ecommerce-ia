@@ -1,25 +1,39 @@
-# Recuperación
+# Rollback de esta restauración
 
-| Referencia | Propósito |
-| --- | --- |
-| `backup/pre-platform-20261006` / `41d0599a45dda1edca13b1c253a68524e3567ad2` | Código histórico desplegado antes de migrar. |
-| `3ba6a2f9aeb65265a6165ee6c48b7ab273256d7f` | Generación aceptada protegida durante esta continuación. |
-| Copia de `inventario_completo` en `docs/backups.md` | Respaldo histórico registrado por el trabajo anterior. |
+Base: `405f423fd79419700346c743eb90005e6bbbab82`, rama previa
+`agent/stabilize-architecture-20261006`. Auditoría inicial aislada: `ef1b756`.
+Los deploys anteriores y los IDs de servicio están registrados en
+`docs/FUNCTIONAL_PARITY_AUDIT.md`. No usar main como referencia equivalente.
 
-## Si falla el nuevo frontend/API
+| Componente staging | Servicio | Deploy anterior observado |
+|---|---|---|
+| Frontend | `srv-db2mlb2j9qps73eob7og` | `dep-db2mrmbrjlhs73fl00fg` |
+| FastAPI | `srv-db2mlqij9qps73eobrg0` | `dep-db3hfpd9fdbs73dqqgf0` |
+| Image worker | `srv-db2mlqqj9qps73eobsk0` | `dep-db2rgh2d0e5s73e5jru0` |
 
-Volver a la URL histórica de `suite-ecommerce-ia`. Los servicios nuevos y PostgreSQL se conservan para investigar y recuperar resultados. Si se cambió `MAIN_SERVICE_URL` del sync, restaurar el valor registrado antes del cambio. Revertir el commit de configuración o redeploy del commit histórico requiere conservar el estado nuevo.
+Ante fallo de captura, credencial, variantes, análisis o generación, detener
+promoción. Registrar job/SKU/revisión y si hay una llamada o escritura en vuelo.
+Pausar solo nuevas solicitudes de staging; no lanzar automáticamente otro job
+para compensar una respuesta incierta. En Render restaurar el deploy anterior
+del componente afectado; si depende de la nueva API, restaurar frontend y API
+coherentemente. El worker conserva el protocolo de jobs y pipeline existentes.
 
-## Si un job queda incierto
+Si se actualizó la rama staging, revertir el commit de restauración mediante
+un nuevo commit sobre esa rama; no reescribir commits de otro colaborador.
+Aplicar despliegue después de CI y comprobar salud y navegación. Los dos servicios
+históricos permanecen fuera de este cambio, en `41d0599` y su rama histórica.
 
-Inspeccionar job, checkpoint, IDs Drive y estado de tienda. No reenviar automáticamente una llamada pagada en vuelo. Un intento adicional requiere comprobar qué resultado existe y usar el mecanismo de retry con revisión de incertidumbre.
+No hay migración de esquema que revertir. Mantener IntegrationAccount/SyncEvent
+y sus filas cifradas nuevas; volver al código previo no requiere borrar claves,
+borradores ni relaciones. Conservar `CREDENTIAL_ENCRYPTION_KEY`, PostgreSQL,
+Redis y las variables anteriores. No rotar el cifrado como paso de rollback.
 
-## Antes de cambiar un esquema con datos
+Un rollback de código no deshace el Sheet ni Drive. Verificar productos aceptados
+antes de repetir guardado; conservar portadas, originales, IDs y metadata para
+reparación. No ejecutar DROP/TRUNCATE ni borrar en masa. La variante/padre SQL
+se confirma o revierte completa dentro de su propia transacción.
 
-    python -m catalog_platform.backup
-
-La herramienta necesita `pg_dump` compatible y la configuración servidor. Guardar el dump de forma privada y comprobarlo con `pg_restore --list`; probar restauración en otra base. Conservar también la clave Fernet, fuera del repositorio. Un dump sin esa clave no permite leer las conexiones cifradas.
-
-Exportar las fichas nuevas del catálogo SQL antes de volver a un flujo que dependa de Sheets. Las nuevas fichas no se escriben automáticamente en la hoja histórica.
-
-No borrar tablas, eliminar originales, mover carpetas históricas ni sobrescribir el Sheet completo como mecanismo de rollback.
+El código previo admite un fallback Gemini global; por eso restaurarlo cambia
+el comportamiento de credenciales. Antes de reabrir generación, comprobar
+explícitamente la fuente usada. No presentar ese fallback como configuración
+personal persistente. Detalles de arquitectura: `docs/ROLLBACK.md`.

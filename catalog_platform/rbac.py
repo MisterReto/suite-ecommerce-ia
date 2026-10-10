@@ -25,7 +25,7 @@ class RoleMiddleware:
             "/logo.png",
             "/sw.js",
             "/manifest.webmanifest",
-        } or request.url.path.startswith(("/_next/", "/icons/", "/webhooks/"))
+        } or request.url.path.startswith(("/_next/", "/icons/", "/webhooks/", "/api/webhooks/"))
         if (
             value
             and not value.get("role")
@@ -48,6 +48,8 @@ class RoleMiddleware:
             "/internal/tools",
             "/webhooks/woocommerce",
             "/webhooks/loyverse",
+            "/api/webhooks/woocommerce",
+            "/api/webhooks/loyverse",
             "/api/uploads",
             "/api/platform/barcode",
         }:

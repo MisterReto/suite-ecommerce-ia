@@ -32,6 +32,39 @@ STOP = threading.Event()
 OWNER = secrets.token_urlsafe(24)
 
 
+def download_reference(drive, file_id, path):
+    if hasattr(drive, "download_to"):
+        return drive.download_to(file_id, path)
+    # Small provider doubles used by the existing regression suite.
+    Path(path).write_bytes(drive.download(file_id))
+    return path
+
+
+def file_checksum(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(512 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def candidate_folder(drive, job_id):
+    return drive.folder(job_id, drive.folder("imagenes_temporales"))
+
+
+def record_usage(job_id, api_key, initial):
+    from gemini_gateway import usage_for_key
+    final = usage_for_key(api_key)
+    delta = {key: max(0, final.get(key, 0) - initial.get(key, 0)) for key in final}
+    with transaction() as db:
+        job = db.get(GenerationJob, job_id)
+        if job and (job.lease_owner == OWNER or job.status == "cancelled"):
+            previous = job.payload.get("usage", {})
+            job.payload = {**job.payload, "usage": {
+                key: previous.get(key, 0) + count for key, count in delta.items()
+            }}
+
+
 def generation(job, value, drive):
     from studio_api import runtime, asset, file_path
     from image_generation_service import ImageGenerationService
@@ -57,7 +90,7 @@ def generation(job, value, drive):
     references = []
     for index, file_id in enumerate(payload["references"]):
         path = f"/tmp/{value['file_namespace']}_reference_{index}.jpg"
-        Path(path).write_bytes(drive.download(file_id))
+        download_reference(drive, file_id, path)
         references.append(path)
     current = {"revision": uid(), "references": references, "product": p, "images": {}}
     value["capture_revision"] = current["revision"]
@@ -67,7 +100,7 @@ def generation(job, value, drive):
 
     if payload.get("previous_raw_id"):
         previous = f"/tmp/{value['file_namespace']}_previous.jpg"
-        Path(previous).write_bytes(drive.download(payload["previous_raw_id"]))
+        download_reference(drive, payload["previous_raw_id"], previous)
         slot = payload["slots"][0]
         current["images"][slot] = {
             "raw_id": asset(value, previous),
@@ -77,12 +110,14 @@ def generation(job, value, drive):
         if payload.get("brief"):
             paths, _ = load_style_examples(runtime, value)
             current.update(brief=payload["brief"], brief_key=plan_key(p, paths))
+        payload["in_flight"] = {"operation": "creative_plan"}
+        queue.checkpoint(job["id"], OWNER, payload=payload)
         plan, styles = service.plan(value, current, progress)
-        payload["brief"] = plan
+        payload.update(brief=plan, in_flight=None)
         queue.checkpoint(job["id"], OWNER, payload=payload)
     else:
         plan, styles = {}, []
-    generated = drive.working_folder("images", "generated")
+    generated = candidate_folder(drive, job["id"])
     targets = [
         (slot, index)
         for slot in payload["slots"]
@@ -130,11 +165,10 @@ def generation(job, value, drive):
         )
         output = file_path(value, item["id"])
         raw = file_path(value, item["raw_id"])
-        image_bytes = Path(output).read_bytes()
-        checksum = hashlib.sha256(image_bytes).hexdigest()
+        checksum = file_checksum(output)
         with Image.open(output) as picture:
             width, height = picture.size
-        prefix = f"{product['sku']}_{slot}_{job['id']}_{index}"
+        prefix = f"{product['sku']}_{slot}" + (f"_{index}" if index > 1 else "")
         branded = drive.upload(
             output,
             prefix + ".jpg",
@@ -169,6 +203,8 @@ def generation(job, value, drive):
                     "slot": slot,
                     "qa": item.get("qa"),
                     "filename": prefix + ".jpg",
+                    "canonical_filename": f"{product['sku']}_{slot}.jpg",
+                    "candidate_drive_file_id": branded["id"],
                 },
             )
             db.add(image)
@@ -215,11 +251,18 @@ def generation(job, value, drive):
                 .where(GenerationJob.id == job["id"])
                 .with_for_update()
             )
-            if locked.lease_owner != OWNER or locked.status != "processing":
+            if locked.lease_owner != OWNER or locked.status not in {"processing", "cancelling"}:
                 raise RuntimeError("Se perdió el lease antes de guardar el resultado.")
             locked.payload = deepcopy(payload)
             locked.progress = int(len(completed) * 100 / len(targets))
             locked.lease_until = time.time() + 300
+        # Drive + SQL now own the results. Keep references/style only until job
+        # end; do not retain every JPEG/raw in /tmp or the studio file registry.
+        for key in (item["id"], item["raw_id"]):
+            stored = value.get("studio_files", {}).pop(key, None)
+            if stored:
+                Path(stored).unlink(missing_ok=True)
+        current["images"].pop(slot, None)
     return True
 
 
@@ -388,6 +431,35 @@ def publication(job, value, drive):
     return True
 
 
+def save_asset(job, value, drive):
+    with transaction() as db:
+        record = db.scalar(select(GeneratedAsset).where(
+            GeneratedAsset.id == job["payload"]["asset_id"],
+            GeneratedAsset.tenant_id == job["tenant_id"]))
+        if not record or record.status not in {"approved", "published"}:
+            raise ValueError("La imagen ya no está aprobada; no se guardó.")
+        product = product_for(db, job["tenant_id"], record.product_id)
+        if product.version != job["payload"]["version"]:
+            raise ValueError("La ficha cambió; revisa antes de guardar la imagen.")
+        image = db.get(ProductImage, record.image_id)
+        image_id, source, filename = image.id, image.drive_file_id, image.metadata_json["canonical_filename"]
+    path = f"/tmp/{value['file_namespace']}_approved.jpg"
+    download_reference(drive, source, path)
+    payload = {**job["payload"], "in_flight": {"operation": "drive_save"}}
+    queue.checkpoint(job["id"], OWNER, payload=payload)
+    destination = drive.folder("imagenes_generadas")
+    result = drive.save_approved(path, filename, destination, job["payload"]["asset_id"])
+    with transaction() as db:
+        image = db.get(ProductImage, image_id)
+        image.drive_file_id = result["id"]
+        image.metadata_json = {**image.metadata_json, "saved_to_generated": True,
+                               "previous_candidate_id": source}
+        audit(db, job["tenant_id"], job["actor"], "image.saved",
+              job["product_id"], after={"image_id": image.id, "drive_file_id": result["id"], "filename": filename})
+        db.get(GenerationJob, job["id"]).payload = {**payload, "in_flight": None}
+    return True
+
+
 def process(job):
     if job["kind"] == "webhook":
         from .webhooks import process_event
@@ -404,8 +476,13 @@ def process(job):
         session_id=sid,
         file_namespace=secrets.token_urlsafe(24),
         expires_at=time.time() + 8 * 3600,
+        email=job["actor"],
+        platform_tenant=job["tenant_id"],
     )
     runtime.SESSIONS[sid] = value
+    from gemini_gateway import usage_for_key
+    key = value.get("gemini_key")
+    initial_usage = usage_for_key(key) if key else {}
     try:
         drive = DriveService.for_session(runtime, value)
         if drive.root_id != job["tenant_id"]:
@@ -414,6 +491,12 @@ def process(job):
             )
         if job["kind"] == "generation":
             done = generation(job, value, drive)
+        elif job["kind"] == "studio_generation":
+            from .studio_jobs import process_capture
+
+            done = process_capture(job, value, drive, OWNER)
+        elif job["kind"] == "asset_save":
+            done = save_asset(job, value, drive)
         elif job["kind"] == "publication":
             done = publication(job, value, drive)
         elif job["kind"] == "import":
@@ -437,6 +520,8 @@ def process(job):
         with transaction() as db:
             persist(db, job["tenant_id"], job["actor"], value)
         return done
+    except queue.JobCancelled:
+        raise
     except Exception as exc:
         from app_security import public_error
 
@@ -444,10 +529,67 @@ def process(job):
             public_error(ValueError(studio_api.error_message(exc, value)))
         ) from None
     finally:
+        if key:
+            try:
+                record_usage(job["id"], key, initial_usage)
+            except Exception:
+                log.warning("No se pudo guardar el contador de consumo; comprobar el proveedor.")
         runtime._eliminar_sesion(sid)
 
 
+def execute_job(job_id):
+    """RQ calls this bounded function with an ID, never a closure or secret."""
+    job = queue.claim(OWNER, job_id)
+    if not job:
+        return {"executed": False}
+    ended = threading.Event()
+    def renew():
+        while not ended.wait(15):
+            try:
+                queue.renew(job_id, OWNER)
+            except Exception:
+                # No next paid call can pass the ownership check after losing
+                # the lease. Do not include raw DB errors in worker logs.
+                log.warning("No se pudo renovar el lease del trabajo.")
+                return
+    keeper = threading.Thread(target=renew, daemon=True)
+    keeper.start()
+    try:
+        queue.checkpoint(job_id, OWNER)
+        if process(job):
+            queue.finish(job_id, OWNER, True, "Completado. Revisa el resultado antes de publicar.")
+        return {"executed": True}
+    except queue.JobCancelled:
+        return {"executed": True, "cancelled": True}
+    except Exception as exc:
+        from app_security import public_error
+        from studio_api import error_message
+
+        queue.finish(job_id, OWNER, False, public_error(ValueError(error_message(exc, {}))))
+        with transaction() as db:
+            if db.get(GenerationJob, job_id).status == "cancelled":
+                return {"executed": True, "cancelled": True}
+            audit(db, job["tenant_id"], job["actor"], job["kind"] + ".failed",
+                  job["product_id"], after={"job_id": job_id}, result="failed")
+            if job["kind"] in {"publication", "stock_sync"}:
+                product_for(db, job["tenant_id"], job["product_id"]).sync_status = "error"
+        log.warning("Trabajo falló: tipo=%s; detalles disponibles en el panel", job["kind"])
+        return {"executed": True, "failed": True}
+    finally:
+        ended.set()
+        keeper.join(timeout=2)
+        try:
+            import resource
+            log.info("Worker: pico RSS=%s KiB", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        except ImportError:
+            pass
+
+
 def main():
+    if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") == "rq":
+        from .redis_worker import main as redis_main
+
+        return redis_main()
     from .security import cipher
 
     cipher()
@@ -482,6 +624,7 @@ def main():
             STOP.wait(2)
             continue
         try:
+            queue.checkpoint(job["id"], OWNER)
             if process(job):
                 queue.finish(
                     job["id"],
@@ -489,6 +632,8 @@ def main():
                     True,
                     "Completado. Revisa las imágenes antes de publicar.",
                 )
+        except queue.JobCancelled:
+            continue
         except Exception as exc:
             # Never emit payloads, credentials, raw provider errors or URLs with auth.
             from studio_api import error_message
@@ -496,6 +641,8 @@ def main():
             message = error_message(exc, {})
             queue.finish(job["id"], OWNER, False, message)
             with transaction() as db:
+                if db.get(GenerationJob, job["id"]).status == "cancelled":
+                    continue
                 if job["kind"] in {"publication", "stock_sync"}:
                     p = product_for(db, job["tenant_id"], job["product_id"])
                     p.sync_status = "error"

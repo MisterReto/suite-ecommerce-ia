@@ -28,6 +28,7 @@ def setup(monkeypatch):
     value = {"session_id": sid, "expires_at": time.time()+600,
              "file_namespace": secrets.token_urlsafe(24), "gemini_key": "test-key-with-no-live-credits"}
     studio.runtime.SESSIONS[sid] = value
+    monkeypatch.setattr(studio.runtime.captura, "snapshot", lambda *a: (None, "test-sheet", []))
     client = TestClient(service_entrypoint.fastapi_app, base_url="https://suite.example")
     client.cookies.set("session_id", sid)
     yield client, value
