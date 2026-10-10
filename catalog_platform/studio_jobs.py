@@ -41,7 +41,7 @@ def find_active(value):
     with transaction() as db:
         job = db.scalar(select(GenerationJob).where(
             GenerationJob.tenant_id == root, GenerationJob.actor == value.get("email", ""),
-            GenerationJob.kind == "studio_generation", GenerationJob.status.in_(["queued", "processing"]))
+            GenerationJob.kind == "studio_generation", GenerationJob.status.in_(["queued", "processing", "cancelling"]))
             .order_by(GenerationJob.created_at.desc()).limit(1))
         return public_job(job) if job else None
 
@@ -239,7 +239,7 @@ def get_job(value, job_id):
         if not job:
             raise HTTPException(404, "Trabajo no disponible.")
         public, payload = public_job(job), deepcopy(job.payload)
-    if payload.get("results") or public["status"] in {"completed", "failed"}:
+    if payload.get("results") or public["status"] in {"completed", "failed", "cancelled"}:
         restore(value, payload, job_id)
     return {"job": public, "draft": view(value)}
 

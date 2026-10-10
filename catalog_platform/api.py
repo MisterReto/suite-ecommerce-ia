@@ -29,7 +29,7 @@ from .models import (
 from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
 from .accounts import persist
-from .queue import available, worker_ready, request_lock, dispatch
+from .queue import available, worker_ready, request_lock, dispatch, request_cancel
 
 router = APIRouter(prefix="/api/platform")
 
@@ -184,6 +184,18 @@ class StockInput(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
 
 
+class ConfirmInput(BaseModel):
+    confirm: bool
+
+
+class DeleteProductInput(ConfirmInput):
+    version: int = Field(ge=1)
+
+
+class CancelJobsInput(ConfirmInput):
+    job_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 @router.get("/status")
 def status(request: Request):
     from studio_api import runtime
@@ -233,7 +245,7 @@ def products(
     value=Depends(context),
 ):
     with transaction() as db:
-        query = select(Product).where(Product.tenant_id == tenant(value))
+        query = select(Product).where(Product.tenant_id == tenant(value), Product.status != "deleted")
         if q:
             pattern = "%" + q[:180].replace("%", "\\%").replace("_", "\\_") + "%"
             query = query.where(
@@ -332,6 +344,7 @@ def get_product(product_id: str, value=Depends(context)):
                     select(Product).where(
                         Product.tenant_id == tenant(value),
                         Product.parent_id == product.id,
+                        Product.status != "deleted",
                     )
                 )
             ],
@@ -356,6 +369,48 @@ def update_product(product_id: str, data: ProductInput, value=Depends(context)):
         raise HTTPException(409, "Ese SKU ya pertenece a otro producto.") from None
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+
+
+@router.delete("/products/{product_id}")
+def delete_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
+    admin(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma que quieres eliminar este producto del catálogo de la app.")
+    with transaction() as db:
+        product = db.scalar(select(Product).where(
+            Product.tenant_id == tenant(value), Product.id == product_id,
+        ).with_for_update())
+        if not product:
+            raise HTTPException(404, "Producto no disponible.")
+        if product.status == "deleted":
+            return {"ok": True, "product_id": product.id, "replayed": True}
+        if product.version != data.version:
+            raise HTTPException(409, "El producto cambió. Recarga antes de eliminarlo.")
+        if db.scalar(select(Product.id).where(
+            Product.tenant_id == tenant(value), Product.parent_id == product.id,
+            Product.status != "deleted",
+        ).limit(1)):
+            raise HTTPException(409, "Elimina primero las variantes de esta familia.")
+        pending = db.scalars(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.product_id == product.id,
+            GenerationJob.status.in_(["queued", "processing", "cancelling"]),
+        ).order_by(GenerationJob.id).with_for_update()).all()
+        if any(job.status != "queued" for job in pending):
+            raise HTTPException(409, "Detén el proceso del producto y espera a que aparezca como Cancelado antes de eliminarlo.")
+        before = serialize(product)
+        for job in pending:
+            request_cancel(job)
+            audit(db, tenant(value), actor(value), "job.cancelled", product.id,
+                  after={"job_id": job.id, "reason": "product.deleted"})
+        # A tombstone retains references, remote IDs and stock/job history. The
+        # original SKU is audited and released for an explicitly created record.
+        product.status = "deleted"
+        product.sync_status = "deleted"
+        product.sku = "deleted_" + product.id.replace("-", "")
+        product.version += 1
+        audit(db, tenant(value), actor(value), "product.deleted", product.id, before,
+              {"scope": "app", "cancelled_job_ids": [job.id for job in pending]})
+        return {"ok": True, "product_id": product.id}
 
 
 @router.post("/products/{product_id}/stock")
@@ -384,7 +439,7 @@ def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
                 GenerationJob.product_id == product_id,
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.kind.in_(["publication", "stock_sync"]),
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(
@@ -499,7 +554,8 @@ def selection(db, value, data, lock=False):
     ):
         raise HTTPException(422, "Tipos de imagen inválidos.")
     query = select(Product).where(
-        Product.tenant_id == tenant(value), Product.product_type != "variable"
+        Product.tenant_id == tenant(value), Product.product_type != "variable",
+        Product.status != "deleted",
     )
     if data.product_ids:
         query = query.where(Product.id.in_(list(set(data.product_ids))))
@@ -662,7 +718,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
                 select(GenerationJob.id).where(
                     GenerationJob.product_id == product.id,
                     GenerationJob.tenant_id == tenant(value),
-                    GenerationJob.status.in_(["queued", "processing"]),
+                    GenerationJob.status.in_(["queued", "processing", "cancelling"]),
                 )
             ):
                 raise HTTPException(409, f"{product.sku} ya tiene un trabajo activo.")
@@ -735,13 +791,58 @@ def jobs(value=Depends(context)):
         }
 
 
+def cancel_locked(db, job, value):
+    if role_for(actor(value)) != "admin" and job.actor != actor(value):
+        raise HTTPException(403, "Solo puedes detener tus propios procesos.")
+    if job.status in {"queued", "processing"}:
+        before = job.status
+        request_cancel(job)
+        audit(db=db, tenant=tenant(value), actor=actor(value),
+              action="job.cancel_requested", product_id=job.product_id,
+              before={"status": before}, after={"job_id": job.id, "status": job.status})
+    elif job.status == "cancelling":
+        request_cancel(job)
+    return serialize(job)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, data: ConfirmInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma que quieres detener el proceso.")
+    with transaction() as db:
+        job = db.scalar(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.id == job_id,
+        ).with_for_update())
+        if not job:
+            raise HTTPException(404, "Trabajo no disponible.")
+        if job.status not in {"queued", "processing", "cancelling", "cancelled"}:
+            raise HTTPException(409, "El proceso ya terminó; no se puede detener.")
+        return {"job": cancel_locked(db, job, value)}
+
+
+@router.post("/jobs/cancel")
+def cancel_jobs(data: CancelJobsInput, value=Depends(context)):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma los procesos que quieres detener.")
+    ids = set(data.job_ids)
+    with transaction() as db:
+        rows = db.scalars(select(GenerationJob).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.id.in_(ids),
+        ).order_by(GenerationJob.id).with_for_update()).all()
+        if len(rows) != len(ids):
+            raise HTTPException(404, "Uno de los trabajos no está disponible.")
+        return {"jobs": [cancel_locked(db, job, value) for job in rows]}
+
+
 @router.get("/assets")
 def assets(value=Depends(context)):
     with transaction() as db:
         rows = db.execute(
             select(GeneratedAsset, Product)
             .join(Product, Product.id == GeneratedAsset.product_id)
-            .where(GeneratedAsset.tenant_id == tenant(value))
+            .where(GeneratedAsset.tenant_id == tenant(value), Product.status != "deleted")
             .order_by(GeneratedAsset.created_at.desc())
             .limit(100)
         ).all()
@@ -781,7 +882,7 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
                 GenerationJob.product_id == asset.product_id,
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.kind == "publication",
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(
@@ -805,7 +906,7 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
                 other.role = "gallery"
         db.flush()
         job = db.get(GenerationJob, asset.job_id)
-        if job.status not in {"processing", "queued"}:
+        if job.status not in {"processing", "queued", "cancelling", "cancelled"}:
             states = set(
                 db.scalars(
                     select(GeneratedAsset.status).where(GeneratedAsset.job_id == job.id)
@@ -856,7 +957,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
             select(GenerationJob.id).where(
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.product_id == asset.product_id,
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -971,7 +1072,7 @@ def publish(product_id: str, data: PublishInput, value=Depends(context)):
             select(GenerationJob.id).where(
                 GenerationJob.tenant_id == tenant(value),
                 GenerationJob.product_id == product_id,
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         ):
             raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -1022,17 +1123,19 @@ def dashboard(value=Depends(context)):
             )
 
         stats = {
-            "products": count(Product),
+            "products": count(Product, Product.status != "deleted"),
             "pending_products": count(Product, Product.status == "pending"),
-            "low_stock": count(Product, Product.stock.between(1, 5)),
-            "out_of_stock": count(Product, Product.stock == 0),
-            "sync_errors": count(Product, Product.sync_status == "error"),
+            "low_stock": count(Product, Product.stock.between(1, 5), Product.status != "deleted"),
+            "out_of_stock": count(Product, Product.stock == 0, Product.status != "deleted"),
+            "sync_errors": count(Product, Product.sync_status == "error", Product.status != "deleted"),
             "pending_jobs": count(
-                GenerationJob, GenerationJob.status.in_(["queued", "processing"])
+                GenerationJob, GenerationJob.status.in_(["queued", "processing", "cancelling"])
             ),
             "completed_images": count(
                 GeneratedAsset,
                 GeneratedAsset.status.in_(["completed", "approved", "published"]),
+                GeneratedAsset.product_id.in_(select(Product.id).where(
+                    Product.tenant_id == tenant(value), Product.status != "deleted")),
             ),
         }
         activity = [
@@ -1208,7 +1311,7 @@ def enqueue_operation(
                 select(GenerationJob.id).where(
                     GenerationJob.tenant_id == tenant(value),
                     GenerationJob.product_id == product_id,
-                    GenerationJob.status.in_(["queued", "processing"]),
+                    GenerationJob.status.in_(["queued", "processing", "cancelling"]),
                 )
             ):
                 raise HTTPException(409, "El producto ya tiene un trabajo activo.")
@@ -1454,7 +1557,7 @@ def export(format: str = "csv", value=Depends(context)):
     with transaction() as db:
         products = db.scalars(
             select(Product)
-            .where(Product.tenant_id == tenant(value))
+            .where(Product.tenant_id == tenant(value), Product.status != "deleted")
             .order_by(Product.sku)
         ).all()
         audit(

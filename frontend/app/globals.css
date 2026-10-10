@@ -2613,6 +2613,35 @@ details p {
   box-shadow: 0 8px 22px #63217812;
   border-color: #d8bfde;
 }
+.p-card-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.p-product-actions {
+  padding: 0 14px 14px;
+}
+.p-product-actions .button {
+  width: 100%;
+}
+.button.p-danger {
+  min-height: 44px;
+  color: #a52249;
+  border-color: #edcbd5;
+}
+.p-jobs-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
 .p-product-photo {
   aspect-ratio: 1;
   position: relative;
@@ -2711,6 +2740,14 @@ details p {
 .p-badge.pending {
   color: #8b6124;
   background: #fff3da;
+}
+.p-badge.cancelling {
+  background: #fff3dc;
+  color: #8c692b;
+}
+.p-badge.cancelled {
+  background: #f1edf4;
+  color: #6b6070;
 }
 .p-badge.failed,
 .p-badge.error,

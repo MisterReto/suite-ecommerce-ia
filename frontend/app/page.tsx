@@ -24,6 +24,8 @@ import {
   Settings2,
   ShoppingBag,
   Sparkles,
+  Square,
+  Trash2,
   Upload,
   WifiOff,
   X,
@@ -98,6 +100,7 @@ type Asset = {
 };
 type Job = {
   id: string;
+  actor: string;
   kind: string;
   product_id: string;
   status: string;
@@ -205,6 +208,8 @@ const nav = [
 const stateLabel: Record<string, string> = {
   queued: "En cola",
   processing: "Procesando",
+  cancelling: "Deteniendo",
+  cancelled: "Cancelado",
   completed: "Para revisar",
   failed: "Error",
   approved: "Aprobada",
@@ -245,7 +250,7 @@ const date = (v?: string) =>
     : "—";
 const pictureUrl = (id: string) =>
   "/api/platform/images/" + encodeURIComponent(id);
-const active = (job: Job) => ["queued", "processing"].includes(job.status);
+const active = (job: Job) => ["queued", "processing", "cancelling"].includes(job.status);
 const blank = (): Product => ({
   id: "",
   sku: "",
@@ -402,6 +407,7 @@ export default function Platform() {
   const isAdmin = status.role === "admin";
   const ready = session.authenticated && status.ready;
   const workerCanQueue = status.worker_can_queue ?? status.worker_ready;
+  const stoppableJobs = jobs.filter(job => active(job) && canEdit && (isAdmin || job.actor === session.email));
   const go = useCallback((target: Section) => {
     location.hash = target;
     setSection(target);
@@ -603,6 +609,36 @@ export default function Platform() {
     setUncertainChecked(false);
     setConfirm(value);
   };
+  const deleteProduct = (product: Product) => ask({
+    title: "Eliminar producto",
+    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
+    label: "Eliminar producto",
+    action: async () => {
+      await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
+      setDetail(null);
+      setEditing(false);
+      setProducts(previous => previous.filter(item => item.id !== product.id));
+      setSelected(previous => previous.filter(id => id !== product.id));
+      setQuote(null);
+      if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
+      await Promise.all([loadProducts(), reloadOperations()]);
+      setNotice("Producto eliminado del catálogo de la app.");
+    },
+  });
+  const stopJobs = (targets: Job[]) => ask({
+    title: targets.length === 1 ? "Detener proceso" : `Detener ${targets.length} procesos`,
+    text: "Los procesos en cola se cancelan al momento. Si una operación ya empezó, se esperará a que termine y se conservarán sus resultados; después no se iniciarán más pasos.",
+    label: targets.length === 1 ? "Detener proceso" : "Detener todos",
+    action: async () => {
+      if (targets.length === 1) {
+        await api(`/api/platform/jobs/${targets[0].id}/cancel`, "POST", { confirm: true });
+      } else {
+        await api("/api/platform/jobs/cancel", "POST", { confirm: true, job_ids: targets.map(job => job.id) });
+      }
+      await reloadOperations();
+      setNotice("Cancelación guardada. Los procesos iniciados se detendrán al terminar su operación actual.");
+    },
+  });
   const operation = async (path: string) => {
     await durablePost(path, {
       confirm: true,
@@ -1208,15 +1244,16 @@ export default function Platform() {
                     }
                   >
                     {products.map((p) => (
-                      <button
+                      <article
                         className={
                           section === "inventory"
                             ? "p-inventory-card"
                             : "p-product-card"
                         }
                         key={p.id}
-                        onClick={() => attempt(() => openProduct(p.id))}
                       >
+                        <button className="p-card-open" aria-label={`Abrir producto ${p.name}`} disabled={busy}
+                          onClick={() => attempt(() => openProduct(p.id))}>
                         {section === "products" && (
                           <div className="p-product-photo">
                             {p.image_id ? (
@@ -1271,7 +1308,16 @@ export default function Platform() {
                             </small>
                           </div>
                         </div>
-                      </button>
+                        </button>
+                        {isAdmin && section === "products" && (
+                          <div className="p-product-actions">
+                            <button className="button secondary p-danger" disabled={busy || !online}
+                              aria-label={`Eliminar ${p.name}`} onClick={() => deleteProduct(p)}>
+                              <Trash2 size={17} /> Eliminar
+                            </button>
+                          </div>
+                        )}
+                      </article>
                     ))}
                   </div>
                 ) : (
@@ -1315,6 +1361,12 @@ export default function Platform() {
                   <ArrowLeft size={18} />
                   Volver al catálogo
                 </button>
+                {detail && isAdmin && !editing && (
+                  <button className="button secondary p-danger" disabled={busy || !online}
+                    onClick={() => deleteProduct(detail.product)}>
+                    <Trash2 size={18} /> Eliminar producto
+                  </button>
+                )}
                 {editing ? (
                   <section className="p-card">
                     <h2>{form.id ? "Editar producto" : "Nuevo producto"}</h2>
@@ -2204,7 +2256,15 @@ export default function Platform() {
                   ))}
                 {generationTab === "jobs" && (
                   <section className="p-card">
-                    <h2>Trabajos y progreso</h2>
+                    <div className="p-jobs-title">
+                      <h2>Trabajos y progreso</h2>
+                      {stoppableJobs.length > 1 && (
+                        <button className="button secondary p-danger" disabled={busy || !online}
+                          onClick={() => stopJobs(stoppableJobs)}>
+                          <Square size={17} /> Detener todos ({stoppableJobs.length})
+                        </button>
+                      )}
+                    </div>
                     {jobs.length ? (
                       jobs.map((j) => (
                         <div className="p-job" key={j.id}>
@@ -2219,6 +2279,7 @@ export default function Platform() {
                                 {j.payload.product?.name ||
                                   {
                                     publication: "Publicación WooCommerce",
+                                    studio_generation: "Generación de imágenes",
                                     import: "Importación de catálogo",
                                     ecommerce_pull: "Consulta WooCommerce",
                                     enrichment: "Datos con IA",
@@ -2239,6 +2300,12 @@ export default function Platform() {
                                 ? ` · estimado USD $${j.estimated_cost.toFixed(3)}`
                                 : ""}
                             </small>
+                            {stoppableJobs.some(job => job.id === j.id) && (
+                              <button className="button secondary p-danger" disabled={busy || !online}
+                                onClick={() => stopJobs([j])}>
+                                <Square size={16} /> Detener proceso
+                              </button>
+                            )}
                             {j.status === "failed" && canEdit && (
                               <button
                                 className="p-link"

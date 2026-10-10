@@ -38,9 +38,27 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const page = await context.newPage();
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     const requests = [];
+    const controls = [];
+    let catalogRemoved = false;
+    let jobList = ["studio_generation", "ecommerce_pull", "ecommerce_pull"].map((kind, index) => ({
+      id: "queued-"+index, kind, actor: "test@example.test", product_id: null,
+      status: "queued", progress: 0, message: "En cola", created_at: "2026-10-10T05:57:00Z", payload: {},
+    }));
     await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
     await page.route("**/api/**", async route => {
       const request = route.request(); const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/platform/products/"+product.id && request.method() === "DELETE") {
+        controls.push({method:request.method(),path:pathname,body:request.postDataJSON()});
+        catalogRemoved = true;
+        return route.fulfill({json:{ok:true,product_id:product.id}});
+      }
+      if (pathname.endsWith("/cancel") && request.method() === "POST") {
+        const body = request.postDataJSON();
+        controls.push({method:request.method(),path:pathname,body});
+        const ids = body.job_ids || [pathname.split("/").at(-2)];
+        jobList = jobList.map(job => ids.includes(job.id) ? {...job,status:"cancelled",message:"Detenido"} : job);
+        return route.fulfill({json:body.job_ids ? {jobs:jobList.filter(job => ids.includes(job.id))} : {job:jobList.find(job => job.id === ids[0])}});
+      }
       if (pathname.endsWith("/regenerate")) {
         requests.push(request.postDataJSON());
         if (requests.length === 1) return route.abort("failed"); // response lost after acceptance
@@ -53,9 +71,10 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
         folder: "TEST-INTEGRATION", image_model: asset.model, estimated_image_usd: .067 };
       else if (pathname.endsWith("/status")) json = { ready: true, configured: true, worker_ready: false, worker_can_queue: true, role: "admin", message: "Prueba" };
       else if (pathname.endsWith("/dashboard")) json = { stats: { low_stock: 1, out_of_stock: 0, sync_errors: 0, pending_jobs: 0, pending_products: 1 }, activity: [], ecommerce: null };
-      else if (pathname === "/api/platform/products") json = { items: [product], total: 1 };
+      else if (pathname === "/api/platform/products") json = { items: catalogRemoved ? [] : [product], total: catalogRemoved ? 0 : 1 };
       else if (pathname === "/api/platform/products/" + product.id) json = { product, images: [], assets: [asset], jobs: [], variants: [], movements: [], sync_events: [] };
       else if (pathname.endsWith("/assets")) json = { items: [asset] };
+      else if (pathname === "/api/platform/jobs") json = {items:jobList};
       else if (pathname.includes("/images/")) return route.fulfill({ contentType: "image/png", body: fs.readFileSync(path.join(__dirname, "frontend/public/logo.png")) });
       else if (pathname.endsWith("/taxonomy")) json = { categories: [], brands: [] };
       return route.fulfill({ json });
@@ -74,7 +93,14 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
       assert.ok(bounds.y > 700 && bounds.y + bounds.height <= 845, "Mobile navigation stays at the bottom");
     }
     await nav.getByRole("link", { name: "Productos", exact: true }).click();
-    await page.locator(".p-product-card").first().click();
+    const removeButton = page.getByRole("button", {name:"Eliminar "+product.name,exact:true});
+    assert.ok((await removeButton.boundingBox()).height >= 44, "Delete has a mobile touch target");
+    await removeButton.click();
+    const removeDialog = page.getByRole("dialog");
+    await removeDialog.getByText(/Se conservan los archivos de Drive/).waitFor();
+    assert.equal(controls.length,0,"Opening confirmation performs no deletion");
+    await removeDialog.getByRole("button", {name:"Cancelar",exact:true}).click();
+    await page.getByRole("button",{name:"Abrir producto "+product.name,exact:true}).click();
     await page.getByRole("button", { name: "Editar", exact: true }).click();
     assert.ok(await page.getByRole("textbox").count() > 3, "Editable product form is available");
     const editForm = page.locator(".p-card").filter({has:page.getByRole("heading",{name:"Editar producto",exact:true})});
@@ -101,6 +127,26 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.waitForTimeout(300);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].request_key, requests[1].request_key, "Lost-response retry reuses the same paid intent");
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", {name:/^Trabajos/}).click();
+    const stopButton = page.getByRole("button", {name:"Detener proceso",exact:true}).first();
+    assert.ok((await stopButton.boundingBox()).height >= 44, "Stop has a mobile touch target");
+    await stopButton.click();
+    await page.getByRole("dialog").getByRole("button", {name:"Detener proceso",exact:true}).click();
+    await page.getByText("Cancelado",{exact:true}).waitFor();
+    assert.equal(controls.length,1);
+    await page.getByRole("button", {name:"Detener todos (2)",exact:true}).click();
+    await page.getByRole("dialog").getByRole("button", {name:"Detener todos",exact:true}).click();
+    await page.waitForFunction(() => document.querySelectorAll(".p-badge.cancelled").length === 3);
+    assert.equal(await page.getByRole("button", {name:"Detener proceso",exact:true}).count(),0);
+    assert.deepEqual(controls[1].body.job_ids.sort(),["queued-1","queued-2"]);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Job controls fit mobile width");
+    await nav.getByRole("link", {name:"Productos",exact:true}).click();
+    await page.getByRole("button", {name:"Eliminar "+product.name,exact:true}).click();
+    await page.getByRole("dialog").getByRole("button", {name:"Eliminar producto",exact:true}).click();
+    await page.getByRole("heading", {name:"Tu catálogo empieza aquí",exact:true}).waitFor();
+    assert.equal(controls[2].method,"DELETE");
+    assert.deepEqual(controls[2].body,{confirm:true,version:product.version});
     await page.evaluate(() => dispatchEvent(new Event("offline")));
     await page.getByText("Sin conexión", { exact: true }).waitFor();
     await page.evaluate(() => dispatchEvent(new Event("online")));
@@ -108,7 +154,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.setViewportSize({ width: 1280, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     assert.deepEqual(errors, [], "No browser exceptions");
-    console.log("Browser: 360/390/430px, five menus, cards/form, 1280px, connection and lost-response idempotency passed.");
+    console.log("Browser: 360/390/430px, five menus, cards/form, 1280px, deletion confirmation, individual/bulk cancellation, connection and paid idempotency passed.");
   } finally {
     if (browser) await browser.close();
     server.kill("SIGTERM");

@@ -1,5 +1,10 @@
 # Rollback por componente
 
+Los controles de eliminación/cancelación del 10 de octubre están documentados
+en [CATALOG_CONTROLS.md](CATALOG_CONTROLS.md). Sus estados `deleted`, `cancelling`
+y `cancelled` requieren conservar los filtros y finalizar cancelaciones antes
+de arrancar una versión anterior. No hay cambio de esquema para esos controles.
+
 No ejecutar DROP, TRUNCATE o borrados masivos. Un rollback de código no deshace
 automáticamente Drive, Sheet o WooCommerce. Conservar IDs y backups. Esta
 auditoría no creó objetos reales en esas integraciones ni cambió env Render.

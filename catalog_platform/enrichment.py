@@ -29,7 +29,7 @@ def enrich(job, owner, value, drive):
             dict.fromkeys(
                 t
                 for p in db.scalars(
-                    select(Product).where(Product.tenant_id == job["tenant_id"])
+                    select(Product).where(Product.tenant_id == job["tenant_id"], Product.status != "deleted")
                 )
                 for t in p.tags
             )

@@ -58,7 +58,7 @@ def record_usage(job_id, api_key, initial):
     delta = {key: max(0, final.get(key, 0) - initial.get(key, 0)) for key in final}
     with transaction() as db:
         job = db.get(GenerationJob, job_id)
-        if job and job.lease_owner == OWNER:
+        if job and (job.lease_owner == OWNER or job.status == "cancelled"):
             previous = job.payload.get("usage", {})
             job.payload = {**job.payload, "usage": {
                 key: previous.get(key, 0) + count for key, count in delta.items()
@@ -251,7 +251,7 @@ def generation(job, value, drive):
                 .where(GenerationJob.id == job["id"])
                 .with_for_update()
             )
-            if locked.lease_owner != OWNER or locked.status != "processing":
+            if locked.lease_owner != OWNER or locked.status not in {"processing", "cancelling"}:
                 raise RuntimeError("Se perdió el lease antes de guardar el resultado.")
             locked.payload = deepcopy(payload)
             locked.progress = int(len(completed) * 100 / len(targets))
@@ -520,6 +520,8 @@ def process(job):
         with transaction() as db:
             persist(db, job["tenant_id"], job["actor"], value)
         return done
+    except queue.JobCancelled:
+        raise
     except Exception as exc:
         from app_security import public_error
 
@@ -544,7 +546,7 @@ def execute_job(job_id):
     def renew():
         while not ended.wait(15):
             try:
-                queue.checkpoint(job_id, OWNER)
+                queue.renew(job_id, OWNER)
             except Exception:
                 # No next paid call can pass the ownership check after losing
                 # the lease. Do not include raw DB errors in worker logs.
@@ -553,15 +555,20 @@ def execute_job(job_id):
     keeper = threading.Thread(target=renew, daemon=True)
     keeper.start()
     try:
+        queue.checkpoint(job_id, OWNER)
         if process(job):
             queue.finish(job_id, OWNER, True, "Completado. Revisa el resultado antes de publicar.")
         return {"executed": True}
+    except queue.JobCancelled:
+        return {"executed": True, "cancelled": True}
     except Exception as exc:
         from app_security import public_error
         from studio_api import error_message
 
         queue.finish(job_id, OWNER, False, public_error(ValueError(error_message(exc, {}))))
         with transaction() as db:
+            if db.get(GenerationJob, job_id).status == "cancelled":
+                return {"executed": True, "cancelled": True}
             audit(db, job["tenant_id"], job["actor"], job["kind"] + ".failed",
                   job["product_id"], after={"job_id": job_id}, result="failed")
             if job["kind"] in {"publication", "stock_sync"}:
@@ -617,6 +624,7 @@ def main():
             STOP.wait(2)
             continue
         try:
+            queue.checkpoint(job["id"], OWNER)
             if process(job):
                 queue.finish(
                     job["id"],
@@ -624,6 +632,8 @@ def main():
                     True,
                     "Completado. Revisa las imágenes antes de publicar.",
                 )
+        except queue.JobCancelled:
+            continue
         except Exception as exc:
             # Never emit payloads, credentials, raw provider errors or URLs with auth.
             from studio_api import error_message
@@ -631,6 +641,8 @@ def main():
             message = error_message(exc, {})
             queue.finish(job["id"], OWNER, False, message)
             with transaction() as db:
+                if db.get(GenerationJob, job["id"]).status == "cancelled":
+                    continue
                 if job["kind"] in {"publication", "stock_sync"}:
                     p = product_for(db, job["tenant_id"], job["product_id"])
                     p.sync_status = "error"

@@ -44,7 +44,7 @@ const { spawn, spawnSync } = require("node:child_process");
       request.on("data", chunk => { size += chunk.length; hash.update(chunk); });
       request.on("end", () => {
         response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        response.end(JSON.stringify({ path: url.pathname, size, digest: hash.digest("hex"),
+        response.end(JSON.stringify({ path: url.pathname, method: request.method, size, digest: hash.digest("hex"),
           cookie: request.headers.cookie, origin: request.headers.origin }));
       });
     });
@@ -92,6 +92,22 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(received.digest, crypto.createHash("sha256").update(image).digest("hex"));
     assert.equal(received.cookie, cookie);
     assert.equal(received.origin, origin);
+    for (const [method, route, data] of [
+      ["DELETE", "/api/platform/products/test-product", {confirm:true,version:3}],
+      ["POST", "/api/platform/jobs/test-job/cancel", {confirm:true}],
+      ["POST", "/api/platform/jobs/cancel", {confirm:true,job_ids:["one","two","three"]}],
+    ]) {
+      const body = JSON.stringify(data);
+      const response = await fetch(origin + route, {method, body,
+        headers:{Origin:origin,Cookie:cookie,"Content-Type":"application/json"}});
+      assert.equal(response.status,200);
+      const forwarded = await response.json();
+      assert.equal(forwarded.method,method);
+      assert.equal(forwarded.path,route);
+      assert.equal(forwarded.origin,origin);
+      assert.equal(forwarded.cookie,cookie);
+      assert.equal(forwarded.digest,crypto.createHash("sha256").update(body).digest("hex"));
+    }
     const login = await fetch(origin + "/login", { redirect: "manual" });
     assert.equal(login.status, 200, "Login waiting screen is local, even before API startup");
     const loginHTML = await login.text();
@@ -148,7 +164,7 @@ const { spawn, spawnSync } = require("node:child_process");
     const logout = await fetch(origin + "/logout", { method: "POST", headers: { Origin: origin, Cookie: cookie } });
     assert.equal(logout.status, 200);
     assert.equal((await logout.json()).path, "/logout");
-    console.log("Next.js proxy: paths, cookies, OAuth redirects and full 12 MB uploads passed.");
+    console.log("Next.js proxy: DELETE/cancel bodies, paths, cookies, OAuth redirects and full 12 MB uploads passed.");
   } catch (error) {
     console.error("Next.js server diagnostics: " + output);
     throw error;

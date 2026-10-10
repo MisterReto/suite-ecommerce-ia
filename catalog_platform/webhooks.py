@@ -156,6 +156,7 @@ def process_event(job, owner):
                 select(Product)
                 .where(
                     Product.tenant_id == event.tenant_id,
+                    Product.status != "deleted",
                     Product.woocommerce_product_id == data.get("id"),
                     Product.woocommerce_variation_id.is_(None),
                 )

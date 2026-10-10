@@ -52,7 +52,7 @@ def master_rows(value):
     if not active(value):
         return []
     with transaction() as db:
-        records = list(db.scalars(select(Product).where(Product.tenant_id == root_for(value))))
+        records = list(db.scalars(select(Product).where(Product.tenant_id == root_for(value), Product.status != "deleted")))
         skus = {p.id: p.sku for p in records}
         pictures = {}
         for image in db.scalars(select(ProductImage).where(ProductImage.tenant_id == root_for(value))):

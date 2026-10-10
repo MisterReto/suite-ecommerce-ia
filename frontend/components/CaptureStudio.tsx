@@ -198,7 +198,7 @@ const slots = [
 ];
 const fileUrl = (id: string) => "/api/files/" + encodeURIComponent(id);
 const activeJob = (job?: Job | null) =>
-  !!job && ["queued", "running"].includes(job.status);
+  !!job && ["queued", "running", "cancelling"].includes(job.status);
 
 class ApiError extends Error {
   constructor(
@@ -473,6 +473,7 @@ export default function CaptureStudio({
         setJob(data.job);
         applyDraft(data.draft);
         if (data.job.status === "failed") setError(data.job.message);
+        if (data.job.status === "cancelled") setMessage(data.job.message);
         if (data.job.status === "completed") {
           setMessage(data.draft?.saved || "Listo. Revisa el resultado.");
           if (data.draft?.saved) onSaved?.();
