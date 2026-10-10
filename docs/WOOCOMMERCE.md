@@ -9,7 +9,7 @@ cambia credenciales, imágenes, Drive o los dos servicios históricos.
 
 El bloqueo era `SUITE_DRIVE_ONLY=true` en `rincon-catalog-api`: ese modo
 rechaza incluso lecturas aunque `WC_WRITE_ENABLED=true`. Configuración de
-los servicios actuales:
+los servicios actuales, aplicada sin cambiar sus credenciales:
 
 | Servicio | SUITE_DRIVE_ONLY | WC_WRITE_ENABLED | Credenciales |
 | --- | --- | --- | --- |
@@ -19,8 +19,12 @@ los servicios actuales:
 
 `sync: false` en los permisos de escritura del Blueprint conserva los valores
 que el usuario estableció en Render. No se modifica `WP_MEDIA_WRITE_ENABLED`.
-Los tres servicios nuevos usan la rama de integración; la rama estable y
-`backup/working-oauth-20261009` conservan la base para revertir.
+Para desplegar estas mejoras de interfaz/proxy, seleccionar la rama de
+integración en los tres servicios nuevos. La rama estable y
+`backup/working-oauth-20261009` conservan la base para revertir. La selección
+de rama está pendiente: el conector Render no ofrece esa operación y el
+acceso seguro al panel se declinó. Los flags ya están activos sobre `07ca7e8`:
+API `dep-db4p5to473hc738kcmrg`; worker `dep-db4p5sqd0e5s73d0bhc0`.
 
 La tarjeta WooCommerce consulta el resultado de la última lectura de **su
 propio catálogo**: Pendiente antes de comprobar, Conectado al completarla y
@@ -29,12 +33,17 @@ las rutas del proxy para conexión, previews y stock; el login se conserva.
 
 ### Pruebas manuales autorizadas, a cargo del usuario
 
-1. Desde el frontend, abrir **Más → Conexiones → WooCommerce → Comprobar
-   conexión → Consultar tienda**. Confirmar la consulta y esperar el trabajo;
+1. Desde el frontend actual, abrir **Más → Sincronización → Consultar tienda**.
+   Después de desplegar la rama nueva también se puede entrar desde
+   **Conexiones → WooCommerce → Comprobar conexión**.
+   Confirmar la consulta y esperar el trabajo;
    una API/worker gratuitos pueden necesitar despertar. Esta consulta lee la
    tienda y guarda snapshots en SQL; no modifica WooCommerce ni importa Drive.
-2. Volver a Conexiones: comprobar **Conectado**. Si aparece Error, abrir el
+2. Verificar que el trabajo termina correctamente. En la rama nueva, volver a
+   Conexiones y comprobar **Conectado**. Si aparece Error, abrir el
    trabajo para revisar permisos/credenciales, sin publicar ni repetir a ciegas.
+   La versión anterior puede mostrar «Sin conectar» porque busca claves en la
+   API aunque se configuran en el worker; esa etiqueta no bloquea la consulta.
 3. Abrir un producto de prueba conocido y verificar su SKU, ID de producto,
    variante y stock WooCommerce antes de confirmar una escritura.
 4. Para publicar imágenes, comprobar primero el permiso existente de WordPress
