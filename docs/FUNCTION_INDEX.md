@@ -3410,18 +3410,18 @@ Pantallas React nativas para conteos, revisión Drive/WordPress y publicación p
 
 - `money` — Presenta cantidades monetarias o un valor ausente. [Código, línea 33](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L33)
 
-- `InventoryTools` — Organiza las herramientas nativas en el mismo shell y protege sus escrituras. [Código, línea 35](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L35)
+- `InventoryTools` — Organiza las herramientas nativas en el mismo shell y protege sus escrituras. [Código, línea 48](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L48)
 
-- `InventoryTools.request` — Consulta la API JSON con cookie de mismo origen y espera acotada. [Código, línea 73](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L73)
+- `InventoryTools.request` — Consulta la API JSON con cookie de mismo origen y espera acotada. [Código, línea 87](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L87)
 
-- `InventoryTools.attempt` — Impide doble envío y presenta errores sin reintentar escrituras. [Código, línea 75](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L75)
+- `InventoryTools.attempt` — Impide doble envío y presenta errores sin reintentar escrituras. [Código, línea 89](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L89)
 
-- `InventoryTools.loadInventory` — Carga filas canónicas y prepara conteos sin enviar cambios. [Código, línea 81](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L81)
+- `InventoryTools.loadInventory` — Carga filas canónicas y prepara conteos sin enviar cambios. [Código, línea 95](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L95)
 
-- `InventoryTools.inspectHistory` — Consulta los movimientos del SKU seleccionado. [Código, línea 86](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L86)
+- `InventoryTools.inspectHistory` — Consulta los movimientos del SKU seleccionado. [Código, línea 100](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L100)
 
-- `InventoryTools.refreshBatch` — Lee el lote; no inicia publicación ni reanuda automáticamente. [Código, línea 91](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L91)
+- `InventoryTools.refreshBatch` — Lee el lote; no inicia publicación ni reanuda automáticamente. [Código, línea 105](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L105)
 
-- `InventoryTools.runBatch` — Ejecuta grupos confirmados; vuelve a comprobar pausa/pantalla antes de cada POST. [Código, línea 96](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L96)
+- `InventoryTools.runBatch` — Ejecuta grupos confirmados; vuelve a comprobar pausa/pantalla antes de cada POST. [Código, línea 110](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L110)
 
-- `InventoryTools.confirm` — Abre el modal; solo la acción confirmada inicia la operación. [Código, línea 115](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L115)
+- `InventoryTools.confirm` — Abre el modal; solo la acción confirmada inicia la operación. [Código, línea 129](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L129)

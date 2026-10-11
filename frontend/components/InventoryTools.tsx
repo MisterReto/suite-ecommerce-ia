@@ -31,6 +31,19 @@ type Props = {
   ask: (confirmation: Confirmation) => void;
 };
 const money = (n: number | null) => n == null ? "—" : new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n);
+// Etiquetas de interfaz; las claves y estados del backend conservan su contrato.
+const labels: Record<string, string> = {
+  products: "Productos", with_images: "Con imágenes", without_images: "Sin imágenes",
+  requested_files: "Imágenes solicitadas", exact_files: "Coincidencias exactas",
+  fallback_files: "Versiones compatibles", missing_files: "Imágenes faltantes",
+  optional_legacy_missing: "Versión anterior opcional ausente", already_uploaded: "Ya publicadas",
+  ready_files: "Imágenes listas", ready_products: "Productos listos", ready: "Listos",
+  missing_wc_products: "Productos faltantes en la tienda", duplicate_wc_skus: "SKU duplicados en la tienda",
+  in_sync: "Coinciden", duplicate: "SKU duplicado", missing: "No encontrado", different: "Diferencias",
+  stock_mismatch: "Stock diferente", price_mismatch: "Precio diferente", content_mismatch: "Datos diferentes",
+  exact: "Coincidencia exacta", fallback: "Versión compatible", pending: "Pendiente",
+  running: "Procesando", success: "Publicado", error: "Error",
+};
 
 export default function InventoryTools({ tool, namespace, canEdit, isAdmin, online, api, ask }: Props) {
   const [busy, setBusy] = useState(false);
@@ -181,9 +194,9 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
       <section className="p-card"><h2>Comparar Sheets y WooCommerce</h2>
         <p className="p-muted">Esta revisión consulta nombres, existencias y precios. No modifica la tienda.</p>
         <button className="button secondary" disabled={disabled} onClick={() => void attempt(async () => setReview(await request<Review>("review")))}>Revisar sincronización y stock</button>
-        {review && <><div className="p-tool-metrics">{Object.entries(review.summary).map(([name, n]) => <p key={name}>{name}: <strong>{n}</strong></p>)}</div>
+        {review && <><div className="p-tool-metrics">{Object.entries(review.summary).map(([name, n]) => <p key={name}>{labels[name] || name.replaceAll("_", " ")}: <strong>{n}</strong></p>)}</div>
           <div className="p-table-wrap"><table><thead><tr><th>SKU</th><th>Producto</th><th>Estado</th><th>Stock Drive / tienda</th><th>Precio Drive / tienda</th></tr></thead><tbody>
-            {review.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{row.name}</td><td>{row.status}</td><td>{row.inventory_stock ?? "—"} / {row.woocommerce_stock ?? "—"}</td><td>{money(row.inventory_price)} / {money(row.woocommerce_price)}</td></tr>)}
+            {review.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{row.name}</td><td>{labels[row.status] || row.status.replaceAll("_", " ")}</td><td>{row.inventory_stock ?? "—"} / {row.woocommerce_stock ?? "—"}</td><td>{money(row.inventory_price)} / {money(row.woocommerce_price)}</td></tr>)}
           </tbody></table></div></>}
       </section>
     </>}
@@ -191,13 +204,13 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
       <p className="p-muted">Comprueba las imágenes existentes y sus coincidencias con productos. La revisión comienza cuando pulses el botón.</p>
       <button className="button secondary" disabled={disabled} onClick={() => void attempt(async () => setMedia(await request<Media>("media-preview")))}>Revisar imágenes de Drive y WordPress</button>
       {media && <>
-        <div className="p-tool-metrics">{Object.entries(media.summary).filter(([, n]) => typeof n === "number").map(([name, n]) => <p key={name}>{name}: <strong>{n}</strong></p>)}</div>
-        <p className="p-muted">{media.wordpress_configured ? "WordPress conectado." : "Falta configurar WordPress."} {media.woocommerce_write && media.wordpress_write ? "Publicación de imágenes habilitada." : "La publicación de imágenes está deshabilitada en el servicio."}</p>
+        <div className="p-tool-metrics">{Object.entries(media.summary).filter(([, n]) => typeof n === "number").map(([name, n]) => <p key={name}>{labels[name] || name.replaceAll("_", " ")}: <strong>{n}</strong></p>)}</div>
+        <p className="p-muted">{media.wordpress_configured ? "WordPress configurado." : "Falta configurar WordPress."} {media.woocommerce_write && media.wordpress_write ? "Publicación de imágenes habilitada." : "La publicación de imágenes está deshabilitada en el servicio."}</p>
         <div className="p-table-wrap"><table><thead><tr><th>SKU</th><th>Producto</th><th>Imágenes de Drive</th><th>WooCommerce</th><th>Revisión</th></tr></thead><tbody>
-          {media.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{row.name}</td><td>{row.images.map((image, j) => <p key={j}>{image.resolved_filename || image.requested_filename} · {image.resolution}</p>)}</td><td>{row.wc_id || "No encontrado"}</td><td>{row.ready ? "Listo" : "Revisar"}</td></tr>)}
+          {media.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{row.name}</td><td>{row.images.map((image, j) => <p key={j}>{image.resolved_filename || image.requested_filename} · {labels[image.resolution] || image.resolution}</p>)}</td><td>{row.wc_id || "No encontrado"}</td><td>{row.ready ? "Listo" : "Revisar"}</td></tr>)}
         </tbody></table></div>
         <label className="p-form-field">SKU para publicar sus imágenes<input value={sku} maxLength={80} onChange={e => setSku(e.target.value)} /></label>
-        <button className="button" disabled={!isAdmin || disabled || !sku.trim() || !media.wordpress_write || !media.woocommerce_write} onClick={() => {
+        <button className="button" disabled={!isAdmin || disabled || !sku.trim() || !media.wordpress_configured || !media.wordpress_write || !media.woocommerce_write} onClick={() => {
           const selectedSku = sku.trim();
           confirm("Publicar imágenes de un producto", `Se sincronizarán las imágenes existentes de ${selectedSku} con WordPress y WooCommerce. Revisa las coincidencias antes de confirmar.`, "Publicar imágenes", async () => {
             const data = await request<{ message: string }>("media-sync", "POST", { confirm: true, sku: selectedSku }); setNotice(data.message);
@@ -246,7 +259,7 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
         <div className="p-tool-metrics"><p>{batch.summary.total} productos</p><p>{batch.summary.success} terminados</p><p>{batch.summary.error} errores</p><p>{batch.summary.pending + batch.summary.running} pendientes</p></div>
         <progress aria-label="Progreso de publicación" max={Math.max(1, batch.summary.total)} value={batch.summary.success + batch.summary.error} />
         <div className="p-table-wrap"><table><thead><tr><th>SKU</th><th>Estado</th><th>Mensaje</th><th>Producto</th></tr></thead><tbody>
-          {batch.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{row.status}</td><td>{row.message}</td><td>{row.permalink?.startsWith("https://") && <a href={row.permalink} target="_blank" rel="noreferrer">Ver en tienda</a>}</td></tr>)}
+          {batch.rows.map((row, i) => <tr key={i}><td>{row.sku}</td><td>{labels[row.status] || row.status}</td><td>{row.message}</td><td>{row.permalink?.startsWith("https://") && <a href={row.permalink} target="_blank" rel="noreferrer">Ver en tienda</a>}</td></tr>)}
         </tbody></table></div>
       </>}
     </section>}

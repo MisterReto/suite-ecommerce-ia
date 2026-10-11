@@ -185,7 +185,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("heading",{name:"Revisar Drive y WordPress",exact:true}).waitFor();
     assert.equal(nativeWrites.length,0,"Opening native tools does not write");
     await page.getByRole("button",{name:"Revisar imágenes de Drive y WordPress",exact:true}).click();
-    await page.getByText(product.sku+"_1_hd.jpg · exact",{exact:true}).waitFor();
+    await page.getByText(product.sku+"_1_hd.jpg · Coincidencia exacta",{exact:true}).waitFor();
     assert.equal(await page.locator(".p-native-tools iframe").count(),0,"Tools are native components");
     fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-desktop.png"),fullPage:true});
