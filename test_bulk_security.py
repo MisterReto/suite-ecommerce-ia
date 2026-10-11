@@ -159,7 +159,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         @app.api_route("/probe", methods=["GET", "POST"])
         async def probe(request: Request):
             return {"size": len(await request.body())}
-        @app.post("/gradio_api/upload")
+        @app.post("/api/uploads")
         async def upload():
             return {"ok": True}
         app.add_middleware(SecurityMiddleware, sessions=lambda: sessions or {})
@@ -184,17 +184,17 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"RENDER_EXTERNAL_URL": "https://suite.example"}):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.build_app()), base_url="https://suite.example", headers={"origin": "https://suite.example"}) as c:
                 self.assertEqual((await c.post("/probe", content=chunks())).status_code, 413)
-                self.assertEqual((await c.post("/gradio_api/upload", content=b"image")).status_code, 401)
+                self.assertEqual((await c.post("/api/uploads", content=b"image")).status_code, 401)
 
     async def test_session_cache_disabled(self):
         with patch.dict(os.environ, {"RENDER_EXTERNAL_URL": "https://suite.example"}):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.build_app({"sid": {"email": "test"}})), base_url="https://suite.example", cookies={"session_id": "sid"}) as c:
                 self.assertEqual((await c.get("/probe")).headers["cache-control"], "no-store")
 
-    async def test_eval_compatibility_scoped_to_main_gradio_document(self):
+    async def test_no_eval_in_main_or_worker_documents(self):
         with patch.dict(os.environ, {"RENDER_EXTERNAL_URL": "https://suite.example", "SUITE_SERVICE_ROLE": "main"}):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.build_app()), base_url="https://suite.example") as c:
-                self.assertIn("'unsafe-eval'", (await c.get("/")).headers["content-security-policy"])
+                self.assertNotIn("'unsafe-eval'", (await c.get("/")).headers["content-security-policy"])
                 self.assertNotIn("'unsafe-eval'", (await c.get("/probe")).headers["content-security-policy"])
                 with patch.dict(os.environ, {"SUITE_SERVICE_ROLE": "sync"}):
                     self.assertNotIn("'unsafe-eval'", (await c.get("/")).headers["content-security-policy"])

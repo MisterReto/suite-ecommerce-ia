@@ -25,7 +25,11 @@ runtime.SESSIONS = {}
 
 
 def _service(api, version, session):
-    return build(api, version, credentials=Credentials(token=session["access_token"]), cache_discovery=False)
+    client=build(api, version, credentials=Credentials(token=session["access_token"]), cache_discovery=False)
+    if api=="drive":
+        from drive_service import DriveService
+        return DriveService(client,session.get("root_folder_id",""))
+    return client
 
 
 def _prepared(_drive, session):
@@ -50,6 +54,8 @@ sys.modules["app"] = runtime
 import product_web
 import batch_web_v2
 import inventory_hub
+import native_tools
+native_tools.register(runtime.fastapi_app)
 
 app = FastAPI(title="Suite sync service")
 _NONCES = {}
@@ -128,6 +134,10 @@ async def tools(request: Request):
         if method not in {"GET", "POST"} or path not in TOOL_PATHS:
             raise ValueError()
         context = data["context"]
+        if context.get("role", "editor") not in {"admin", "editor", "viewer"}:
+            raise ValueError()
+        if method == "POST" and context.get("role") == "viewer":
+            return JSONResponse({"error": "Tu rol permite solo lectura."}, status_code=403)
         if not all(isinstance(context.get(k), str) and context[k] for k in (
             "access_token", "spreadsheet_id", "images_folder_id", "root_folder_id"
         )):

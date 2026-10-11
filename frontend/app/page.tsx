@@ -1,0 +1,3115 @@
+"use client";
+// Pantalla principal Platform: navegación, catálogo SQL, trabajos, inventario, conexiones y confirmaciones.
+// Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Activity,
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  Camera,
+  CircleAlert,
+  Cloud,
+  Download,
+  ExternalLink,
+  Home,
+  Images,
+  Layers,
+  Loader2,
+  LogOut,
+  MoreHorizontal,
+  Package,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings2,
+  ShoppingBag,
+  Sparkles,
+  Square,
+  Trash2,
+  Upload,
+  WifiOff,
+  X,
+} from "lucide-react";
+import dynamic from "next/dynamic";
+import { recoverSession } from "@/lib/session-recovery";
+import DriveClassification from "@/components/DriveClassification";
+import InventoryTools from "@/components/InventoryTools";
+const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
+
+// Nombres de las cinco secciones de navegación; no son permisos del servidor.
+type Section = "home" | "products" | "generate" | "inventory" | "more";
+// Copia JSON de Product SQL para la interfaz; version debe enviarse en las escrituras
+// correspondientes.
+type Product = {
+  id: string;
+  sku: string;
+  barcode: string;
+  name: string;
+  brand: string;
+  category: string;
+  subcategory: string;
+  short_description: string;
+  long_description: string;
+  tags: string[];
+  attributes: Record<string, string | string[]>;
+  product_type: string;
+  parent_id: string | null;
+  price: number | null;
+  cost: number | null;
+  stock: number | null;
+  woocommerce_stock: number | null;
+  loyverse_stock: number | null;
+  status: string;
+  sync_status: string;
+  version: number;
+  image_id?: string;
+  woocommerce_product_id?: number;
+  woocommerce_variation_id?: number;
+  loyverse_item_id?: string;
+  last_woocommerce_sync?: string;
+};
+// Metadata y referencia Drive de una imagen del catálogo.
+type Picture = {
+  id: string;
+  drive_file_id: string;
+  role: string;
+  status: string;
+  metadata_json: Record<string, unknown>;
+};
+// Plan creativo y fuentes de investigación mostrados junto al candidato.
+type Brief = {
+  lifestyle?: string;
+  comercial?: string;
+  note?: string;
+  sources?: { title: string; url: string }[];
+  search_suggestions?: string;
+};
+// Candidato generado, estado de revisión, slot e historial de correcciones.
+type Asset = {
+  provider: string;
+  model: string;
+  id: string;
+  image_id: string;
+  product_id: string;
+  job_id: string;
+  sku: string;
+  product_name: string;
+  slot: string;
+  estimated_correction_usd?: number | null;
+  status: string;
+  history: string[];
+  metadata_json: {
+    brief?: Brief;
+    qa?: { resumen?: string };
+    width?: number;
+    height?: number;
+  };
+};
+// Trabajo durable con actor, estado, progreso y payload; cancelling sigue siendo activo.
+type Job = {
+  id: string;
+  actor: string;
+  kind: string;
+  product_id: string;
+  status: string;
+  progress: number;
+  message: string;
+  estimated_cost?: number;
+  created_at: string;
+  payload: {
+    in_flight?: unknown;
+    proposal?: Record<string, unknown>;
+    version?: number;
+    product?: { name?: string; sku?: string };
+  };
+};
+// Evento de sincronización mostrado en el historial.
+type Event = {
+  id: string;
+  product_id?: string;
+  action: string;
+  source: string;
+  destination: string;
+  status: string;
+  message: string;
+  created_at: string;
+  job_id?: string;
+};
+// Respuesta compuesta de ficha, variantes, imágenes, movimientos y trabajos.
+type Detail = {
+  product: Product;
+  images: Picture[];
+  assets: Asset[];
+  jobs: Job[];
+  movements: {
+    id: string;
+    source: string;
+    source_event_id: string;
+    quantity_before: number;
+    quantity_after: number;
+    delta: number;
+    created_at: string;
+  }[];
+  sync_events: Event[];
+  variants: Product[];
+};
+// Estado público de sesión; no contiene tokens Google ni la clave Gemini.
+type Session = {
+  authenticated: boolean;
+  email?: string;
+  gemini_configured?: boolean;
+  folder?: string;
+  folder_id?: string;
+  image_model?: string;
+  estimated_image_usd?: number | null;
+};
+// Configuración, rol y readiness de plataforma/worker para habilitar controles.
+type Status = {
+  ready: boolean;
+  configured: boolean;
+  worker_ready: boolean;
+  worker_can_queue?: boolean;
+  role: string;
+  message: string;
+};
+// Datos agregados de Inicio basados en registros/snapshots reales.
+type Dashboard = {
+  stats: Record<string, number>;
+  activity: { id: string; action: string; created_at: string }[];
+  ecommerce: null | {
+    sales_today: number;
+    pending_orders: number;
+    orders: {
+      id: string;
+      woocommerce_id: number;
+      status: string;
+      total: number;
+      currency: string;
+    }[];
+  };
+};
+// Selección/coste cotizados antes de confirmar generación.
+type Quote = {
+  products: number;
+  images: number;
+  provider: string;
+  model: string;
+  estimated_usd: number | null;
+  estimate_token: string;
+  note: string;
+};
+// Resultado de previsualización que debe revisarse antes de importar.
+type Preview = {
+  preview_id: string;
+  rows: number;
+  errors: { row: number; sku: string; message: string }[];
+  sample: { sku: string; name: string }[];
+  note: string;
+};
+// Datos y acción del modal de confirmación; abrirlo todavía no ejecuta la escritura.
+type Confirm = {
+  title: string;
+  text: string;
+  label: string;
+  uncertain?: boolean;
+  action: () => Promise<void>;
+};
+const nav = [
+  { id: "home", label: "Inicio", icon: Home },
+  { id: "products", label: "Productos", icon: ShoppingBag },
+  { id: "generate", label: "Generar", icon: Sparkles },
+  { id: "inventory", label: "Inventario", icon: Layers },
+  { id: "more", label: "Más", icon: MoreHorizontal },
+] as const;
+const stateLabel: Record<string, string> = {
+  queued: "En cola",
+  processing: "Procesando",
+  cancelling: "Deteniendo",
+  cancelled: "Cancelado",
+  completed: "Para revisar",
+  failed: "Error",
+  approved: "Aprobada",
+  rejected: "Rechazada",
+  published: "Publicada",
+  pending: "Pendiente",
+  synced: "Sincronizado",
+  difference: "Diferencia",
+  error: "Error",
+  connected: "Conectado ✓",
+  disconnected: "Sin conectar",
+  token_expired: "Token vencido",
+};
+const kinds = [
+  { id: "1_hd", label: "Producto limpio", note: "Fondo blanco y empaque fiel" },
+  { id: "2_uso", label: "Lifestyle", note: "Personas consumiendo o usando" },
+  {
+    id: "3_comercial",
+    label: "Comercial",
+    note: "Composición artística del producto",
+  },
+];
+// Formatea importes para mostrar al usuario.
+const currency = (n: number | null | undefined) =>
+  n == null
+    ? "—"
+    : new Intl.NumberFormat("es-MX", {
+        style: "currency",
+        currency: "MXN",
+      }).format(n);
+// Formatea fechas operativas según el navegador.
+const date = (v?: string) =>
+  v
+    ? new Date(v).toLocaleString("es-MX", {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—";
+// Construye la URL privada de imagen servida por la API.
+const pictureUrl = (id: string) =>
+  "/api/platform/images/" + encodeURIComponent(id);
+// Considera queued, processing y cancelling como trabajos todavía activos.
+const active = (job: Job) => ["queued", "processing", "cancelling"].includes(job.status);
+// Crea la ficha vacía del formulario de producto sin persistirla.
+const blank = (): Product => ({
+  id: "",
+  sku: "",
+  barcode: "",
+  name: "",
+  brand: "",
+  category: "",
+  subcategory: "",
+  short_description: "",
+  long_description: "",
+  tags: [],
+  attributes: {},
+  product_type: "simple",
+  parent_id: null,
+  price: 0,
+  cost: null,
+  stock: 0,
+  woocommerce_stock: null,
+  loyverse_stock: null,
+  status: "pending",
+  sync_status: "pending",
+  version: 1,
+});
+// Error HTTP con estado e información de respuesta perdida/incertidumbre.
+class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+// Envía solicitudes con cookie de mismo origen y timeout; no reintenta automáticamente
+// escrituras o generaciones.
+async function api<T>(
+  path: string,
+  method = "GET",
+  body?: unknown,
+  timeout = 90000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(path, {
+      method,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
+      headers:
+        body && !(body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {},
+      body: body
+        ? body instanceof FormData
+          ? body
+          : JSON.stringify(body)
+        : undefined,
+    });
+    const data = await response.json().catch(() => {
+      throw new ApiError(
+        "El servicio todavía no responde. Espera unos segundos y vuelve a intentarlo.",
+        response.ok ? 503 : response.status,
+      );
+    });
+    if (!response.ok)
+      throw new ApiError(
+        typeof data.detail === "string"
+          ? data.detail
+          : data.error ||
+              "No se pudo confirmar la operación. Revisa los datos y su estado.",
+        response.status,
+      );
+    return data;
+  } catch (e) {
+    if ((e as Error).name === "AbortError")
+      throw new Error(
+        "La conexión tardó demasiado. Revisa el estado antes de reintentar.",
+      );
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// Muestra la etiqueta visual de un estado existente.
+function Badge({ value }: { value: string }) {
+  return (
+    <span className={"p-badge " + value}>{stateLabel[value] || value}</span>
+  );
+}
+// Muestra una explicación cuando una lista/pantalla no tiene elementos.
+function Empty({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="p-empty">
+      <Package size={36} />
+      <h3>{title}</h3>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+// Organiza estado, carga, navegación y acciones de la app; la autorización efectiva vive en
+// la API.
+export default function Platform() {
+  const [section, setSection] = useState<Section>("home");
+  const [moreTab, setMoreTab] = useState("connections");
+  const [inventoryTab, setInventoryTab] = useState("catalog");
+  const [session, setSession] = useState<Session>({ authenticated: false });
+  const [status, setStatus] = useState<Status>({
+    ready: false,
+    configured: false,
+    worker_ready: false,
+    role: "viewer",
+    message: "Cargando…",
+  });
+  const [loading, setLoading] = useState(true);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const operationKeys = useRef(new Map<string, string>());
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [online, setOnline] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [dashboard, setDashboard] = useState<Dashboard>();
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<Product>(blank);
+  const [attributeText, setAttributeText] = useState("{}");
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [connections, setConnections] = useState<
+    { name: string; status: string; note?: string }[]
+  >([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [selectionMode, setSelectionMode] = useState("selected");
+  const [category, setCategory] = useState("");
+  const [slots, setSlots] = useState(kinds.map((k) => k.id));
+  const [quantity, setQuantity] = useState(1);
+  const [automaticReview, setAutomaticReview] = useState(false);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [generationTab, setGenerationTab] = useState("batch");
+  const [captureVisible, setCaptureVisible] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [comparison, setComparison] = useState<Detail | null>(null);
+  const [feedback, setFeedback] = useState("");
+  const [imageRole, setImageRole] = useState("gallery");
+  const [stock, setStock] = useState(0);
+  const [stockReason, setStockReason] = useState("");
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [uncertainChecked, setUncertainChecked] = useState(false);
+  const scanRef = useRef<HTMLInputElement>(null);
+  const referenceRef = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const canEdit = session.authenticated && status.role !== "viewer";
+  const isAdmin = status.role === "admin";
+  const ready = session.authenticated && status.ready;
+  const workerCanQueue = status.worker_can_queue ?? status.worker_ready;
+  const stoppableJobs = jobs.filter(job => active(job) && canEdit && (isAdmin || job.actor === session.email));
+  // Cambia sección/tab y referencia de navegación del navegador.
+  const go = useCallback((target: Section) => {
+    location.hash = target;
+    setSection(target);
+    setDetail(null);
+    setEditing(false);
+    setError("");
+  }, []);
+  // Conserva una clave request_key por intención confirmada para recuperar envíos sin
+  // duplicarlos.
+  const attempt = async (action: () => Promise<void>) => {
+    if (busy || submitting.current) return;
+    submitting.current = true;
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await action();
+    } catch (e) {
+      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 401)
+        setSession({ authenticated: false });
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
+  };
+  // Envía una operación durable con la misma clave idempotente si debe resolverse una
+  // respuesta perdida.
+  const durablePost = async (path: string, body: Record<string, unknown>) => {
+    const signature = JSON.stringify([path, body]);
+    const request_key = operationKeys.current.get(signature) || crypto.randomUUID();
+    operationKeys.current.set(signature, request_key);
+    try {
+      const result = await api(path, "POST", { ...body, request_key });
+      operationKeys.current.delete(signature);
+      return result;
+    } catch (e) {
+      // An uncertain network response must reuse the same intent on retry.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        operationKeys.current.delete(signature);
+      throw e;
+    }
+  };
+  // Recupera sesión y configuración base antes de cargar operaciones privadas.
+  const reloadBase = useCallback(async () => {
+    const s = await recoverSession<Session>();
+    setSession(s);
+    setSessionChecked(true);
+    const st = await api<Status>("/api/platform/status");
+    setStatus(st);
+    return { s, st };
+  }, []);
+  // Actualiza trabajos, imágenes y resumen operativo desde SQL.
+  const reloadOperations = useCallback(async () => {
+    const [d, j, a, st] = await Promise.all([
+      api<Dashboard>("/api/platform/dashboard"),
+      api<{ items: Job[] }>("/api/platform/jobs"),
+      api<{ items: Asset[] }>("/api/platform/assets"),
+      api<Status>("/api/platform/status"),
+    ]);
+    setDashboard(d);
+    setJobs(j.items);
+    setAssets(a.items);
+    setStatus(st);
+  }, []);
+  // Carga la página/selección/filtros actuales del catálogo.
+  const loadProducts = useCallback(async () => {
+    const data = await api<{ items: Product[]; total: number }>(
+      `/api/platform/products?q=${encodeURIComponent(query)}&filter=${encodeURIComponent(filter)}&offset=${offset}&limit=50`,
+    );
+    setProducts(data.items);
+    setTotal(data.total);
+  }, [query, filter, offset]);
+  useEffect(() => {
+    // Interpreta el hash de navegación para recuperar la sección seleccionada.
+    const change = () => {
+      const [hash, tool] = location.hash.slice(1).split("/");
+      if (nav.some((n) => n.id === hash)) setSection(hash as Section);
+      else if (["studio", "catalog", "settings", "loyverse"].includes(hash)) {
+        setSection(
+          hash === "catalog"
+            ? "products"
+            : hash === "studio"
+              ? "generate"
+              : "more",
+        );
+        if (hash === "settings") setMoreTab("settings");
+      }
+      if (hash === "products" && ["catalog", "capture"].includes(tool)) setCaptureVisible(tool === "capture");
+      if (hash === "generate" && ["capture", "batch", "review", "jobs"].includes(tool)) {
+        setCaptureVisible(tool === "capture");
+        if (tool !== "capture") setGenerationTab(tool);
+      }
+      if (hash === "inventory" && ["catalog", "count"].includes(tool)) setInventoryTab(tool);
+      if (hash === "more" && ["connections", "sync", "exchange", "settings", "media", "publication", "help"].includes(tool)) setMoreTab(tool);
+      if (hash === "more" && tool === "tools") { setSection("inventory"); setInventoryTab("count"); }
+    };
+    // Refleja falta de conexión del navegador en la interfaz.
+    const disconnected = () => { setOnline(false); setReconnecting(false); };
+    let recovering = false;
+    // Recupera sesión al volver conexión/foco, agrupando solicitudes simultáneas.
+    const connected = () => {
+      if (recovering) return;
+      recovering = true;
+      setOnline(true);
+      setReconnecting(true);
+      setError("");
+      reloadBase()
+        .catch((e) => setError(`No se pudo reconectar: ${e.message}`))
+        .finally(() => { recovering = false; setReconnecting(false); setLoading(false); });
+    };
+    // Solicita reconexión cuando la pestaña vuelve a estar visible y hay red.
+    const resumed = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) connected();
+    };
+    change();
+    setOnline(navigator.onLine);
+    window.addEventListener("hashchange", change);
+    window.addEventListener("online", connected);
+    window.addEventListener("offline", disconnected);
+    window.addEventListener("focus", resumed);
+    document.addEventListener("visibilitychange", resumed);
+    connected();
+    if ("serviceWorker" in navigator)
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    return () => {
+      window.removeEventListener("hashchange", change);
+      window.removeEventListener("online", connected);
+      window.removeEventListener("offline", disconnected);
+      window.removeEventListener("focus", resumed);
+      document.removeEventListener("visibilitychange", resumed);
+    };
+  }, [reloadBase]);
+  useEffect(() => {
+    if (!ready || !online) return;
+    const timer = setTimeout(
+      () => loadProducts().catch((e) => setError(e.message)),
+      250,
+    );
+    return () => clearTimeout(timer);
+  }, [ready, online, loadProducts]);
+  useEffect(() => {
+    if (!ready || !online) return;
+    let stopped = false;
+    // Callback de polling que actualiza trabajos y trata un 401 como sesión no autenticada.
+    const run = () =>
+      reloadOperations().catch((e) => {
+        if (!stopped) {
+          setError(e.message);
+          if (e.status === 401) setSession({ authenticated: false });
+        }
+      });
+    run();
+    const timer = setInterval(run, jobs.some(active) ? 4000 : 30000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [ready, online, jobs.some(active), reloadOperations]);
+  useEffect(() => {
+    setQuote(null);
+  }, [selected, selectionMode, category, slots, quantity, automaticReview]);
+  useEffect(() => {
+    if (section !== "more" || !ready) return;
+    Promise.all([
+      api<{ items: Event[] }>("/api/platform/events"),
+      api<{ items: typeof connections }>("/api/platform/connections"),
+    ])
+      .then(([e, c]) => {
+        setEvents(e.items);
+        setConnections(c.items);
+      })
+      .catch((e) => setError(e.message));
+  }, [section, moreTab, ready]);
+  useEffect(() => {
+    if (!confirm && !selectedAsset) return;
+    const previous = document.activeElement as HTMLElement | null;
+    modalRef.current?.focus();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    // Gestiona Escape y foco del modal para teclado/accesibilidad.
+    const keys = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) {
+        setConfirm(null);
+        setSelectedAsset(null);
+      }
+      if (e.key === "Tab") {
+        const controls = modalRef.current?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href]",
+        );
+        if (controls?.length) {
+          const first = controls[0],
+            last = controls[controls.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    };
+    document.addEventListener("keydown", keys);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener("keydown", keys);
+      previous?.focus();
+    };
+  }, [confirm, selectedAsset, busy]);
+  // Obtiene la ficha completa por UUID antes de abrirla o editarla.
+  const openProduct = async (id: string) => {
+    const data = await api<Detail>("/api/platform/products/" + id);
+    setDetail(data);
+    setForm(data.product);
+    setStock(data.product.stock || 0);
+    setAttributeText(JSON.stringify(data.product.attributes, null, 2));
+    setEditing(false);
+  };
+  // Abre confirmación y limpia la aceptación previa de incertidumbre.
+  const ask = (value: Confirm) => {
+    setUncertainChecked(false);
+    setConfirm(value);
+  };
+  // Confirma retirada de la app y envía UUID/version; no borra archivos Drive, hojas ni
+  // tienda.
+  const deleteProduct = (product: Product) => ask({
+    title: "Eliminar producto",
+    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
+    label: "Eliminar producto",
+    action: async () => {
+      await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
+      setDetail(null);
+      setEditing(false);
+      setProducts(previous => previous.filter(item => item.id !== product.id));
+      setSelected(previous => previous.filter(id => id !== product.id));
+      setQuote(null);
+      if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
+      await Promise.all([loadProducts(), reloadOperations()]);
+      setNotice("Producto eliminado del catálogo de la app.");
+    },
+  });
+  // Confirma los IDs visibles: uno o lote; trabajos creados después no quedan incluidos.
+  const stopJobs = (targets: Job[]) => ask({
+    title: targets.length === 1 ? "Detener proceso" : `Detener ${targets.length} procesos`,
+    text: "Los procesos en cola se cancelan al momento. Si una operación ya empezó, se esperará a que termine y se conservarán sus resultados; después no se iniciarán más pasos.",
+    label: targets.length === 1 ? "Detener proceso" : "Detener todos",
+    action: async () => {
+      if (targets.length === 1) {
+        await api(`/api/platform/jobs/${targets[0].id}/cancel`, "POST", { confirm: true });
+      } else {
+        await api("/api/platform/jobs/cancel", "POST", { confirm: true, job_ids: targets.map(job => job.id) });
+      }
+      await reloadOperations();
+      setNotice("Cancelación guardada. Los procesos iniciados se detendrán al terminar su operación actual.");
+    },
+  });
+  // Envía una operación durable confirmada y actualiza su progreso.
+  const operation = async (path: string) => {
+    await durablePost(path, {
+      confirm: true,
+    });
+    setNotice(
+      "Trabajo en cola. Puedes cerrar el navegador y consultar su progreso después.",
+    );
+    await reloadOperations();
+  };
+  // Valida atributos de formulario y guarda la ficha con el contrato/versionado de API.
+  const saveProduct = async () => {
+    let attrs;
+    try {
+      attrs = JSON.parse(attributeText);
+      if (!attrs || typeof attrs !== "object" || Array.isArray(attrs))
+        throw new Error();
+    } catch {
+      throw new Error("Los atributos deben ser un objeto JSON válido.");
+    }
+    const data = await api<{ product: Product }>(
+      form.id ? "/api/platform/products/" + form.id : "/api/platform/products",
+      form.id ? "PUT" : "POST",
+      { ...form, attributes: attrs },
+    );
+    await openProduct(data.product.id);
+    await loadProducts();
+    setNotice("Producto guardado en el catálogo maestro.");
+  };
+  // Sube y asocia una referencia al producto autorizado.
+  const uploadReference = async (file: File) => {
+    if (!form.id)
+      throw new Error("Guarda la ficha antes de agregar referencias.");
+    const data = new FormData();
+    data.append("image", file);
+    const uploaded = await api<{ id: string }>("/api/uploads", "POST", data);
+    await api(`/api/platform/products/${form.id}/reference`, "POST", {
+      upload_id: uploaded.id,
+    });
+    await openProduct(form.id);
+    await loadProducts();
+    setNotice(
+      "Referencia guardada. La IA la utilizará para conservar el producto.",
+    );
+  };
+  // Pide lectura de código de barras de la foto elegida.
+  const scan = async (file: File) => {
+    const data = new FormData();
+    data.append("image", file);
+    const uploaded = await api<{ id: string }>("/api/uploads", "POST", data);
+    const codes = await api<{ codes: string[] }>(
+      "/api/platform/barcode",
+      "POST",
+      { upload_id: uploaded.id },
+    );
+    if (!codes.codes.length)
+      throw new Error(
+        "No se detectó un código. Acerca la cámara, mejora la luz o escríbelo.",
+      );
+    setQuery(codes.codes[0]);
+    setOffset(0);
+    setFilter("all");
+    go("products");
+  };
+  // Cotiza/confirma o encola el lote de generación seleccionado con deduplicación de
+  // intención.
+  const batch = () => ({
+    product_ids: selectionMode === "selected" ? selected : [],
+    category: selectionMode === "category" ? category : null,
+    pending: selectionMode === "pending",
+    slots,
+    quantity,
+    quality: "native",
+    automatic_review: automaticReview,
+  });
+  // Abre los datos de un candidato para revisar o corregir.
+  const reviewAsset = async (asset: Asset) => {
+    setSelectedAsset(asset);
+    setFeedback("");
+    setImageRole(
+      asset.slot === "2_uso"
+        ? "lifestyle"
+        : asset.slot === "3_comercial"
+          ? "commercial"
+          : "main",
+    );
+    setComparison(
+      await api<Detail>("/api/platform/products/" + asset.product_id),
+    );
+  };
+  // Persiste aprobación/rechazo y actualiza la lista de candidatos.
+  const approve = async (state: "approved" | "rejected") => {
+    if (!selectedAsset) return;
+    await api(`/api/platform/assets/${selectedAsset.id}/review`, "POST", {
+      status: state,
+      role: imageRole,
+    });
+    await reloadOperations();
+    setSelectedAsset(null);
+    setNotice(
+      state === "approved"
+        ? "Imagen aprobada. Publicar es una acción separada."
+        : "Imagen rechazada; el archivo se conserva.",
+    );
+  };
+  // Confirma expresamente el reintento del trabajo y conserva controles de
+  // coste/incertidumbre.
+  const retry = (job: Job) =>
+    ask({
+      title: "Reintentar trabajo",
+      text: job.payload.in_flight
+        ? "La operación se interrumpió con resultado incierto. Verifica los archivos de Drive y la tienda antes de autorizar otro intento; puede generar un cargo adicional."
+        : "Se conservarán las imágenes ya terminadas. Las operaciones de IA restantes pueden generar consumo adicional.",
+      label: "Autorizar intento",
+      uncertain: !!job.payload.in_flight,
+      action: async () => {
+        await durablePost(`/api/platform/jobs/${job.id}/retry`, {
+          confirm: true,
+          uncertainty_reviewed: true,
+        });
+        await reloadOperations();
+      },
+    });
+  // Section tools share the sidebar on desktop and the dock on phones. Hashes are bookmarkable.
+  const sectionTools: string[][] = section === "products" ? [
+    ["products/catalog", "Catálogo"], ["products/capture", "Nuevo producto con IA"],
+  ] : section === "generate" ? [
+    ["generate/capture", "Capturar producto"], ["generate/batch", "Generación masiva"],
+    ["generate/review", "Revisar imágenes"], ["generate/jobs", "Trabajos"],
+  ] : section === "inventory" ? [
+    ["inventory/catalog", "Catálogo y stock"], ["inventory/count", "Conteo y movimientos"],
+  ] : section === "more" ? [
+    ["more/connections", "Conexiones"], ["more/sync", "Sincronización"],
+    ["more/exchange", "Importar / Exportar"], ["more/settings", "Ajustes"],
+    ["inventory/count", "Conteo y movimientos"], ["more/media", "Revisar Drive y WordPress"],
+    ["more/publication", "Publicación masiva"], ["more/help", "Ayuda"],
+  ] : [];
+  const selectedTool = section + "/" + (section === "products" ? captureVisible ? "capture" : "catalog"
+    : section === "generate" ? captureVisible ? "capture" : generationTab
+    : section === "inventory" ? inventoryTab : moreTab);
+
+  const heading = {
+    home: [
+      "Tu tienda, al día",
+      "Atiende lo importante y continúa con tu catálogo.",
+    ],
+    products: ["Productos", "El catálogo maestro de El Rincón de Asia."],
+    generate: [
+      "Dale vida a tus productos",
+      "Genera, revisa y publica con el control en tus manos.",
+    ],
+    inventory: ["Inventario", "Existencias y diferencias entre tus canales."],
+    more: [
+      "Tu espacio de trabajo",
+      "Conexiones, sincronización y herramientas.",
+    ],
+  }[section];
+
+  return (
+    <div className={"platform" + (sectionTools.length ? " has-section-tools" : "")}>
+      <a className="skip-link" href="#workspace">
+        Ir al contenido
+      </a>
+      <header className="p-header">
+        <a className="brand" href="#home">
+          <img src="/logo.png" width={46} height={46} alt="El Rincón de Asia" />
+          <span>
+            El Rincón de Asia<small>Suite ecommerce IA</small>
+          </span>
+        </a>
+        <div className="p-header-actions">
+          <a
+            href="https://rincon.creandotusite.com/"
+            target="_blank"
+            rel="noreferrer"
+            className="p-store"
+          >
+            Ver tienda <ExternalLink size={14} />
+          </a>
+          <button
+            aria-label="Cuenta y conexiones"
+            onClick={() => {
+              go("more");
+              setMoreTab("settings");
+            }}
+            className="p-avatar"
+          >
+            {session.email?.slice(0, 1).toUpperCase() || (
+              <Settings2 size={18} />
+            )}
+          </button>
+        </div>
+      </header>
+      <nav className="p-navigation" aria-label="Navegación principal">
+        <div className="p-primary-navigation">{nav.map((n) => (
+          <a
+            key={n.id}
+            href={"#" + n.id}
+            className={section === n.id ? "active" : ""}
+            aria-current={section === n.id ? "page" : undefined}
+            onClick={() => {
+              setDetail(null);
+              setEditing(false);
+            }}
+          >
+            <n.icon size={22} />
+            <span>{n.label}</span>
+          </a>
+        ))}
+        </div>
+        {sectionTools.length > 0 && <div className="p-subnavigation" aria-label="Herramientas de la sección">
+          {sectionTools.map(([id, label]) => <button key={id} className={selectedTool === id ? "active" : ""}
+            aria-pressed={selectedTool === id} aria-controls="workspace"
+            disabled={(id.endsWith("/capture")) && !canEdit}
+            onClick={() => { location.hash = id; setDetail(null); setEditing(false); }}>
+            {label}{id === "generate/jobs" && <span>{jobs.filter(active).length}</span>}
+            {id === "generate/review" && <span>{assets.filter(a => a.status === "completed").length}</span>}
+          </button>)}
+        </div>}
+        <div className="p-nav-note">
+          <Cloud size={19} />
+          <span>
+            {session.folder || "Proyecto_IA"}
+            <small>De Asia para tu casa.</small>
+          </span>
+        </div>
+      </nav>
+      <main className="p-main" id="workspace">
+        {!online && (
+          <div className="p-alert" role="status">
+            <WifiOff size={19} />
+            <span>
+              Sin conexión. Tus trabajos aceptados continúan en el servidor.
+              Conéctate para actualizar.
+            </span>
+            <button
+              disabled={busy}
+              onClick={() =>
+                attempt(async () => {
+                  await reloadBase();
+                  if (ready) await reloadOperations();
+                })
+              }
+            >
+              Reintentar
+            </button>
+          </div>
+        )}
+        {error && (
+          <div className="p-alert error" role="alert">
+            <CircleAlert size={19} />
+            <span>{error}</span>
+            <button onClick={() => setError("")} aria-label="Cerrar error">
+              <X size={18} />
+            </button>
+          </div>
+        )}
+        {notice && (
+          <div className="p-alert success" role="status">
+            <CheckCircle2 size={19} />
+            <span>{notice}</span>
+            <button onClick={() => setNotice("")} aria-label="Cerrar aviso">
+              <X size={18} />
+            </button>
+          </div>
+        )}
+        <div className="p-title">
+          <div>
+            <span className="p-eyebrow">
+              {section === "home"
+                ? "BIENVENIDO A TU SUITE"
+                : "EL RINCÓN DE ASIA"}
+            </span>
+            <h1>{heading[0]}</h1>
+            <p>{heading[1]}</p>
+          </div>
+          {ready && (
+            <button
+              className="button secondary p-refresh"
+              disabled={busy}
+              onClick={() =>
+                attempt(async () => {
+                  await reloadBase();
+                  await reloadOperations();
+                  await loadProducts();
+                })
+              }
+              aria-label="Actualizar panel"
+            >
+              <RefreshCw size={18} />
+              <span>Actualizar</span>
+            </button>
+          )}
+        </div>
+        {(loading || reconnecting) && (
+          <div className="inline-loading">
+            <Loader2 className="spin" size={22} />
+            Iniciando servidor y recuperando tu sesión…
+          </div>
+        )}
+        {!loading && !reconnecting && !sessionChecked && (
+          <div className="p-alert" role="status">
+            <span>El servidor aún no está disponible.</span>
+            <button onClick={() => {
+              setLoading(true); setError("");
+              void reloadBase().catch(e => setError(e.message)).finally(() => setLoading(false));
+            }}>Reintentar conexión</button>
+          </div>
+        )}
+        {!loading && sessionChecked && !session.authenticated && (
+          <div className="p-welcome">
+            <img src="/logo.png" width={76} height={76} alt="" />
+            <div>
+              <h2>Tu catálogo merece brillar.</h2>
+              <p>
+                Conecta tu cuenta para trabajar con tus productos, imágenes y
+                archivos de Drive.
+              </p>
+              <a className="button primary" href="/login">
+                <Cloud size={19} />
+                Conectar Google Drive
+              </a>
+            </div>
+            <div className="p-welcome-art" aria-hidden="true">
+              <Sparkles size={60} />
+              <Package size={90} />
+            </div>
+          </div>
+        )}
+        {!loading && session.authenticated && !status.ready && (
+          <div className="p-alert">
+            <Cloud size={20} />
+            <div>
+              <strong>La migración del catálogo está preparada.</strong>
+              <p>
+                {status.message} La captura compatible está disponible en
+                Generar.
+              </p>
+            </div>
+          </div>
+        )}
+        {ready && !status.worker_ready && (
+          <div className="p-alert">
+            <CircleAlert size={20} />
+            <span>
+              {workerCanQueue
+                ? "El proceso de imágenes está en reposo o iniciándose. Puedes enviar una operación; quedará guardada en cola mientras arranca."
+                : "El proceso de imágenes está desconectado. Puedes consultar y editar el catálogo; las nuevas operaciones en cola esperan su configuración."}
+            </span>
+          </div>
+        )}
+        {session.authenticated && status.role === "viewer" && (
+          <p className="p-readonly">Acceso de lectura · {session.email}</p>
+        )}
+
+        {section === "home" && (
+          <>
+            <div className="p-hero">
+              <div>
+                <span className="p-eyebrow">DE ASIA PARA TU CASA</span>
+                <h2>
+                  Todo lo que necesita
+                  <br />
+                  tu catálogo, en un lugar.
+                </h2>
+                <p>Fotos que atraen. Productos que conectan.</p>
+                <button className="button white" onClick={() => go("generate")}>
+                  <Sparkles size={19} />
+                  Generar imágenes
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+              <div className="p-hero-art" aria-hidden="true">
+                <span className="hero-disc">
+                  <ShoppingBag size={94} />
+                </span>
+                <span className="hero-spark">
+                  <Sparkles size={31} />
+                </span>
+                <span className="hero-label">CATÁLOGO + IA</span>
+              </div>
+            </div>
+            <div className="p-stats">
+              {[
+                {
+                  label: "Ventas online · hoy",
+                  value: ready
+                    ? dashboard?.ecommerce
+                      ? currency(dashboard.ecommerce.sales_today)
+                      : "Sin lectura"
+                    : "—",
+                  icon: ShoppingBag,
+                  target: "more",
+                },
+                {
+                  label: "Pedidos pendientes",
+                  value: dashboard?.ecommerce?.pending_orders ?? "—",
+                  icon: Package,
+                  target: "more",
+                },
+                {
+                  label: "Stock bajo",
+                  value: dashboard?.stats.low_stock ?? "—",
+                  icon: Layers,
+                  target: "inventory",
+                  filter: "low",
+                },
+                {
+                  label: "Sin stock",
+                  value: dashboard?.stats.out_of_stock ?? "—",
+                  icon: CircleAlert,
+                  target: "inventory",
+                  filter: "out",
+                },
+                {
+                  label: "Errores de sincronización",
+                  value: dashboard?.stats.sync_errors ?? "—",
+                  icon: RefreshCw,
+                  target: "products",
+                  filter: "error",
+                },
+                {
+                  label: "Generaciones pendientes",
+                  value: dashboard?.stats.pending_jobs ?? "—",
+                  icon: Sparkles,
+                  target: "generate",
+                },
+              ].map((s) => (
+                <button
+                  key={s.label}
+                  className="p-stat"
+                  onClick={() => {
+                    go(s.target as Section);
+                    setFilter(s.filter || "all");
+                    setMoreTab("sync");
+                  }}
+                >
+                  <span className="p-stat-icon">
+                    <s.icon size={20} />
+                  </span>
+                  <small>{s.label}</small>
+                  <strong>{s.value}</strong>
+                  <ChevronRight size={16} />
+                </button>
+              ))}
+            </div>
+            <div className="p-two-column">
+              <section className="p-card">
+                <div className="p-card-title">
+                  <h2>Necesitan tu atención</h2>
+                  <span className="p-dot" />
+                </div>
+                <button
+                  className="p-action-row"
+                  onClick={() => {
+                    go("generate");
+                    setGenerationTab("review");
+                  }}
+                >
+                  <Images size={22} />
+                  <span>
+                    Revisar imágenes
+                    <small>
+                      {assets.filter((a) => a.status === "completed").length}{" "}
+                      imágenes para aprobar
+                    </small>
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+                <button
+                  className="p-action-row"
+                  onClick={() => {
+                    go("products");
+                    setFilter("pending");
+                  }}
+                >
+                  <ShoppingBag size={22} />
+                  <span>
+                    Productos pendientes
+                    <small>
+                      {dashboard?.stats.pending_products ?? "—"} fichas por
+                      publicar
+                    </small>
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+                <button
+                  className="p-action-row"
+                  onClick={() => {
+                    go("more");
+                    setMoreTab("sync");
+                  }}
+                >
+                  <RefreshCw size={22} />
+                  <span>
+                    Actualizar pedidos y stock
+                    <small>Consultar WooCommerce</small>
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+              </section>
+              <section className="p-card">
+                <div className="p-card-title">
+                  <h2>Actividad reciente</h2>
+                  <Activity size={18} />
+                </div>
+                {dashboard?.activity.length ? (
+                  dashboard.activity.map((a) => (
+                    <div className="p-activity" key={a.id}>
+                      <span className="p-activity-dot" />
+                      <div>
+                        <strong>{a.action.replaceAll(".", " · ")}</strong>
+                        <small>{date(a.created_at)}</small>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <Empty
+                    title="Tu actividad aparecerá aquí"
+                    text="Cada operación importante queda registrada."
+                  />
+                )}
+              </section>
+            </div>
+            {dashboard?.ecommerce && (
+              <section className="p-card">
+                <h2>Pedidos recientes</h2>
+                {dashboard.ecommerce.orders.map((o) => (
+                  <div className="p-action-row" key={o.id}>
+                    <Package size={20} />
+                    <span>
+                      Pedido #{o.woocommerce_id}
+                      <small>{o.status}</small>
+                    </span>
+                    <strong>
+                      {o.currency === "MXN"
+                        ? currency(o.total)
+                        : `${o.currency} ${o.total}`}
+                    </strong>
+                  </div>
+                ))}
+              </section>
+            )}
+          </>
+        )}
+
+        <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || (section === "inventory" && inventoryTab === "catalog")) && !ready && !loading && session.authenticated))}>
+          <CaptureStudio embedded initialSection={section === "more" ? "settings" : !captureVisible && (section === "products" || section === "inventory") ? "catalog" : "studio"}
+            onOpenProduct={id => { setCaptureVisible(false); go("products"); attempt(() => openProduct(id)); }}
+            onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured, folder: data.folder, folder_id: data.folder_id}))}
+            onSaved={() => { if (ready) loadProducts().catch(e => setError(e.message)); }} />
+        </div>
+        {(section === "products" || (section === "inventory" && inventoryTab === "catalog")) && ready && !(section === "products" && captureVisible) && (
+          <>
+            {!detail && !editing && (
+              <>
+                <div className="p-toolbar">
+                  <label className="p-search">
+                    <Search size={19} />
+                    <input
+                      value={query}
+                      onChange={(e) => {
+                        setQuery(e.target.value);
+                        setOffset(0);
+                      }}
+                      placeholder="Buscar nombre / SKU / código"
+                      aria-label="Buscar productos"
+                    />
+                  </label>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => scanRef.current?.click()}
+                  >
+                    <Camera size={18} />
+                    <span>Escanear</span>
+                  </button>
+                  {section === "products" && canEdit && (
+                    <button
+                      className="button primary"
+                      onClick={() => {
+                        setForm(blank());
+                        setAttributeText("{}");
+                        setEditing(true);
+                      }}
+                    >
+                      <Plus size={18} />
+                      Nuevo
+                    </button>
+                  )}
+                </div>
+                <div className="p-chips" aria-label="Filtros">
+                  {(section === "inventory"
+                    ? [
+                        ["all", "Todo"],
+                        ["low", "Stock bajo"],
+                        ["out", "Sin stock"],
+                        ["difference", "Diferencias"],
+                        ["error", "Error"],
+                      ]
+                    : [
+                        ["all", "Todos"],
+                        ["published", "Publicados"],
+                        ["pending", "Pendientes"],
+                        ["error", "Errores"],
+                        ["out", "Sin stock"],
+                      ]
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      aria-pressed={filter === id}
+                      className={filter === id ? "active" : ""}
+                      onClick={() => {
+                        setFilter(id);
+                        setOffset(0);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <span>{total} productos</span>
+                </div>
+                {products.length ? (
+                  <div
+                    className={
+                      section === "inventory"
+                        ? "p-inventory-grid"
+                        : "p-product-grid"
+                    }
+                  >
+                    {products.map((p) => (
+                      <article
+                        className={
+                          section === "inventory"
+                            ? "p-inventory-card"
+                            : "p-product-card"
+                        }
+                        key={p.id}
+                      >
+                        <button className="p-card-open" aria-label={`Abrir producto ${p.name}`} disabled={busy}
+                          onClick={() => attempt(() => openProduct(p.id))}>
+                        {section === "products" && (
+                          <div className="p-product-photo">
+                            {p.image_id ? (
+                              <img
+                                src={pictureUrl(p.image_id)}
+                                alt={p.name}
+                                loading="lazy"
+                              />
+                            ) : (
+                              <Package size={48} />
+                            )}
+                            <Badge value={p.status} />
+                          </div>
+                        )}
+                        <div className="p-product-info">
+                          <small>{p.brand || "Sin marca"}</small>
+                          <h3>{p.name}</h3>
+                          <code>{p.sku}</code>
+                          {section === "products" ? (
+                            <div className="p-price-row">
+                              <strong>{currency(p.price)}</strong>
+                              <span>
+                                {p.stock == null
+                                  ? "Familia"
+                                  : `${p.stock} en stock`}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="p-stock-grid">
+                              <span>
+                                Maestro<strong>{p.stock ?? "—"}</strong>
+                              </span>
+                              <span>
+                                WooCommerce
+                                <strong>{p.woocommerce_stock ?? "—"}</strong>
+                              </span>
+                              <span>
+                                Loyverse
+                                <strong>{p.loyverse_stock ?? "—"}</strong>
+                              </span>
+                            </div>
+                          )}
+                          <div className="p-channel-row">
+                            <span>
+                              WooCommerce <Badge value={p.sync_status} />
+                            </span>
+                            <small>
+                              Loyverse ·{" "}
+                              {p.loyverse_item_id
+                                ? "Vinculado"
+                                : "Próximamente"}
+                            </small>
+                          </div>
+                        </div>
+                        </button>
+                        {isAdmin && section === "products" && (
+                          <div className="p-product-actions">
+                            <button className="button secondary p-danger" disabled={busy || !online}
+                              aria-label={`Eliminar ${p.name}`} onClick={() => deleteProduct(p)}>
+                              <Trash2 size={17} /> Eliminar
+                            </button>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty
+                    title="Tu catálogo empieza aquí"
+                    text="Importa tus archivos o WooCommerce desde Más, o crea tu primer producto."
+                  />
+                )}
+                {total > 50 && (
+                  <div className="p-pagination">
+                    <button
+                      className="button secondary"
+                      disabled={offset === 0}
+                      onClick={() => setOffset(Math.max(0, offset - 50))}
+                    >
+                      Anterior
+                    </button>
+                    <span>
+                      {offset + 1}–{Math.min(offset + 50, total)} de {total}
+                    </span>
+                    <button
+                      className="button secondary"
+                      disabled={offset + 50 >= total}
+                      onClick={() => setOffset(offset + 50)}
+                    >
+                      Siguiente
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+            {(detail || editing) && (
+              <>
+                <button
+                  className="p-back"
+                  onClick={() => {
+                    setDetail(null);
+                    setEditing(false);
+                  }}
+                >
+                  <ArrowLeft size={18} />
+                  Volver al catálogo
+                </button>
+                {detail && isAdmin && !editing && (
+                  <button className="button secondary p-danger" disabled={busy || !online}
+                    onClick={() => deleteProduct(detail.product)}>
+                    <Trash2 size={18} /> Eliminar producto
+                  </button>
+                )}
+                {editing ? (
+                  <section className="p-card">
+                    <h2>{form.id ? "Editar producto" : "Nuevo producto"}</h2>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        attempt(saveProduct);
+                      }}
+                    >
+                      <div className="p-form-grid">
+                        {[
+                          ["name", "Nombre"],
+                          ["sku", "SKU"],
+                          ["barcode", "Código de barras"],
+                          ["brand", "Marca"],
+                        ].map(([key, label]) => (
+                          <label key={key}>
+                            {label}
+                            <input
+                              required={["name", "sku"].includes(key)}
+                              value={String(form[key as keyof Product] ?? "")}
+                              maxLength={key === "sku" ? 80 : 180}
+                              onChange={(e) =>
+                                setForm({ ...form, [key]: e.target.value })
+                              }
+                            />
+                          </label>
+                        ))}
+                        <DriveClassification value={form}
+                          onChange={value => setForm(previous => ({ ...previous, ...value }))}
+                          enabled={canEdit}
+                          folderKey={(session.email || "") + ":" + (session.folder_id || session.folder || "")}
+                          disabled={busy}
+                        />
+                        <label>
+                          Tipo
+                          <select
+                            value={form.product_type}
+                            onChange={(e) =>
+                              setForm({ ...form, product_type: e.target.value })
+                            }
+                          >
+                            <option value="simple">Producto simple</option>
+                            <option value="variable">
+                              Familia / padre FULL
+                            </option>
+                            <option value="variation">Variación</option>
+                          </select>
+                        </label>
+                        {form.product_type === "variation" && (
+                          <label>
+                            ID interno del padre
+                            <input
+                              value={form.parent_id || ""}
+                              required
+                              onChange={(e) =>
+                                setForm({ ...form, parent_id: e.target.value })
+                              }
+                            />
+                          </label>
+                        )}
+                        {form.product_type !== "variable" &&
+                          [
+                            ["price", "Precio MXN"],
+                            ["cost", "Costo MXN"],
+                            ["stock", "Stock maestro"],
+                          ].map(([key, label]) => (
+                            <label key={key}>
+                              {label}
+                              <input
+                                type="number"
+                                min={0}
+                                max={1000000}
+                                step="0.01"
+                                value={
+                                  form[key as "price" | "cost" | "stock"] ?? ""
+                                }
+                                onChange={(e) =>
+                                  setForm({
+                                    ...form,
+                                    [key]:
+                                      e.target.value === ""
+                                        ? null
+                                        : Number(e.target.value),
+                                  })
+                                }
+                              />
+                            </label>
+                          ))}
+                      </div>
+                      <label className="p-form-field">
+                        Descripción corta
+                        <textarea
+                          maxLength={600}
+                          rows={3}
+                          value={form.short_description}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              short_description: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="p-form-field">
+                        Descripción larga
+                        <textarea
+                          maxLength={5000}
+                          rows={6}
+                          value={form.long_description}
+                          onChange={(e) =>
+                            setForm({
+                              ...form,
+                              long_description: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="p-form-field">
+                        Atributos
+                        <textarea
+                          rows={3}
+                          value={attributeText}
+                          onChange={(e) => setAttributeText(e.target.value)}
+                          placeholder={'{"Tamaño":"41 g"}'}
+                        />
+                      </label>
+                      <div className="p-button-row">
+                        <button
+                          className="button primary"
+                          disabled={busy || !online}
+                          type="submit"
+                        >
+                          <Check size={18} />
+                          Guardar
+                        </button>
+                        <button
+                          className="button secondary"
+                          type="button"
+                          onClick={() => setEditing(false)}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+                ) : (
+                  detail && (
+                    <>
+                      <div className="p-product-detail">
+                        <section className="p-card">
+                          <div className="p-gallery">
+                            {detail.images.length ? (
+                              detail.images.map((i) => (
+                                <div key={i.id}>
+                                  <img
+                                    src={pictureUrl(i.id)}
+                                    alt={detail.product.name + " · " + i.role}
+                                  />
+                                  <div className="p-image-caption">
+                                    <span>
+                                      {i.role === "reference"
+                                        ? "Referencia original"
+                                        : i.role === "main"
+                                          ? "Principal"
+                                          : i.role}
+                                    </span>
+                                    <Badge value={i.status} />
+                                  </div>
+                                  {canEdit && i.role === "reference" && <button className="p-link" disabled={busy} onClick={() => ask({ title: "Aprobar foto original", text: "Usar esta fotografía también en la galería del producto. La referencia original se conserva. Publicar es una acción separada.", label: "Aprobar original", action: async () => { await api(`/api/platform/products/${form.id}/images/${i.id}/approve-original`, "POST", { confirm: true, request_key: crypto.randomUUID() }); await openProduct(form.id); } })}>Aprobar original para galería</button>}
+                              {canEdit && i.role !== "reference" && (
+                                    <button
+                                      className="p-link"
+                                      onClick={() =>
+                                        attempt(async () => {
+                                          await api(
+                                            `/api/platform/products/${form.id}/reference-from-image/${i.id}`,
+                                            "POST",
+                                            {},
+                                          );
+                                          await openProduct(form.id);
+                                        })
+                                      }
+                                    >
+                                      Usar como referencia
+                                    </button>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <Empty
+                                title="Agrega una referencia"
+                                text="La foto original es la base de las imágenes con IA."
+                              />
+                            )}
+                          </div>
+                          {canEdit && (
+                            <button
+                              className="button secondary"
+                              disabled={busy}
+                              onClick={() => referenceRef.current?.click()}
+                            >
+                              <Camera size={18} />
+                              Agregar foto original
+                            </button>
+                          )}
+                        </section>
+                        <section className="p-card">
+                          <small className="p-eyebrow">
+                            {detail.product.brand || "PRODUCTO"}
+                          </small>
+                          <h2>{detail.product.name}</h2>
+                          <code>{detail.product.sku}</code>
+                          <div className="p-price-row">
+                            <strong>{currency(detail.product.price)}</strong>
+                            <Badge value={detail.product.status} />
+                          </div>
+                          <dl className="p-facts">
+                            <div>
+                              <dt>Stock maestro</dt>
+                              <dd>{detail.product.stock ?? "Familia FULL"}</dd>
+                            </div>
+                            <div>
+                              <dt>Código de barras</dt>
+                              <dd>{detail.product.barcode || "—"}</dd>
+                            </div>
+                            <div>
+                              <dt>Categoría</dt>
+                              <dd>
+                                {[
+                                  detail.product.category,
+                                  detail.product.subcategory,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" / ") || "—"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>WooCommerce</dt>
+                              <dd>
+                                <Badge value={detail.product.sync_status} />
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Última lectura</dt>
+                              <dd>
+                                {date(detail.product.last_woocommerce_sync)}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>ID interno</dt>
+                              <dd>
+                                <code>{detail.product.id}</code>
+                              </dd>
+                            </div>
+                          </dl>
+                          <div className="p-button-row">
+                            {canEdit && (
+                              <>
+                                <button
+                                  className="button primary"
+                                  onClick={() => setEditing(true)}
+                                >
+                                  Editar
+                                </button>
+                                <button
+                                  className="button secondary"
+                                  disabled={busy || !workerCanQueue}
+                                  onClick={() =>
+                                    ask({
+                                      title: "Generar datos con IA",
+                                      text: "Se analizarán las referencias para proponer descripciones, etiquetas y categoría. Revisa la propuesta antes de guardarla. Esta operación consume API de texto.",
+                                      label: "Generar propuesta",
+                                      action: () =>
+                                        operation(
+                                          `/api/platform/products/${form.id}/enrich`,
+                                        ),
+                                    })
+                                  }
+                                >
+                                  <Sparkles size={18} />
+                                  Generar IA
+                                </button>
+                                {form.product_type !== "variable" && (
+                                  <button
+                                    className="button secondary"
+                                    onClick={() => {
+                                      setSelected([form.id]);
+                                      setSelectionMode("selected");
+                                      go("generate");
+                                    }}
+                                  >
+                                    Generar imágenes
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {isAdmin && (
+                              <button
+                                className="button primary"
+                                disabled={busy || !workerCanQueue}
+                                onClick={() =>
+                                  ask({
+                                    title: form.woocommerce_product_id
+                                      ? "Actualizar WooCommerce"
+                                      : "Publicar en WooCommerce",
+                                    text: "Se enviará la ficha y únicamente las imágenes aprobadas. WordPress recibirá los archivos y la tienda asociará sus IDs. El stock se sincroniza por separado.",
+                                    label: form.woocommerce_product_id
+                                      ? "Actualizar"
+                                      : "Publicar",
+                                    action: () =>
+                                      operation(
+                                        `/api/platform/products/${form.id}/publish`,
+                                      ),
+                                  })
+                                }
+                              >
+                                {form.woocommerce_product_id
+                                  ? "Actualizar WooCommerce"
+                                  : "Publicar WooCommerce"}
+                              </button>
+                            )}
+                            {form.woocommerce_product_id && (
+                              <a
+                                className="button secondary"
+                                target="_blank"
+                                rel="noreferrer"
+                                href={`https://rincon.creandotusite.com/?p=${form.woocommerce_product_id}`}
+                              >
+                                Ver en tienda <ExternalLink size={16} />
+                              </a>
+                            )}
+                          </div>
+                        </section>
+                      </div>
+                      {detail.jobs
+                        .filter(
+                          (j) =>
+                            j.kind === "enrichment" &&
+                            j.status === "completed" &&
+                            j.payload.proposal,
+                        )
+                        .slice(0, 1)
+                        .map((j) => (
+                          <section className="p-card p-proposal" key={j.id}>
+                            <h2>Propuesta de IA lista</h2>
+                            <p>
+                              Revisa los textos sugeridos antes de guardar. SKU,
+                              precio y existencias se conservan.
+                            </p>
+                            <button
+                              className="button secondary"
+                              disabled={!canEdit || busy}
+                              onClick={() => {
+                                const proposal = j.payload.proposal!;
+                                const attrs = {
+                                  ...form.attributes,
+                                  ...(proposal.size
+                                    ? { Tamaño: String(proposal.size) }
+                                    : {}),
+                                };
+                                setForm({
+                                  ...form,
+                                  ...Object.fromEntries(
+                                    Object.entries(proposal).filter(
+                                      ([k, v]) => k !== "size" && !!v,
+                                    ),
+                                  ),
+                                  attributes: attrs,
+                                } as Product);
+                                setAttributeText(
+                                  JSON.stringify(attrs, null, 2),
+                                );
+                                setEditing(true);
+                              }}
+                            >
+                              Revisar propuesta
+                            </button>
+                          </section>
+                        ))}
+                      <div className="p-two-column">
+                        <section className="p-card">
+                          <h2>Información del producto</h2>
+                          <h3>Descripción corta</h3>
+                          <p className="p-text">
+                            {detail.product.short_description || "Pendiente"}
+                          </p>
+                          <h3>Descripción larga</h3>
+                          <p className="p-text">
+                            {detail.product.long_description || "Pendiente"}
+                          </p>
+                          <div className="p-chips">
+                            {detail.product.tags.map((t) => (
+                              <span className="p-tag" key={t}>
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                          <dl className="p-facts">
+                            {Object.entries(detail.product.attributes).map(
+                              ([k, v]) => (
+                                <div key={k}>
+                                  <dt>{k}</dt>
+                                  <dd>{Array.isArray(v) ? v.join(", ") : v}</dd>
+                                </div>
+                              ),
+                            )}
+                          </dl>
+                          {detail.variants.length > 0 && (
+                            <>
+                              <h3>Variantes</h3>
+                              {detail.variants.map((v) => (
+                                <button
+                                  className="p-action-row"
+                                  key={v.id}
+                                  onClick={() =>
+                                    attempt(() => openProduct(v.id))
+                                  }
+                                >
+                                  <Package size={18} />
+                                  <span>
+                                    {v.name}
+                                    <small>
+                                      {v.sku} · {v.stock ?? "—"} en stock
+                                    </small>
+                                  </span>
+                                  <ChevronRight size={16} />
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </section>
+                        <section className="p-card">
+                          <h2>Inventario y sincronización</h2>
+                          <div className="p-stock-grid">
+                            <span>
+                              Maestro<strong>{form.stock ?? "—"}</strong>
+                            </span>
+                            <span>
+                              WooCommerce
+                              <strong>{form.woocommerce_stock ?? "—"}</strong>
+                            </span>
+                            <span>
+                              Loyverse
+                              <strong>{form.loyverse_stock ?? "—"}</strong>
+                            </span>
+                          </div>
+                          {canEdit && form.product_type !== "variable" && (
+                            <>
+                              <label className="p-form-field">
+                                Nuevo stock maestro
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={stock}
+                                  onChange={(e) =>
+                                    setStock(Number(e.target.value))
+                                  }
+                                />
+                              </label>
+                              <label className="p-form-field">
+                                Motivo del movimiento
+                                <input
+                                  value={stockReason}
+                                  onChange={(e) =>
+                                    setStockReason(e.target.value)
+                                  }
+                                  placeholder="Ej. conteo físico"
+                                />
+                              </label>
+                              <div className="p-button-row">
+                                <button
+                                  className="button secondary"
+                                  disabled={
+                                    busy || stockReason.trim().length < 3
+                                  }
+                                  onClick={() =>
+                                    ask({
+                                      title: "Registrar movimiento",
+                                      text: `Stock maestro: ${form.stock} → ${stock}. Motivo: ${stockReason}. Se registrará origen, fecha y evento.`,
+                                      label: "Registrar",
+                                      action: async () => {
+                                        await api(
+                                          `/api/platform/products/${form.id}/stock`,
+                                          "POST",
+                                          {
+                                            quantity: stock,
+                                            reason: stockReason,
+                                            version: form.version,
+                                            event_id: crypto.randomUUID(),
+                                          },
+                                        );
+                                        await openProduct(form.id);
+                                        await loadProducts();
+                                      },
+                                    })
+                                  }
+                                >
+                                  Registrar stock
+                                </button>
+                                <button
+                                  className="button secondary"
+                                  disabled={busy || !workerCanQueue}
+                                  onClick={() =>
+                                    ask({
+                                      title: "Sincronizar stock",
+                                      text: `Enviar ${form.stock} unidades del stock maestro a WooCommerce. Si la tienda cambió desde la última lectura, la operación se detendrá para revisar.`,
+                                      label: "Enviar stock",
+                                      action: () =>
+                                        operation(
+                                          `/api/platform/products/${form.id}/sync-stock`,
+                                        ),
+                                    })
+                                  }
+                                >
+                                  <RefreshCw size={16} />
+                                  Sincronizar
+                                </button>
+                              </div>
+                            </>
+                          )}
+                          <h3>Historial de movimientos</h3>
+                          {detail.movements.map((m) => (
+                            <div className="p-log" key={m.id}>
+                              <strong>
+                                {m.quantity_before ?? "—"} → {m.quantity_after}{" "}
+                                <small>
+                                  ({m.delta > 0 ? "+" : ""}
+                                  {m.delta})
+                                </small>
+                              </strong>
+                              <span>
+                                {m.source} · {date(m.created_at)}
+                              </span>
+                              <code>{m.source_event_id}</code>
+                            </div>
+                          ))}
+                          {detail.sync_events.map((e) => (
+                            <div className="p-log" key={e.id}>
+                              <strong>
+                                {e.action} <Badge value={e.status} />
+                              </strong>
+                              <span>
+                                {e.source} → {e.destination} ·{" "}
+                                {date(e.created_at)}
+                              </span>
+                              <p>{e.message}</p>
+                            </div>
+                          ))}
+                        </section>
+                      </div>
+                    </>
+                  )
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {section === "generate" && !captureVisible && (
+          <>
+            {!ready ? (
+              <p className="p-muted">Captura y analiza un producto aquí. La generación masiva estará disponible al activar el catálogo maestro.</p>
+            ) : (
+              <>
+                {generationTab === "batch" && (
+                  <div className="p-generation-grid">
+                    <section className="p-card">
+                      <div className="p-card-title">
+                        <h2>1. Elige tus productos</h2>
+                        <Package size={20} />
+                      </div>
+                      <label className="p-form-field">
+                        Selección
+                        <select
+                          value={selectionMode}
+                          disabled={!canEdit}
+                          onChange={(e) => setSelectionMode(e.target.value)}
+                        >
+                          <option value="selected">
+                            Uno o varios productos
+                          </option>
+                          <option value="category">Una categoría</option>
+                          <option value="pending">Todos los pendientes</option>
+                        </select>
+                      </label>
+                      {selectionMode === "category" ? (
+                        <label className="p-form-field">
+                          Categoría
+                          <input
+                            value={category}
+                            onChange={(e) => setCategory(e.target.value)}
+                            list="categories"
+                          />
+                          <datalist id="categories">
+                            {Array.from(
+                              new Set(products.map((p) => p.category)),
+                            ).map((c) => (
+                              <option key={c} value={c} />
+                            ))}
+                          </datalist>
+                        </label>
+                      ) : selectionMode === "pending" ? (
+                        <p>
+                          Se seleccionarán los productos pendientes que tengan
+                          fotos de referencia. Los padres FULL se excluyen.
+                        </p>
+                      ) : (
+                        <>
+                          <label className="p-search">
+                            <Search size={18} />
+                            <input
+                              value={query}
+                              onChange={(e) => {
+                                setQuery(e.target.value);
+                                setOffset(0);
+                              }}
+                              placeholder="Buscar productos"
+                            />
+                          </label>
+                          <div className="p-select-list">
+                            {products
+                              .filter((p) => p.product_type !== "variable")
+                              .map((p) => (
+                                <label className="p-select-product" key={p.id}>
+                                  <input
+                                    type="checkbox"
+                                    disabled={!canEdit}
+                                    checked={selected.includes(p.id)}
+                                    onChange={(e) =>
+                                      setSelected(
+                                        e.target.checked
+                                          ? [...selected, p.id]
+                                          : selected.filter(
+                                              (id) => id !== p.id,
+                                            ),
+                                      )
+                                    }
+                                  />
+                                  {p.image_id ? (
+                                    <img src={pictureUrl(p.image_id)} alt="" />
+                                  ) : (
+                                    <Package size={28} />
+                                  )}
+                                  <span>
+                                    <strong>{p.name}</strong>
+                                    <small>
+                                      {p.sku} · {p.brand}
+                                    </small>
+                                  </span>
+                                </label>
+                              ))}
+                          </div>
+                          {total > 50 && (
+                            <div className="p-pagination">
+                              <button
+                                className="p-link"
+                                disabled={offset === 0}
+                                onClick={() =>
+                                  setOffset(Math.max(0, offset - 50))
+                                }
+                              >
+                                Anterior
+                              </button>
+                              <span>
+                                {offset + 1}–{Math.min(offset + 50, total)} de{" "}
+                                {total}
+                              </span>
+                              <button
+                                className="p-link"
+                                disabled={offset + 50 >= total}
+                                onClick={() => setOffset(offset + 50)}
+                              >
+                                Siguiente
+                              </button>
+                            </div>
+                          )}
+                          <p>{selected.length} productos seleccionados</p>
+                        </>
+                      )}
+                    </section>
+                    <section className="p-card">
+                      <div className="p-card-title">
+                        <h2>2. Prepara las imágenes</h2>
+                        <Sparkles size={20} />
+                      </div>
+                      {kinds.map((k) => (
+                        <label className="p-choice" key={k.id}>
+                          <input
+                            type="checkbox"
+                            disabled={!canEdit}
+                            checked={slots.includes(k.id)}
+                            onChange={(e) =>
+                              setSlots(
+                                e.target.checked
+                                  ? [...slots, k.id]
+                                  : slots.filter((s) => s !== k.id),
+                              )
+                            }
+                          />
+                          <span>
+                            <strong>{k.label}</strong>
+                            <small>{k.note}</small>
+                          </span>
+                        </label>
+                      ))}
+                      <div className="p-form-grid">
+                        <label>
+                          Cantidad por tipo y producto
+                          <select
+                            disabled={!canEdit}
+                            value={quantity}
+                            onChange={(e) =>
+                              setQuantity(Number(e.target.value))
+                            }
+                          >
+                            {[1, 2, 3, 4].map((n) => (
+                              <option value={n} key={n}>
+                                {n}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Calidad
+                          <select value="native" disabled>
+                            <option value="native">
+                              Nativa del generador · 1K
+                            </option>
+                          </select>
+                        </label>
+                      </div>
+                      <label className="p-choice">
+                        <input
+                          type="checkbox"
+                          disabled={!canEdit}
+                          checked={automaticReview}
+                          onChange={(e) => setAutomaticReview(e.target.checked)}
+                        />
+                        <span>
+                          <strong>Revisión de IA opcional</strong>
+                          <small>
+                            Añade consumo de texto; tú decides la aprobación
+                            final.
+                          </small>
+                        </span>
+                      </label>
+                      <button
+                        className="button primary p-full"
+                        disabled={busy || !canEdit || !slots.length || !online}
+                        onClick={() =>
+                          attempt(async () =>
+                            setQuote(
+                              await api<Quote>(
+                                "/api/platform/generation/estimate",
+                                "POST",
+                                batch(),
+                              ),
+                            ),
+                          )
+                        }
+                      >
+                        <Sparkles size={18} />
+                        Calcular lote
+                      </button>
+                      {quote && (
+                        <div className="p-quote">
+                          <h3>Antes de generar</h3>
+                          <dl className="p-facts">
+                            <div>
+                              <dt>Productos</dt>
+                              <dd>{quote.products}</dd>
+                            </div>
+                            <div>
+                              <dt>Imágenes totales</dt>
+                              <dd>{quote.images}</dd>
+                            </div>
+                            <div>
+                              <dt>Proveedor</dt>
+                              <dd>{quote.provider}</dd>
+                            </div>
+                            <div>
+                              <dt>Modelo</dt>
+                              <dd>{quote.model}</dd>
+                            </div>
+                            <div>
+                              <dt>Costo estimado</dt>
+                              <dd>
+                                {quote.estimated_usd == null
+                                  ? "Sin tarifa configurada"
+                                  : `USD $${quote.estimated_usd.toFixed(3)}`}
+                              </dd>
+                            </div>
+                          </dl>
+                          <p>{quote.note}</p>
+                          <button
+                            className="button primary p-full"
+                            disabled={busy || !workerCanQueue}
+                            onClick={() =>
+                              ask({
+                                title: "Confirmar generación",
+                                text: `${quote.products} productos · ${quote.images} imágenes · ${quote.provider} · ${quote.model}. Estimación ${quote.estimated_usd == null ? "no disponible" : `USD $${quote.estimated_usd.toFixed(3)}`} más consumo variable. Las imágenes quedarán para revisión.`,
+                                label: "Generar lote",
+                                action: async () => {
+                                  await durablePost(
+                                    "/api/platform/generation/jobs",
+                                    {
+                                      ...batch(),
+                                      confirm: true,
+                                      estimate_token: quote.estimate_token,
+                                    },
+                                  );
+                                  setQuote(null);
+                                  setSelected([]);
+                                  setGenerationTab("jobs");
+                                  await reloadOperations();
+                                  setNotice(
+                                    "Lote aceptado. Puedes cerrar el navegador; el worker continuará.",
+                                  );
+                                },
+                              })
+                            }
+                          >
+                            Confirmar y generar
+                          </button>
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+                {generationTab === "review" &&
+                  (assets.length ? (
+                    <div className="p-asset-grid">
+                      {assets.map((a) => (
+                        <button
+                          className="p-asset-card"
+                          key={a.id}
+                          onClick={() => attempt(() => reviewAsset(a))}
+                        >
+                          <img
+                            src={pictureUrl(a.image_id)}
+                            alt={`${a.product_name} · ${kinds.find((k) => k.id === a.slot)?.label}`}
+                            loading="lazy"
+                          />
+                          <div>
+                            <Badge value={a.status} />
+                            <h3>{a.product_name}</h3>
+                            <p>
+                              {a.sku} ·{" "}
+                              {kinds.find((k) => k.id === a.slot)?.label}
+                            </p>
+                            <span className="p-link">
+                              Revisar y comparar <ChevronRight size={16} />
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <Empty
+                      title="Cada imagen pasa por tus manos"
+                      text="Genera un lote para revisar, aprobar o pedir correcciones. Ninguna imagen nueva se publica automáticamente."
+                    />
+                  ))}
+                {generationTab === "jobs" && (
+                  <section className="p-card">
+                    <div className="p-jobs-title">
+                      <h2>Trabajos y progreso</h2>
+                      {stoppableJobs.length > 1 && (
+                        <button className="button secondary p-danger" disabled={busy || !online}
+                          onClick={() => stopJobs(stoppableJobs)}>
+                          <Square size={17} /> Detener todos ({stoppableJobs.length})
+                        </button>
+                      )}
+                    </div>
+                    {jobs.length ? (
+                      jobs.map((j) => (
+                        <div className="p-job" key={j.id}>
+                          <div className="p-job-head">
+                            <span>
+                              {j.kind === "generation" ? (
+                                <Sparkles size={20} />
+                              ) : (
+                                <RefreshCw size={20} />
+                              )}
+                              <strong>
+                                {j.payload.product?.name ||
+                                  {
+                                    publication: "Publicación WooCommerce",
+                                    studio_generation: "Generación de imágenes",
+                                    import: "Importación de catálogo",
+                                    ecommerce_pull: "Consulta WooCommerce",
+                                    enrichment: "Datos con IA",
+                                    stock_sync: "Sincronización de stock",
+                                    webhook: "Evento recibido",
+                                  }[j.kind] ||
+                                  j.kind}
+                              </strong>
+                            </span>
+                            <Badge value={j.status} />
+                          </div>
+                          <p>{j.message}</p>
+                          <progress max={100} value={j.progress} />
+                          <div className="p-job-foot">
+                            <small>
+                              {date(j.created_at)} · {j.progress}%
+                              {j.estimated_cost
+                                ? ` · estimado USD $${j.estimated_cost.toFixed(3)}`
+                                : ""}
+                            </small>
+                            {stoppableJobs.some(job => job.id === j.id) && (
+                              <button className="button secondary p-danger" disabled={busy || !online}
+                                onClick={() => stopJobs([j])}>
+                                <Square size={16} /> Detener proceso
+                              </button>
+                            )}
+                            {j.status === "failed" && canEdit && (
+                              <button
+                                className="p-link"
+                                disabled={busy}
+                                onClick={() => retry(j)}
+                              >
+                                Revisar y reintentar
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <Empty
+                        title="Sin trabajos pendientes"
+                        text="Los lotes se guardan aquí con su estado y progreso."
+                      />
+                    )}
+                  </section>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {(section === "inventory" && inventoryTab === "count" || section === "more" && ["media", "publication"].includes(moreTab)) && session.authenticated && (
+          <InventoryTools key={(session.email || "") + ":" + (session.folder_id || "")}
+            tool={section === "inventory" ? "count" : moreTab as "media" | "publication"}
+            namespace={(session.email || "") + ":" + (session.folder_id || "")}
+            canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask} />
+        )}
+
+        {section === "more" && (
+          <>
+            {moreTab === "connections" && (
+              <>
+                <div className="p-connection-grid">
+                  {(ready
+                    ? connections
+                    : [
+                        {
+                          name: "Google Drive",
+                          status: session.authenticated
+                            ? "connected"
+                            : "disconnected",
+                        },
+                        {
+                          name: "IA · Gemini",
+                          status: session.gemini_configured
+                            ? "connected"
+                            : "disconnected",
+                        },
+                        { name: "WooCommerce", status: "disconnected" },
+                        { name: "WordPress", status: "disconnected" },
+                        {
+                          name: "Loyverse",
+                          status: "disconnected",
+                          note: "Integración futura",
+                        },
+                      ]
+                  ).map((c) => (
+                    <section className="p-card" key={c.name}>
+                      <span className="p-stat-icon">
+                        <Cloud size={23} />
+                      </span>
+                      <h2>{c.name}</h2>
+                      <Badge value={c.status} />
+                      {c.note && <p>{c.note}</p>}
+                      {c.name === "WooCommerce" && isAdmin && (
+                        <button className="button secondary" onClick={() => setMoreTab("sync")}>
+                          Comprobar conexión
+                        </button>
+                      )}
+                    </section>
+                  ))}
+                </div>
+                <div className="p-card">
+                  <h2>Tu cuenta</h2>
+                  <p>
+                    {session.email || "Conecta Google Drive para empezar"}
+                    {session.authenticated ? ` · ${status.role}` : ""}
+                  </p>
+                  <button
+                    className="button secondary"
+                    onClick={() => setMoreTab("settings")}
+                  >
+                    <Settings2 size={18} />
+                    Configurar conexiones
+                  </button>
+                  <p className="p-muted">
+                    Las credenciales de la tienda se configuran en el servidor.
+                    El estado de credenciales se confirma al ejecutar una
+                    consulta.
+                  </p>
+                </div>
+              </>
+            )}
+            {moreTab === "sync" && (
+              <section className="p-card">
+                <div className="p-card-title">
+                  <h2>Sincronización</h2>
+                  {isAdmin && ready && (
+                    <button
+                      className="button secondary"
+                      disabled={busy || !workerCanQueue}
+                      onClick={() =>
+                        ask({
+                          title: "Consultar WooCommerce",
+                          text: "Leer pedidos recientes y stock por los IDs guardados. No se cambiarán los productos de la tienda.",
+                          label: "Consultar",
+                          action: () =>
+                            operation("/api/platform/ecommerce/refresh"),
+                        })
+                      }
+                    >
+                      <RefreshCw size={18} />
+                      Consultar tienda
+                    </button>
+                  )}
+                </div>
+                {events.length ? (
+                  events.map((e) => (
+                    <div className="p-log" key={e.id}>
+                      <div>
+                        <strong>{e.action}</strong>
+                        <Badge value={e.status} />
+                      </div>
+                      <span>
+                        {e.source} → {e.destination} · {date(e.created_at)}
+                      </span>
+                      <p>{e.message}</p>
+                      {e.product_id && (
+                        <button
+                          className="p-link"
+                          onClick={() => {
+                            go("products");
+                            attempt(() => openProduct(e.product_id!));
+                          }}
+                        >
+                          Ver producto
+                        </button>
+                      )}
+                      {e.status === "failed" && e.job_id && isAdmin && (
+                        <button
+                          className="p-link"
+                          onClick={() => {
+                            const j = jobs.find((j) => j.id === e.job_id);
+                            if (j) retry(j);
+                            else {
+                              go("generate");
+                              setGenerationTab("jobs");
+                            }
+                          }}
+                        >
+                          Revisar error
+                        </button>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <Empty
+                    title="Sin eventos de sincronización"
+                    text="Las lecturas, publicaciones y errores de tus integraciones aparecerán aquí."
+                  />
+                )}
+                <button
+                  className="p-link"
+                  onClick={() => {
+                    go("generate");
+                    setGenerationTab("jobs");
+                  }}
+                >
+                  Ver todos los trabajos
+                </button>
+              </section>
+            )}
+            {moreTab === "exchange" && (
+              <div className="p-two-column">
+                <section className="p-card">
+                  <h2>Importar al catálogo</h2>
+                  <p>
+                    Revisa una vista previa antes de confirmar. Los SKU
+                    existentes se conservan y las fuentes se respaldan.
+                  </p>
+                  <div className="p-button-column">
+                    <button
+                      className="button secondary"
+                      disabled={!isAdmin || !ready || busy}
+                      onClick={() => importRef.current?.click()}
+                    >
+                      <Upload size={18} />
+                      Excel / CSV
+                    </button>
+                    <button
+                      className="button secondary"
+                      disabled={!isAdmin || !ready || busy}
+                      onClick={() =>
+                        attempt(async () =>
+                          setPreview(
+                            await api<Preview>(
+                              "/api/platform/import/sheets",
+                              "POST",
+                              {},
+                            ),
+                          ),
+                        )
+                      }
+                    >
+                      <Cloud size={18} />
+                      Google Sheets existente
+                    </button>
+                    <button
+                      className="button secondary"
+                      disabled={
+                        !isAdmin || !ready || !workerCanQueue || busy
+                      }
+                      onClick={() =>
+                        ask({
+                          title: "Importar WooCommerce",
+                          text: "Crear las fichas y familias que todavía no estén en el catálogo maestro. Se respaldará el catálogo antes de importar. Los datos existentes y los productos de la tienda se conservan.",
+                          label: "Importar",
+                          action: () =>
+                            operation("/api/platform/import/woocommerce"),
+                        })
+                      }
+                    >
+                      <ShoppingBag size={18} />
+                      WooCommerce
+                    </button>
+                    <button className="button secondary" disabled>
+                      Loyverse · Próximamente
+                    </button>
+                  </div>
+                  {preview && (
+                    <div className="p-quote">
+                      <h3>{preview.rows} productos en la fuente</h3>
+                      <p>{preview.note}</p>
+                      {preview.sample.map((p) => (
+                        <div className="p-preview-row" key={p.sku}>
+                          <code>{p.sku}</code>
+                          <span>{p.name}</span>
+                        </div>
+                      ))}
+                      {preview.errors.length ? (
+                        <div className="p-import-errors">
+                          {preview.errors.map((e, i) => (
+                            <p key={i}>
+                              Fila {e.row} · {e.sku}: {e.message}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <button
+                          className="button primary"
+                          disabled={
+                            busy || !workerCanQueue || !preview.rows
+                          }
+                          onClick={() =>
+                            ask({
+                              title: "Confirmar importación",
+                              text: `Importar ${preview.rows} filas después de crear copias de respaldo. La fuente se conserva y los SKU existentes se omiten.`,
+                              label: "Respaldar e importar",
+                              action: async () => {
+                                await api(
+                                  "/api/platform/import/commit",
+                                  "POST",
+                                  {
+                                    confirm: true,
+                                    preview_id: preview.preview_id,
+                                    request_key: crypto.randomUUID(),
+                                  },
+                                );
+                                setPreview(null);
+                                await reloadOperations();
+                                setNotice("Importación respaldada y en cola.");
+                              },
+                            })
+                          }
+                        >
+                          Confirmar importación
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </section>
+                <section className="p-card">
+                  <h2>Exportar y respaldar</h2>
+                  <p>
+                    Descarga el catálogo operativo para compartirlo o usarlo
+                    como respaldo. Sheets y Excel funcionan como intercambio.
+                  </p>
+                  <div className="p-button-column">
+                    <a
+                      className={
+                        "button secondary " + (!ready ? "p-disabled" : "")
+                      }
+                      href="/api/platform/export?format=xlsx"
+                    >
+                      <Download size={18} />
+                      Descargar Excel
+                    </a>
+                    <a
+                      className={
+                        "button secondary " + (!ready ? "p-disabled" : "")
+                      }
+                      href="/api/platform/export?format=csv"
+                    >
+                      <Download size={18} />
+                      Descargar CSV
+                    </a>
+                    <a
+                      className="button secondary"
+                      href="https://docs.google.com/spreadsheets/d/1dUG_xuuIUwGLTMfXl56dGRyJSFc18VlD2EkD5aWjym8/edit"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Cloud size={18} />
+                      Respaldo previo de la hoja <ExternalLink size={15} />
+                    </a>
+                  </div>
+                  <p className="p-muted">
+                    Los archivos originales de Drive conservan su ubicación. Las
+                    nuevas imágenes y copias se crean dentro de
+                    Rincon_de_Asia_App.
+                  </p>
+                </section>
+              </div>
+            )}
+            {moreTab === "help" && (
+              <section className="p-card">
+                <h2>Un flujo claro, de principio a fin</h2>
+                <ol className="p-guide">
+                  <li>
+                    <strong>Prepara el producto</strong>
+                    <p>
+                      Abre Productos → Nuevo producto con IA o Generar → Capturar producto. Toma la foto frontal o elígela desde la galería; añade el reverso y tus observaciones si los necesitas.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Analiza y revisa coincidencias</strong>
+                    <p>Gemini propone datos editables. Revisa si el producto ya existe, pertenece a un padre o necesita una familia nueva. Prepara la portada con fotografías reales.</p>
+                  </li>
+                  <li>
+                    <strong>Genera las imágenes</strong>
+                    <p>
+                      Elige productos, tipo y cantidad. Revisa el proveedor, el
+                      modelo y la estimación antes de confirmar el lote.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Revisa y aprueba</strong>
+                    <p>
+                      Compara cada imagen con el original. Puedes rechazarla o
+                      regenerar con una corrección. Aprobar conserva tu elección
+                      para publicar después.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Publica y sincroniza</strong>
+                    <p>
+                      Guarda la captura revisada para incorporarla a Sheets y al catálogo maestro. Si queda una sincronización pendiente, repárala desde la captura. Un administrador publica las imágenes aprobadas en
+                      WordPress y WooCommerce. El inventario registra cada
+                      movimiento por separado.
+                    </p>
+                  </li>
+                </ol>
+                <p>
+                  Loyverse está preparado como integración futura; su activación
+                  requiere validar credenciales, firma y autoridad de stock.
+                </p>
+                <p>
+                  Si un trabajo queda incierto, comprueba sus archivos y la
+                  tienda antes de autorizar otro intento.
+                </p>
+              </section>
+            )}
+            {session.authenticated && (
+              <button
+                className="button secondary p-logout"
+                disabled={busy}
+                onClick={() =>
+                  attempt(async () => {
+                    await fetch("/logout", {
+                      method: "POST",
+                      credentials: "same-origin",
+                    });
+                    setSession({ authenticated: false });
+                    setDetail(null);
+                    setProducts([]);
+                    setAssets([]);
+                    setJobs([]);
+                    setDashboard(undefined);
+                    setConnections([]);
+                    setEvents([]);
+                    go("home");
+                  })
+                }
+              >
+                <LogOut size={17} />
+                Cerrar sesión
+              </button>
+            )}
+          </>
+        )}
+        {(section === "products" || section === "inventory") &&
+          !ready &&
+          !loading && (
+            session.authenticated ? <div className="p-alert"><Cloud size={18}/><span>Catálogo histórico de Drive · disponible durante la activación de PostgreSQL.</span></div> : <Empty title="Conecta tu catálogo" text="En Más puedes conectar tu cuenta de Google Drive."/>
+          )}
+        <footer className="p-footer">
+          <img src="/logo.png" width={23} height={23} alt="" />
+          <span>El Rincón de Asia · De Asia para tu casa.</span>
+          <small role="status">{reconnecting ? "Reconectando…" : online ? "En línea" : "Sin conexión"}</small>
+        </footer>
+        {busy && (
+          <div className="p-busy" role="status">
+            <Loader2 className="spin" size={18} />
+            Guardando tu operación…
+          </div>
+        )}
+      </main>
+      <input
+        hidden
+        ref={scanRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) attempt(() => scan(f));
+          e.target.value = "";
+        }}
+      />
+      <input
+        hidden
+        ref={referenceRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) attempt(() => uploadReference(f));
+          e.target.value = "";
+        }}
+      />
+      <input
+        hidden
+        ref={importRef}
+        type="file"
+        accept=".csv,.xlsx"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f)
+            attempt(async () => {
+              const data = new FormData();
+              data.append("source", f);
+              setPreview(
+                await api<Preview>("/api/platform/import/file", "POST", data),
+              );
+            });
+          e.target.value = "";
+        }}
+      />
+      {selectedAsset && (
+        <div className="p-modal-backdrop">
+          <div
+            className="p-dialog p-review-dialog"
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-title"
+            tabIndex={-1}
+          >
+            <div className="p-card-title">
+              <div>
+                <h2 id="review-title">Revisar imagen</h2>
+                <p>
+                  {selectedAsset.product_name} · {selectedAsset.sku}
+                </p>
+              </div>
+              <button
+                aria-label="Cerrar revisión"
+                disabled={busy}
+                onClick={() => setSelectedAsset(null)}
+              >
+                <X size={22} />
+              </button>
+            </div>
+            <div className="p-comparison">
+              <figure>
+                <figcaption>Original de referencia</figcaption>
+                {comparison?.images.find((i) => i.role === "reference") ? (
+                  <img
+                    src={pictureUrl(
+                      comparison.images.find((i) => i.role === "reference")!.id,
+                    )}
+                    alt="Producto original"
+                  />
+                ) : (
+                  <p>Sin referencia disponible</p>
+                )}
+              </figure>
+              <figure>
+                <figcaption>
+                  {kinds.find((k) => k.id === selectedAsset.slot)?.label}{" "}
+                  <Badge value={selectedAsset.status} />
+                </figcaption>
+                <img
+                  src={pictureUrl(selectedAsset.image_id)}
+                  alt="Resultado generado"
+                />
+              </figure>
+            </div>
+            <div className="p-button-row">
+              <a
+                className="button secondary"
+                href={pictureUrl(selectedAsset.image_id) + "?download=true"}
+              >
+                <Download size={16} />
+                Descargar
+              </a>
+              <button
+                className="button secondary"
+                onClick={() => {
+                  setSelectedAsset(null);
+                  go("products");
+                  attempt(() => openProduct(selectedAsset.product_id));
+                }}
+              >
+                Ver producto
+              </button>
+              {canEdit && ["approved", "published"].includes(selectedAsset.status) && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Guardar imagen aprobada",
+                    text: "Se guardará en imagenes_generadas con su nombre compatible. Si existe una versión anterior, se conservará un respaldo antes de sustituirla. Publicar en la tienda es otra acción.",
+                    label: "Guardar en Drive",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/save`, {
+                        confirm: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Guardar aprobada en Drive</button>
+              )}
+              {canEdit && (
+                <button className="button secondary" disabled={busy}
+                  onClick={() => ask({
+                    title: "Regenerar un candidato",
+                    text: `1 producto · 1 imagen · ${selectedAsset.provider} · ${selectedAsset.model}. Estimado: ${selectedAsset.estimated_correction_usd != null ? `USD $${selectedAsset.estimated_correction_usd.toFixed(3)}` : "no disponible"}; investigación y revisión pueden añadir consumo. Se usarán las referencias originales y se conservará la imagen anterior.`,
+                    label: "Confirmar generación",
+                    action: async () => {
+                      await durablePost(`/api/platform/assets/${selectedAsset.id}/regenerate`, {
+                        confirm_cost: true,
+                      });
+                      await reloadOperations();
+                      setSelectedAsset(null);
+                    },
+                  })}>Regenerar</button>
+              )}
+            </div>
+            {selectedAsset.metadata_json.qa?.resumen && (
+              <p className="p-muted">
+                Revisión de IA: {selectedAsset.metadata_json.qa.resumen}
+              </p>
+            )}
+            {selectedAsset.metadata_json.brief && (
+              <details className="p-brief">
+                <summary>Escenas y referencias de la investigación</summary>
+                <p>{selectedAsset.metadata_json.brief.note}</p>
+                <p>
+                  {selectedAsset.slot === "2_uso"
+                    ? selectedAsset.metadata_json.brief.lifestyle
+                    : selectedAsset.metadata_json.brief.comercial}
+                </p>
+                {selectedAsset.metadata_json.brief.sources?.map((s) => (
+                  <a key={s.url} href={s.url} rel="noreferrer" target="_blank">
+                    {s.title || s.url}
+                    <ExternalLink size={14} />
+                  </a>
+                ))}
+                {selectedAsset.metadata_json.brief.search_suggestions && (
+                  <iframe
+                    title="Sugerencias de Google Search"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox"
+                    srcDoc={
+                      selectedAsset.metadata_json.brief.search_suggestions
+                    }
+                  />
+                )}
+              </details>
+            )}
+            {canEdit && selectedAsset.status !== "published" && (
+              <>
+                <label className="p-form-field">
+                  Usar como
+                  <select
+                    value={imageRole}
+                    onChange={(e) => setImageRole(e.target.value)}
+                  >
+                    <option value="main">Principal</option>
+                    <option value="gallery">Galería</option>
+                    <option value="lifestyle">Lifestyle</option>
+                    <option value="commercial">Comercial</option>
+                  </select>
+                </label>
+                <div className="p-button-row">
+                  <button
+                    className="button primary"
+                    disabled={busy}
+                    onClick={() => attempt(() => approve("approved"))}
+                  >
+                    <Check size={18} />
+                    Aprobar
+                  </button>
+                  <button
+                    className="button secondary"
+                    disabled={busy}
+                    onClick={() => attempt(() => approve("rejected"))}
+                  >
+                    Rechazar
+                  </button>
+                </div>
+              </>
+            )}
+            {canEdit && (
+              <div className="p-correction">
+                <label className="p-form-field">
+                  Corrección para regenerar
+                  <textarea
+                    rows={3}
+                    maxLength={600}
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    placeholder="Describe qué debe cambiar y qué debe conservar…"
+                  />
+                </label>
+                <p className="p-muted">
+                  Se usarán la imagen anterior y las referencias originales.
+                  Generar una corrección añade consumo de IA.
+                </p>
+                {selectedAsset.history.length > 0 && (
+                  <p>
+                    Correcciones anteriores: {selectedAsset.history.join(" · ")}
+                  </p>
+                )}
+                <button
+                  className="button secondary"
+                  disabled={busy || !workerCanQueue || !feedback.trim()}
+                  onClick={() => {
+                    const asset = selectedAsset;
+                    const correction = feedback;
+                    setSelectedAsset(null);
+                    ask({
+                      title: "Regenerar con corrección",
+                      text: `Se creará una nueva imagen conservando la anterior. Estimación de salida: ${asset.estimated_correction_usd == null ? "tarifa no configurada" : `USD $${asset.estimated_correction_usd.toFixed(3)}`}, más entradas y revisión si aplica. Confirma el consumo adicional.`,
+                      label: "Regenerar",
+                      action: async () => {
+                        await durablePost(
+                          `/api/platform/assets/${asset.id}/correct`,
+                          {
+                            feedback: correction,
+                            confirm_cost: true,
+                          },
+                        );
+                        await reloadOperations();
+                        setGenerationTab("jobs");
+                        setNotice(
+                          "Corrección en cola. La imagen anterior se conserva.",
+                        );
+                      },
+                    });
+                  }}
+                >
+                  <RefreshCw size={18} />
+                  Regenerar con corrección
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {confirm && (
+        <div className="p-modal-backdrop">
+          <div
+            className="p-dialog"
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-title"
+            tabIndex={-1}
+          >
+            <span className="p-stat-icon">
+              <CircleAlert size={24} />
+            </span>
+            <h2 id="confirm-title">{confirm.title}</h2>
+            <p>{confirm.text}</p>
+            {confirm.uncertain && (
+              <label className="p-choice">
+                <input
+                  type="checkbox"
+                  checked={uncertainChecked}
+                  onChange={(e) => setUncertainChecked(e.target.checked)}
+                />
+                <span>
+                  Revisé los archivos y la tienda; autorizar otro intento es
+                  necesario.
+                </span>
+              </label>
+            )}
+            <div className="p-button-row">
+              <button
+                className="button primary"
+                disabled={
+                  busy || !online || (!!confirm.uncertain && !uncertainChecked)
+                }
+                onClick={() =>
+                  attempt(async () => {
+                    await confirm.action();
+                    setConfirm(null);
+                  })
+                }
+              >
+                {busy ? (
+                  <Loader2 className="spin" size={18} />
+                ) : (
+                  <Check size={18} />
+                )}{" "}
+                {confirm.label}
+              </button>
+              <button
+                className="button secondary"
+                disabled={busy}
+                onClick={() => setConfirm(null)}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -50,6 +50,16 @@ class SplitServicesTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('test-secret', response.text)
         self.assertTrue(all(name not in sys.modules for name in ('gradio', 'ai_app', 'pandas', 'google.genai')))
 
+    async def test_native_tool_uses_signed_context_and_returns_json(self):
+        import native_tools
+        with patch('native_tools.inventory', return_value={'ok': True, 'rows': [{'sku': 'TEST'}]}):
+            body, headers = signed('/api/tools/inventory')
+            response = await self.client.post('/internal/tools', content=body, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['rows'], [{'sku': 'TEST'}])
+        self.assertNotIn(CONTEXT['access_token'], response.text)
+        self.assertNotIn('test-secret', response.text)
+
     async def test_reject_unsigned_tampered_expired_replayed_and_unknown_route(self):
         self.assertEqual((await self.client.post('/internal/tools', json={})).status_code, 401)
         body, headers = signed()

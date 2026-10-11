@@ -1,3 +1,5 @@
+# Runtime compartido de OAuth, sesiones, Drive/Sheets y funciones históricas; contiene partes del generador protegidas.
+# Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 # ==========================================
 # IMPORTANTE: estas variables deben quedar ANTES de importar oauthlib,
 # porque la librería las lee al momento de importarse.
@@ -19,7 +21,6 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-import gradio as gr
 from PIL import Image, ImageOps
 Image.MAX_IMAGE_PIXELS = 24_000_000
 
@@ -41,6 +42,11 @@ from pathlib import Path
 from oauth_guard import issue_oauth, consume_oauth, email_allowed
 from google.genai import types
 
+def field_update(**values):
+    """Structured field values used by catalog adapters, independent of the UI."""
+    return values
+
+
 # ==========================================
 # 0. CONFIGURACIÓN INICIAL (variables de entorno / secretos)
 # ==========================================
@@ -53,6 +59,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 
+# Exige una variable de arranque y falla sin mostrar su valor secreto.
 def _env_requerida(nombre):
     valor = os.environ.get(nombre)
     if not valor:
@@ -74,6 +81,8 @@ DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/drive",
 ]
+if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
+    DRIVE_SCOPES=["openid","https://www.googleapis.com/auth/userinfo.email"]
 
 CLIENT_CONFIG = {
     "web": {
@@ -114,7 +123,7 @@ COLUMNAS_LISTA_VARIABLE = [
     'short_description', 'description', 'etiquetas'
 ]
 
-CATEGORIAS_DEFECTO = ["Alimentos", "Bebidas", "K-Pop", "Cosméticos"]
+CATEGORIAS_DEFECTO = ["Abarrotes", "Bebidas", "Cocina y Accesorios", "Dulces", "Snacks", "Ramen e Instantáneo", "Merch-store"]
 SUBCATEGORIAS_DEFECTO = ["Snacks", "Ramen", "Refrescos", "Cuidado Facial"]
 
 # ==========================================
@@ -237,10 +246,25 @@ def _construir_correccion(errores_seleccionados, texto_libre, historial):
 SESSIONS = {}
 
 
+# Genera el identificador aleatorio que recibirá la cookie de sesión.
 def _nueva_session_id():
     return secrets.token_urlsafe(32)
 
 
+# Revoca la sesión SQL, retira su copia local y limpia solo temporales de esa sesión.
+def _eliminar_sesion(session_id):
+    from catalog_platform.web_sessions import revoke
+    revoke(session_id)
+    session = SESSIONS.pop(session_id, None)
+    namespace = (session or {}).get("file_namespace", "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,80}", namespace):
+        for path in Path("/tmp").glob(namespace + "_*"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+
+
+# Actualiza el registro en memoria y persiste la sesión cuando el almacén durable está
+# disponible.
 def _guardar_sesion(clave_sesion, **kwargs):
     """Crea o actualiza una sesión y conserva su ID dentro del registro.
 
@@ -253,16 +277,20 @@ def _guardar_sesion(clave_sesion, **kwargs):
         now = time.time()
         for key, session in list(SESSIONS.items()):
             if session.get("expires_at", now + 1) < now:
-                SESSIONS.pop(key, None)
+                _eliminar_sesion(key)
         if len(SESSIONS) >= 500:
             raise RuntimeError("Servicio ocupado. Vuelve a conectar Drive en unos minutos.")
         SESSIONS[clave_sesion] = {}
-    SESSIONS[clave_sesion].update(kwargs)
-    SESSIONS[clave_sesion]["session_id"] = clave_sesion
-    SESSIONS[clave_sesion]["expires_at"] = time.time() + 8 * 3600
+    from catalog_platform.web_sessions import save
+    value = dict(SESSIONS[clave_sesion], **kwargs)
+    value["session_id"] = clave_sesion
+    value["expires_at"] = time.time() + 8 * 3600
+    save(clave_sesion, value)
+    SESSIONS[clave_sesion].update(value)
 
 
-def _obtener_sesion(request: gr.Request):
+# Obtiene la sesión validada desde la cookie y retira sesiones caducadas.
+def _obtener_sesion(request: FastAPIRequest):
     if request is None:
         return None
     session_id = request.cookies.get("session_id")
@@ -270,12 +298,13 @@ def _obtener_sesion(request: gr.Request):
         return None
     session = SESSIONS[session_id]
     if session.get("expires_at", 0) <= time.time():
-        SESSIONS.pop(session_id, None)
+        _eliminar_sesion(session_id)
         return None
     return session
 
 
-def _validar_sesion(request: gr.Request, requiere_api_key=True):
+# Devuelve sesión o error de acceso para las funciones compatibles.
+def _validar_sesion(request: FastAPIRequest, requiere_api_key=True):
     """Devuelve (sesion, mensaje_error). Si mensaje_error no es None, hay que abortar."""
     sesion = _obtener_sesion(request)
     if not sesion:
@@ -288,10 +317,12 @@ def _validar_sesion(request: gr.Request, requiere_api_key=True):
 # ==========================================
 # 1. RUTAS DE AUTENTICACIÓN (FastAPI + OAuth de Google)
 # ==========================================
-fastapi_app = FastAPI()
+fastapi_app = FastAPI(title="El Rincón de Asia · Suite e-commerce", docs_url=None, redoc_url=None, openapi_url=None)
 fastapi_app.mount("/suite-static", StaticFiles(directory=STATIC_DIR), name="suite-static")
 
 
+# Emite estado/PKCE y redirige a Google; el frontend actual llega aquí por /auth/start
+# después de comprobar salud.
 @fastapi_app.get("/login")
 def login():
     flow = Flow.from_client_config(CLIENT_CONFIG, scopes=DRIVE_SCOPES, redirect_uri=GOOGLE_REDIRECT_URI, autogenerate_code_verifier=True)
@@ -315,6 +346,8 @@ def login():
     return resp
 
 
+# Consume estado una vez, intercambia el código, valida cuenta y crea cookie/sesión segura
+# antes de volver al frontend.
 @fastapi_app.get("/auth/callback")
 def auth_callback(request: FastAPIRequest):
     """Intercambia el 'code' por el token.
@@ -350,7 +383,7 @@ def auth_callback(request: FastAPIRequest):
         email = info_usuario.get("email", "")
         if not email or info_usuario.get("verified_email") is not True or not email_allowed(email):
             return PlainTextResponse("Cuenta no autorizada", status_code=403)
-        SESSIONS.pop(request.cookies.get("session_id"), None)
+        _eliminar_sesion(request.cookies.get("session_id"))
 
         session_id = _nueva_session_id()
         _guardar_sesion(
@@ -374,12 +407,12 @@ def auth_callback(request: FastAPIRequest):
         return PlainTextResponse("No pude completar el acceso a Google. Vuelve a conectar Drive.", status_code=500)
 
 
-@fastapi_app.get("/logout")
+# Revoca la sesión y elimina la cookie mediante una solicitud explícita.
+@fastapi_app.post("/logout")
 def logout(request: FastAPIRequest):
     session_id = request.cookies.get("session_id")
-    if session_id in SESSIONS:
-        del SESSIONS[session_id]
-    resp = RedirectResponse(url="/")
+    _eliminar_sesion(session_id)
+    resp = RedirectResponse(url="/", status_code=303)
     resp.delete_cookie("session_id", path="/")
     return resp
 
@@ -387,23 +420,34 @@ def logout(request: FastAPIRequest):
 # ==========================================
 # 2. UTILIDADES DE GOOGLE DRIVE (por usuario)
 # ==========================================
+# Construye el cliente Drive con las credenciales del usuario autenticado.
 def _get_drive_service(sesion):
+    from google_credentials import dedicated_credentials
+    from drive_service import DriveService
+    dedicated=dedicated_credentials()
+    if dedicated:
+        return DriveService(build("drive","v3",credentials=dedicated,cache_discovery=False),os.environ["GOOGLE_DRIVE_FOLDER_ID"])
     creds = Credentials.from_authorized_user_info(sesion["creds"], DRIVE_SCOPES)
     if creds.expired and creds.refresh_token:
         creds.refresh(GoogleAuthRequest())
         sesion["creds"] = json.loads(creds.to_json())
-    return build("drive", "v3", credentials=creds)
+    from drive_service import DriveService
+    return DriveService(build("drive", "v3", credentials=creds, cache_discovery=False))
 
 
+# Construye el cliente Sheets con la misma conexión Google de la sesión.
 def _get_sheets_service(sesion):
     """Cliente de Google Sheets usando las mismas credenciales de Drive."""
-    creds = Credentials.from_authorized_user_info(sesion["creds"], DRIVE_SCOPES)
-    if creds.expired and creds.refresh_token:
+    from google_credentials import dedicated_credentials
+    creds = dedicated_credentials() or Credentials.from_authorized_user_info(sesion["creds"], DRIVE_SCOPES)
+    if creds.expired and getattr(creds,"refresh_token",None):
         creds.refresh(GoogleAuthRequest())
         sesion["creds"] = json.loads(creds.to_json())
     return build("sheets", "v4", credentials=creds)
 
 
+# Resuelve o crea una carpeta en el flujo histórico de preparación; no usar como lectura de
+# taxonomía.
 def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     query = f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     query += f" and '{parent_id}' in parents" if parent_id else " and 'root' in parents"
@@ -418,6 +462,7 @@ def _buscar_o_crear_carpeta(service, nombre, parent_id=None):
     return carpeta['id']
 
 
+# Busca un archivo existente por nombre, carpeta y tipo MIME.
 def _buscar_archivo(service, nombre, parent_id, mime_type=None):
     query = f"name = '{nombre}' and '{parent_id}' in parents and trashed = false"
     if mime_type:
@@ -1115,6 +1160,8 @@ def _migrar_csv_legacy(service, sheets_service, carpeta_raiz_id, spreadsheet_id,
     return len(filas)
 
 
+# Prepara la estructura histórica Drive/Sheets; puede escribir, por eso la clasificación usa
+# un lector separado.
 def _preparar_estructura(service, sesion=None):
     """Asegura carpetas, imágenes y un Google Sheet nativo con formato Gabo nueva.
 
@@ -1122,7 +1169,20 @@ def _preparar_estructura(service, sesion=None):
     """
     if not sesion:
         raise RuntimeError("No hay una sesión de Google disponible.")
-    carpeta_manual = sesion.get("carpeta_raiz_id_manual")
+    carpeta_manual = sesion.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if os.getenv("DATABASE_URL") and carpeta_manual:
+        # Preserve the operational Sheet during the SQL transition. Discovery
+        # must not create or synchronize existing sheets on a read request.
+        if hasattr(service, "root_id"):
+            service.root_id = carpeta_manual
+        images=_buscar_archivo(service,NOMBRE_SUBCARPETA_IMAGENES,carpeta_manual,"application/vnd.google-apps.folder")
+        sheet=os.getenv("GOOGLE_SHEET_ID") or _buscar_archivo(service,NOMBRE_GOOGLE_SHEET,carpeta_manual,"application/vnd.google-apps.spreadsheet")
+        if os.getenv("GOOGLE_SHEET_ID"):
+            from drive_service import DriveService
+            boundary = DriveService(service, carpeta_manual)
+            if not boundary.owns(sheet) or boundary.metadata(sheet).get("mimeType") != "application/vnd.google-apps.spreadsheet":
+                raise ValueError("GOOGLE_SHEET_ID no es una hoja nativa de la carpeta autorizada.")
+        return carpeta_manual,images,sheet,_buscar_archivo(service,NOMBRE_LOGO,carpeta_manual)
     if carpeta_manual:
         carpeta_raiz_id = carpeta_manual
     else:
@@ -1149,11 +1209,12 @@ def _preparar_estructura(service, sesion=None):
         except Exception as e:
             # El inventario principal sigue disponible; el usuario verá el error
             # al guardar si la sincronización vuelve a fallar.
-            print(f"⚠️ No se pudo sincronizar '{NOMBRE_HOJA_VARIABLE}': {e}")
+            print(f"⚠️ No se pudo sincronizar '{NOMBRE_HOJA_VARIABLE}': {type(e).__name__}")
     logo_id = _buscar_archivo(service, NOMBRE_LOGO, carpeta_raiz_id)
     return carpeta_raiz_id, carpeta_imagenes_id, spreadsheet_id, logo_id
 
 
+# Extrae un ID de carpeta de una URL Drive o de un ID introducido por el usuario.
 def _extraer_folder_id(texto):
     """Acepta una URL de carpeta de Drive o un ID puro y devuelve el ID."""
     if not texto:
@@ -1168,6 +1229,7 @@ def _extraer_folder_id(texto):
     return texto  # asumimos que ya nos pasaron el ID directamente
 
 
+# Lee filas de la hoja canónica mediante Sheets y las devuelve como tabla por encabezados.
 def _leer_google_sheet(sheets_service, spreadsheet_id):
     resultado = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
@@ -1185,6 +1247,7 @@ def _leer_google_sheet(sheets_service, spreadsheet_id):
     return pd.DataFrame(filas, columns=COLUMNAS_INVENTARIO)
 
 
+# Añade una fila del guardado histórico respetando columnas y sincronización existente.
 def _agregar_fila_google_sheet(sesion, spreadsheet_id, registro):
     sheets_service = _get_sheets_service(sesion)
     fila = _fila_formato_gabo(registro)
@@ -1211,6 +1274,8 @@ def _agregar_fila_google_sheet(sesion, spreadsheet_id, registro):
     return spreadsheet_id
 
 
+# Obtiene el inventario compatible de la sesión; puede preparar estructura, no sirve para una
+# lectura sin escrituras.
 def _cargar_df(sesion):
     service = _get_drive_service(sesion)
     _, _, spreadsheet_id, _ = _preparar_estructura(service, sesion)
@@ -1219,6 +1284,17 @@ def _cargar_df(sesion):
 
 
 def _subir_imagen_drive(service, carpeta_imagenes_id, nombre_archivo, ruta_local):
+    from drive_service import DriveService
+    if os.getenv("STUDIO_IMAGE_JOBS") == "worker" and isinstance(service, DriveService):
+        # Preserve the capture adapter and canonical ID, adding a backup only
+        # for the explicitly enabled separated mode before any replacement.
+        import hashlib
+        digest = hashlib.sha256()
+        with open(ruta_local, "rb") as stream:
+            for chunk in iter(lambda: stream.read(512 * 1024), b""):
+                digest.update(chunk)
+        return service.save_approved(ruta_local, nombre_archivo, carpeta_imagenes_id,
+                                     "capture-" + digest.hexdigest())["id"]
     media = MediaFileUpload(ruta_local, mimetype='image/jpeg', resumable=False)
     existente_id = _buscar_archivo(service, nombre_archivo, carpeta_imagenes_id)
     if existente_id:
@@ -1257,6 +1333,8 @@ def limpiar_texto_sku(texto):
     return texto.upper()
 
 
+# Respaldo aceptado de diez caracteres: marca 3, nombre 3 y gramaje 4; se usa cuando no hay
+# código válido.
 def generar_sku_logica(nombre, marca, gramaje):
     """Genera un SKU de EXACTAMENTE 10 caracteres: Marca (3) + Nombre (3) + Gramaje (4).
     Si algún segmento es más corto, se rellena con 'X'; si es más largo, se recorta."""
@@ -1406,7 +1484,7 @@ def estimar_etiquetas_producto(nombre, marca, categoria, subcategoria, descripci
         return []
 
 
-def recalcular_etiquetas_ui(nombre, marca, categoria, subcategoria, descripcion, request: gr.Request):
+def recalcular_etiquetas_ui(nombre, marca, categoria, subcategoria, descripcion, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
         return ""
@@ -1416,7 +1494,7 @@ def recalcular_etiquetas_ui(nombre, marca, categoria, subcategoria, descripcion,
     return ", ".join(etiquetas)
 
 
-def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr.Request):
+def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: FastAPIRequest):
     """Búsqueda tipo Google Lens: sube la foto del producto y usa Gemini (visión +
     Búsqueda de Google) para detectar si el MISMO producto existe en otros
     gramajes/tamaños en el mercado."""
@@ -1491,29 +1569,12 @@ def buscar_variantes_por_imagen(imagen, nombre_actual, marca_actual, request: gr
 
 
 def investigar_prompts(producto, marca, desc, api_key):
-    prompt = (
-        "Return JSON {lifestyle,comercial}, English strings <=80 words each. Describe only setting, "
-        "lighting and camera for this product. Lifestyle: realistic use context. Commercial: premium studio. "
-        "Both: square, one complete reference product, unobstructed front; props separate; no people, hands, "
-        "added text/logos or extracted artwork. Never redesign packaging. Product data: "
-        + json.dumps({"product": str(producto)[:180], "brand": str(marca)[:120],
-                      "context": str(desc or "")[:1000]}, ensure_ascii=False)
-    )
+    from creative_pipeline import brief, fallback_brief
+    product = {"name": producto, "brand": marca, "description": desc}
     try:
-        client = GeminiClient(api_key=api_key)
-        res = client.models.generate_content(model=MODELO_TEXTO, contents=prompt, config=text_config(768, model=MODELO_TEXTO))
-        return _extraer_json(res.text)
+        return brief(GeminiClient(api_key), product)
     except Exception:
-        return {
-            "lifestyle": (
-                f"Natural lifestyle still life of the exact {producto}, fully visible and unobstructed beside "
-                f"a believable serving or use context, soft daylight, no people or hands, 1:1 square."
-            ),
-            "comercial": (
-                f"Premium commercial studio still life of the exact {producto} by {marca}; restrained relevant "
-                f"props around but never over the product, no floating text or logos, 1:1 square."
-            ),
-        }
+        return fallback_brief(product)
 
 
 def _rutas_referencia(ruta_base):
@@ -1527,37 +1588,21 @@ def _configuracion_imagen_cuadrada():
     """Fuerza 1:1 en la API; conserva compatibilidad con SDKs antiguos."""
     try:
         return types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
+            response_modalities=["TEXT", "IMAGE"],
             image_config=types.ImageConfig(aspect_ratio="1:1"),
         )
     except (AttributeError, TypeError):
-        return types.GenerateContentConfig(response_modalities=["IMAGE"])
+        return types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
 
 
 def _contrato_visual(slot):
-    regla_escena = {
-        "1_hd": (
-            "Use a perfectly uniform pure white #FFFFFF background. Keep the complete product centered, "
-            "front-facing and occupying roughly 65% to 78% of the canvas. Only a subtle contact shadow is allowed."
-        ),
-        "2_uso": (
-            "Create a believable use-context still life. Keep the complete reference product standing separately "
-            "in the foreground with its identity-bearing face visible. No people or hands. Props may not touch, "
-            "cover, pass behind, or pass in front of the product."
-        ),
-        "3_comercial": (
-            "Create a premium commercial still life. Relevant props may surround the product but must never cross "
-            "or cover it. Do not extract package artwork, characters, logos or words as floating scene elements."
-        ),
-    }.get(slot, "Keep the complete product unobstructed and centered.")
-    return (
-        "\nPRODUCT FIDELITY OVERRIDES ALL STYLING/FEEDBACK: copy the reference, never redesign it. "
-        "Preserve object count/set, full silhouette, proportions, materials, closures, seams, colors, artwork, "
-        "characters, brand, flavor, weight, numbers and text layout. Keep unreadable text as its original texture; "
-        "never invent letters. No added/removed labels, seals, badges, logos, watermarks, barcodes or certifications. "
-        "One complete product/set: no crop, occlusion, duplicate or alternate presentation. "
-        + regla_escena + " Sharp, native square 1:1, minimum 1024x1024."
-    )
+    from creative_pipeline import FIDELITY
+    scenes = {
+        "1_hd": "Pure white seamless catalog backdrop, full product centered.",
+        "2_uso": "Visible adults must actively consume or correctly use this product. Allow natural hands and interaction; preserve recognizable packaging.",
+        "3_comercial": "Artistically decorate the hero product with original illustration, expressive colors, movement and depth; keep the real package unchanged.",
+    }
+    return FIDELITY + scenes.get(slot, "Keep product recognizable.")
 
 
 def _validacion_local_imagen(ruta_imagen):
@@ -1591,8 +1636,8 @@ def _validar_con_vision(client, archivos_referencia, ruta_generada, slot):
             "geometry, material, color, closure, logo, character, artwork, label, readable wording, flavor, weight, "
             "number, certification mark or text layout. Reject invented or missing package elements, extra packages, "
             "product crop/occlusion, blur, or a non-square canvas. Tiny unreadable source text may remain unreadable, "
-            "but it may not become invented legible text. For lifestyle/commercial images, scene props are allowed only "
-            "outside the product and may not be copied package artwork or floating logos. "
+            "but it may not become invented legible text. Lifestyle requires adults actively using/consuming the product; natural hands, contact and opened food are allowed. Commercial allows original artistic decoration. Scene elements may be "
+            "around the product without obscuring its identity; do not reject people or original decorative illustration. "
             f"Image type: {slot}. Return ONLY strict JSON with keys: "
             "'aprobada' (boolean), 'puntuacion' (integer 0-100), 'errores' (array of concise English correction "
             "instructions), and 'resumen' (short Spanish explanation for the user). Approve only if score is at least "
@@ -1725,13 +1770,13 @@ def generar_foto_individual(prompt, ruta_base, ruta_salida_local, api_key, servi
         return {"ruta": None, "intentos": 0, "resumen": f"Falló el servicio de imágenes ({type(e).__name__}). Revisa cuota, permisos del modelo y conexión."}
 
 
-def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Request):
+def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
-        return [error, "", "", "", "", 0, "Simple", gr.update(visible=False), "", "", "", "", "", None]
+        return [error, "", "", "", "", 0, "Simple", field_update(visible=False), "", "", "", "", "", None]
     if imagen_1 is None:
         return ["❌ Sube al menos la foto principal.", "", "", "", "", 0, "Simple",
-                gr.update(visible=False), "", "", "", "", "", None]
+                field_update(visible=False), "", "", "", "", "", None]
 
     sesion["capture_revision"] = secrets.token_urlsafe(18)
     sesion.pop("product_images", None)
@@ -1787,7 +1832,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
         datos = _extraer_json(res_datos.text)
     except Exception as e:
         return [f"❌ Error leyendo imagen: {type(e).__name__}", "", "", "", "", 0, "Simple",
-                gr.update(visible=False), "", "", "", "", "", None]
+                field_update(visible=False), "", "", "", "", "", None]
 
     nombre = datos.get("nombre", "Producto Desconocido")
     marca = datos.get("marca", "Genérica")
@@ -1811,7 +1856,7 @@ def modulo_extraer_textos(imagen_1, imagen_2, descripcion_breve, request: gr.Req
     return [
         "✅ Textos, precio y etiquetas sugeridas. Verifica SKU, Categorías, Precio y Etiquetas.",
         sku_gen, nombre, marca, gramaje, precio_sugerido, "Simple",
-        gr.update(visible=False), cat_final, subcat_final,
+        field_update(visible=False), cat_final, subcat_final,
         clean_description(datos.get("desc_corta", ""), short=True), clean_description(datos.get("desc_larga", "")),
         etiquetas_str,
         rutas_base_memoria
@@ -1838,12 +1883,12 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
     revision = sesion.get("capture_revision")
 
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(sku)):
-        return gr.update(), historial_nuevo, "❌ SKU inválido: usa letras, números, guion o guion bajo."
+        return field_update(), historial_nuevo, "❌ SKU inválido: usa letras, números, guion o guion bajo."
     nombre_archivo = f"{sku}_{slot}.jpg"
     token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
     rutas = _rutas_referencia(ruta_base)
     if not rutas or any(not Path(r).name.startswith(token_sesion + "_") or Path(r).parent != Path("/tmp") for r in rutas):
-        return gr.update(), historial_nuevo, "❌ Referencia de imagen inválida para esta sesión."
+        return field_update(), historial_nuevo, "❌ Referencia de imagen inválida para esta sesión."
     ruta_local = f"/tmp/{token_sesion}_{sku}_{slot}_{secrets.token_urlsafe(12)}.jpg"
 
     resultado = generar_foto_individual(
@@ -1851,11 +1896,11 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
         slot=slot, correccion=correccion
     )
     if not resultado:
-        return gr.update(), historial_nuevo, "❌ La IA no devolvió imagen. Intenta de nuevo o ajusta el feedback."
+        return field_update(), historial_nuevo, "❌ La IA no devolvió imagen. Intenta de nuevo o ajusta el feedback."
     if not resultado.get("ruta"):
         detalle = resultado.get("resumen") or "No conservó fielmente el producto."
         return (
-            gr.update(),
+            field_update(),
             historial_nuevo,
             f"⚠️ La imagen NO se guardó: fue rechazada automáticamente después de "
             f"{resultado.get('intentos', MAX_INTENTOS_IMAGEN)} intentos. {detalle}",
@@ -1870,7 +1915,7 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
     return ruta_aprobada, historial_nuevo, mensaje
 
 
-def rehacer_hd(ruta_base, sku, errores, feedback, historial, request: gr.Request):
+def rehacer_hd(ruta_base, sku, errores, feedback, historial, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
         return None, historial, error
@@ -1879,7 +1924,7 @@ def rehacer_hd(ruta_base, sku, errores, feedback, historial, request: gr.Request
     return _rehacer_generico("1_hd", PROMPT_HD, ruta_base, sku, errores, feedback, historial, sesion)
 
 
-def rehacer_life(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: gr.Request):
+def rehacer_life(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
         return None, historial, error
@@ -1889,7 +1934,7 @@ def rehacer_life(ruta_base, sku, nombre, marca, desc, errores, feedback, histori
     return _rehacer_generico("2_uso", prompts['lifestyle'], ruta_base, sku, errores, feedback, historial, sesion)
 
 
-def rehacer_comercial(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: gr.Request):
+def rehacer_comercial(ruta_base, sku, nombre, marca, desc, errores, feedback, historial, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
         return None, historial, error
@@ -1899,7 +1944,7 @@ def rehacer_comercial(ruta_base, sku, nombre, marca, desc, errores, feedback, hi
     return _rehacer_generico("3_comercial", prompts['comercial'], ruta_base, sku, errores, feedback, historial, sesion)
 
 
-def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request):
+def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: FastAPIRequest):
     """Primera pasada: sin correcciones y reseteando el historial de feedback."""
     sesion, error = _validar_sesion(request)
     if error:
@@ -1909,7 +1954,7 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
         yield "❌ Extrae los textos primero", None, None, None, [], [], []
         return
 
-    outputs = [gr.update(), gr.update(), gr.update()]
+    outputs = [field_update(), field_update(), field_update()]
     messages = []
     yield "📸 Preparando las tres imágenes…", *outputs, [], [], []
     # One prompt request for both scenes instead of repeating it per photo.
@@ -1921,15 +1966,16 @@ def modulo_generar_todo(ruta_base, sku, nombre, marca, desc, request: gr.Request
         try:
             output, _, message = _rehacer_generico(slot, prompt, ruta_base, sku, [], "", [], sesion)
         except Exception as exc:
-            output, message = gr.update(), f"❌ Imagen {index + 1}: {type(exc).__name__}. Reintenta solo esta imagen."
+            output, message = field_update(), f"❌ Imagen {index + 1}: {type(exc).__name__}. Reintenta solo esta imagen."
         outputs[index] = output
         messages.append(message)
     yield "\n".join(messages), *outputs, [], [], []
 
 
+# Guarda la ficha confirmada con su tipo, padre y campos en el inventario histórico.
 def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, atributo_nombre,
                            atributo_valor, precio, cat, subcat, etiquetas,
-                           desc_corta, desc_larga, request: gr.Request):
+                           desc_corta, desc_larga, request: FastAPIRequest):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
         return error
@@ -1977,7 +2023,7 @@ def guardar_producto_sheet(sku, tipo, sku_padre, nombre, marca, gramaje, atribut
         return f"❌ Error al guardar en Google Sheets: {e}"
 
 
-def detectar_padre(nombre_actual, marca_actual, request: gr.Request):
+def detectar_padre(nombre_actual, marca_actual, request: FastAPIRequest):
     """Busca en TU inventario ya guardado (no en internet) un producto existente
     parecido a este, para detectar de cuál SKU es variante. Si primero filtramos
     por la misma marca, la comparación de nombres es más precisa (dos productos de
@@ -2018,28 +2064,28 @@ def detectar_padre(nombre_actual, marca_actual, request: gr.Request):
         return "No detectado"
 
 
-def cambio_tipo_ui(tipo_seleccionado, nombre_actual, marca_actual, request: gr.Request):
+def cambio_tipo_ui(tipo_seleccionado, nombre_actual, marca_actual, request: FastAPIRequest):
     if tipo_seleccionado == "Variable":
         padre_detectado = detectar_padre(nombre_actual, marca_actual, request)
-        return gr.update(visible=True, value=padre_detectado)
-    return gr.update(visible=False, value="")
+        return field_update(visible=True, value=padre_detectado)
+    return field_update(visible=False, value="")
 
 
-def aplicar_recomendacion_tipo(tipo_recomendado, nombre_actual, marca_actual, request: gr.Request):
+def aplicar_recomendacion_tipo(tipo_recomendado, nombre_actual, marca_actual, request: FastAPIRequest):
     """Se dispara directo desde el botón 'Aplicar recomendación' de la pestaña Lens.
     A diferencia de antes, esto YA busca el SKU padre de inmediato en vez de esperar
     a que el cambio de valor de in_tipo dispare otro evento por su cuenta."""
     if tipo_recomendado == "Variable":
         padre_detectado = detectar_padre(nombre_actual, marca_actual, request)
-        return gr.update(value="Variable"), gr.update(visible=True, value=padre_detectado)
-    return gr.update(value="Simple"), gr.update(visible=False, value="")
+        return field_update(value="Variable"), field_update(visible=True, value=padre_detectado)
+    return field_update(value="Simple"), field_update(visible=False, value="")
 
 
 def recalcular_sku_ui(nombre, marca, gramaje):
     return generar_sku_logica(nombre, marca, gramaje)
 
 
-def recalcular_precio_ui(nombre, marca, gramaje, categoria, request: gr.Request):
+def recalcular_precio_ui(nombre, marca, gramaje, categoria, request: FastAPIRequest):
     sesion, error = _validar_sesion(request)
     if error:
         return 0
@@ -2047,7 +2093,7 @@ def recalcular_precio_ui(nombre, marca, gramaje, categoria, request: gr.Request)
     return datos_precio.get("precio_sugerido", 0)
 
 
-def obtener_categorias(request: gr.Request):
+def obtener_categorias(request: FastAPIRequest):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
         return CATEGORIAS_DEFECTO
@@ -2059,7 +2105,7 @@ def obtener_categorias(request: gr.Request):
         return CATEGORIAS_DEFECTO
 
 
-def obtener_subcategorias(request: gr.Request):
+def obtener_subcategorias(request: FastAPIRequest):
     sesion, error = _validar_sesion(request, requiere_api_key=False)
     if error:
         return SUBCATEGORIAS_DEFECTO
@@ -2074,7 +2120,7 @@ def obtener_subcategorias(request: gr.Request):
 # ==========================================
 # 5.1 ESTADO DE LOGIN / CONFIGURACIÓN
 # ==========================================
-def _estado_login_html(request: gr.Request):
+def _estado_login_html(request: FastAPIRequest):
     sesion = _obtener_sesion(request)
     if sesion:
         email = html_lib.escape(str(sesion.get("email", "tu cuenta")))
@@ -2100,7 +2146,7 @@ def _estado_login_html(request: gr.Request):
     )
 
 
-def cargar_estado_inicial(request: gr.Request):
+def cargar_estado_inicial(request: FastAPIRequest):
     html = _estado_login_html(request)
     cats, subcats = CATEGORIAS_DEFECTO, SUBCATEGORIAS_DEFECTO
     session = _obtener_sesion(request)
@@ -2111,37 +2157,38 @@ def cargar_estado_inicial(request: gr.Request):
             subcats = df["subcategoria"].dropna().unique().tolist() or subcats
         except Exception:
             pass
-    return html, gr.update(choices=cats), gr.update(choices=subcats)
+    return html, field_update(choices=cats), field_update(choices=subcats)
 
 
-def guardar_api_key(api_key_input, request: gr.Request):
+# Guarda la clave Gemini en la sesión/configuración compatible sin imprimirla.
+def guardar_api_key(api_key_input, request: FastAPIRequest):
     sesion = _obtener_sesion(request)
     if not sesion:
         return (
             "❌ Primero conéctate con Google Drive.",
             _estado_login_html(request),
-            gr.update(value=""),
+            field_update(value=""),
         )
     clave = str(api_key_input or "").strip()
     if not clave:
         return (
             "❌ Ingresa una clave válida.",
             _estado_login_html(request),
-            gr.update(value=""),
+            field_update(value=""),
         )
     _guardar_sesion(request.cookies.get("session_id"), gemini_key=clave)
     return (
         "✅ Clave guardada solo en esta sesión. El consumo se cobrará al proyecto de Google del cliente.",
         _estado_login_html(request),
-        gr.update(value=""),
+        field_update(value=""),
     )
 
 
-def refrescar_categorias(request: gr.Request):
-    return gr.update(choices=obtener_categorias(request)), gr.update(choices=obtener_subcategorias(request))
+def refrescar_categorias(request: FastAPIRequest):
+    return field_update(choices=obtener_categorias(request)), field_update(choices=obtener_subcategorias(request))
 
 
-def guardar_carpeta_personalizada(texto_carpeta, request: gr.Request):
+def guardar_carpeta_personalizada(texto_carpeta, request: FastAPIRequest):
     sesion = _obtener_sesion(request)
     if not sesion:
         return "❌ Primero conéctate con Google Drive.", _estado_login_html(request)
@@ -2213,405 +2260,10 @@ def guardar_carpeta_personalizada(texto_carpeta, request: gr.Request):
 def limpiar_feedback():
     """Después de mandar el feedback, limpia los checkboxes y el texto libre
     (el historial se conserva en el State)."""
-    return gr.update(value=[]), gr.update(value="")
+    return field_update(value=[]), field_update(value="")
 
 
 # ==========================================
 # 6. INTERFAZ GRÁFICA
 # ==========================================
-def _sonido_inicio(task):
-    return "(...args) => { window.suiteGenerationSound?.start(" + json.dumps(task) + "); return args; }"
-
-
-def _sonido_fin(task):
-    return "() => { window.suiteGenerationSound?.finish(" + json.dumps(task) + "); }"
-
-
-TUTORIAL_HEAD = """
-<link rel="stylesheet" href="/suite-static/tutorial.css?v=2">
-<script defer src="/suite-static/tutorial.js?v=2"></script>
-<script defer src="/suite-static/generation-sounds.js?v=1"></script>
-"""
-
 captura = ProductCapture(globals())
-
-with gr.Blocks(title="Suite e-commerce") as demo:
-    memoria_portada_padre = gr.State(None)
-    memoria_ruta_base = gr.State(None)
-    # Historial de correcciones por cada slot de imagen
-    hist_1 = gr.State([])
-    hist_2 = gr.State([])
-    hist_3 = gr.State([])
-
-    gr.Markdown("# 🛒 Suite Ecommerce (SEO, Precios, IA y Variantes)", elem_id="tour-app-title")
-    btn_tutorial = gr.Button(
-        "🧭 VER TUTORIAL GUIADO",
-        variant="primary",
-        size="lg",
-        elem_id="tour-launcher",
-    )
-    estado_login = gr.HTML(elem_id="tour-login-status")
-
-    btn_ajustes = gr.Button("⚙️ Ajustes · API key y Drive", elem_id="settings-shortcut")
-    with gr.Tabs() as main_tabs:
-        # ==================================
-        # PESTAÑA 0: CONFIGURACIÓN
-        # ==================================
-        with gr.Tab("⚙️ Configuración"):
-            gr.Markdown(
-                "### 1. Conecta el Google Drive del cliente\n"
-                "Cada cuenta usa su propia carpeta. Si recibiste el paquete, súbelo completo "
-                "a Drive o usa directamente la carpeta compartida.\n\n"
-                "### 2. Configura la clave y facturación de Gemini\n"
-                "Crea la clave en [Google AI Studio](https://aistudio.google.com/apikey) y activa "
-                "la facturación/Paid tier en el proyecto del cliente cuando corresponda. La clave "
-                "se guarda solamente en la sesión del servidor; no se escribe en Drive ni GitHub.",
-                elem_id="tour-config-intro",
-            )
-            gr.HTML("<a href='/login'><b>🔐 Conectar / Reconectar con Google Drive</b></a>")
-            in_api_key = gr.Textbox(
-                label="Tu API Key de Gemini (Google AI Studio)",
-                type="password",
-                elem_id="tour-api-key",
-            )
-            btn_guardar_key = gr.Button("💾 Guardar API Key", variant="primary")
-            estado_config = gr.Textbox(label="Estado", interactive=False)
-            btn_refrescar_cats = gr.Button("🔄 Actualizar categorías desde mi Drive", size="sm")
-
-            gr.Markdown(
-                "### 3. Selecciona y valida la carpeta del cliente\n"
-                "Pega el enlace de la carpeta que contiene una hoja nativa `inventario_completo` "
-                "o el archivo `inventario_completo.xlsx`. Si es XLSX/ODS/CSV, la app crea una hoja "
-                "nativa dentro de la misma carpeta y conserva el archivo original como respaldo. "
-                "La subcarpeta `imagenes_generadas` se usa siempre dentro de esa misma carpeta."
-            )
-            in_carpeta = gr.Textbox(
-                label="Enlace o ID de tu carpeta de Drive",
-                placeholder="https://drive.google.com/drive/folders/XXXXXXXXXXXXXXXX",
-                elem_id="tour-folder",
-            )
-            btn_guardar_carpeta = gr.Button("📂 Validar y usar esta carpeta", variant="primary")
-
-        # ==================================
-        # PESTAÑA 1: INGRESO Y EDICIÓN
-        # ==================================
-        with gr.Tab("1. Ingreso y Edición de Productos"):
-            estado = gr.Textbox(label="Consola de Sistema", interactive=False, lines=4)
-            sonidos = gr.Checkbox(value=True, label="Sonidos al iniciar y finalizar la generación")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("### 1. Imágenes y Análisis")
-                    img1 = gr.Image(
-                        label="Foto Frontal",
-                        type="filepath",
-                        sources=["upload", "webcam", "clipboard"],
-                        elem_id="tour-upload-front",
-                        format="jpeg",
-                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}),
-                    )
-                    img2 = gr.Image(label="Foto Reverso (Opcional)", type="filepath", sources=["upload", "webcam", "clipboard"], format="jpeg", elem_id="tour-upload-back",
-                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}))
-                    desc_input = gr.Textbox(label="Apuntes Extra", placeholder="Ej. Galletas coreanas edición limitada")
-                    btn_extraer = gr.Button(
-                        "🔍 Analizar Producto (SEO + Info + Precio)",
-                        variant="primary",
-                        elem_id="tour-analyze",
-                    )
-                    with gr.Accordion("Código de barras (opcional)", open=False):
-                        in_codigo_barras = gr.Textbox(label="EAN / UPC / GTIN", placeholder="Escanéalo con tu lector o escríbelo; conserva los ceros iniciales")
-                        foto_codigo = gr.Image(label="Foto del código", type="filepath", sources=["upload", "webcam", "clipboard"], format="jpeg",
-                            **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}})} if hasattr(gr, "WebcamOptions") else {}))
-                        btn_leer_codigo = gr.Button("📷 Leer código de la foto", size="sm")
-                        estado_codigo = gr.Textbox(label="Lectura del código", interactive=False, lines=2)
-                    btn_verificar_producto = gr.Button("🔎 Verificar producto en mi inventario")
-                    estado_coincidencia = gr.Textbox(label="Coincidencias y variaciones", interactive=False, lines=3)
-
-
-                with gr.Column(scale=1):
-                    gr.Markdown("### 2. Clasificación, Textos y Precio")
-                    with gr.Group():
-                        in_nombre = gr.Textbox(label="Nombre Comercial", elem_id="tour-product-name")
-                        in_marca = gr.Textbox(label="Marca")
-                        in_gramaje = gr.Textbox(label="Medida (Ej. 120G, 1L, 10PZ, 5OZ)")
-
-                    with gr.Row():
-                        in_precio = gr.Number(label="💲 Precio Sugerido (MXN)", precision=2)
-                        btn_act_precio = gr.Button("🔄 Recalcular Precio", size="sm")
-
-                    with gr.Row():
-                        in_sku = gr.Textbox(label="SKU (Max 10 caracteres)", interactive=True)
-                        btn_act_sku = gr.Button("🔄 Recalcular SKU", size="sm")
-
-                    with gr.Group():
-                        in_tipo = gr.Radio(
-                            ["Simple", "Variable"],
-                            label="Tipo de registro (Variable = variación)",
-                            value="Simple",
-                            elem_id="tour-product-type",
-                        )
-                        with gr.Group(visible=False) as grupo_padre:
-                            modo_padre = gr.Radio([EXISTING_PARENT, NEW_PARENT], value=EXISTING_PARENT, label="Producto padre")
-                            padres_existentes = gr.Dropdown(choices=[], value=None, label="Padres existentes (busca por nombre, marca o SKU)", interactive=True)
-                            nombre_padre = gr.Textbox(label="Nombre de la familia / producto padre", placeholder="Ej. Soju 7 Drops (sin fijar un único sabor o tamaño)")
-                            btn_refrescar_padres = gr.Button("🔄 Actualizar padres del inventario", size="sm")
-                            portada_padre = gr.Image(label="Portada del producto padre", interactive=False)
-                            estado_portada = gr.Textbox(label="Portada de la familia", interactive=False, lines=2)
-                            btn_portada = gr.Button("🖼️ Actualizar portada con fotos reales", size="sm")
-                        in_sku_padre = gr.Textbox(
-                            label="SKU del producto padre (obligatorio para variaciones)",
-                            visible=False,
-                            interactive=True,
-                        )
-                        with gr.Row():
-                            in_atributo_nombre = gr.Dropdown(
-                                ["Tamaño", "Sabor", "Versión", "Cantidad"],
-                                label="Atributo de la variación",
-                                value="Tamaño",
-                            )
-                            in_atributo_valor = gr.Textbox(
-                                label="Valor de la variación",
-                                placeholder="Ej. 360ml, Fresa o 5 piezas; si queda vacío se usa la medida",
-                            )
-
-                    with gr.Group():
-                        in_cat = gr.Dropdown(choices=CATEGORIAS_DEFECTO, label="Categoría (Estricta)")
-                        in_subcat = gr.Dropdown(choices=SUBCATEGORIAS_DEFECTO, label="Subcategoría (Estricta)")
-
-                    with gr.Row():
-                        in_etiquetas = gr.Textbox(
-                            label="🏷️ Etiquetas (separadas por coma)",
-                            placeholder="ej. picante, edición limitada, importado",
-                        )
-                        btn_act_etiquetas = gr.Button("🔄 Recalcular Etiquetas", size="sm")
-
-                    in_desc_corta = gr.Textbox(label="Descripción corta (máximo 240 caracteres)", lines=2)
-                    in_desc_larga = gr.Textbox(label="Descripción larga (párrafos y usos confirmados)", lines=5)
-
-                with gr.Column(scale=2):
-                    gr.Markdown("### 3. Estudio Fotográfico IA (Formato Cuadrado)")
-                    btn_generar_fotos = gr.Button(
-                        "✨ Generar Set de 3 Fotos Comerciales",
-                        variant="primary",
-                        elem_id="tour-generate-photos",
-                    )
-                    gr.Markdown(
-                        "_¿Salió mal una foto? Abre su panel **🔧 ¿Qué salió mal?**, marca el error "
-                        "(empaque inventado, logo que no existe, mala escala...) y dale Rehacer. "
-                        "La IA recibe esa retroalimentación y las correcciones se van acumulando en cada intento._",
-                        elem_id="tour-photo-feedback",
-                    )
-
-                    with gr.Row():
-                        # ---------- Slot 1: Fondo blanco ----------
-                        with gr.Column():
-                            out_img1 = gr.Image(label="Fondo Blanco", type="filepath")
-                            with gr.Accordion("🔧 ¿Qué salió mal? (Fondo Blanco)", open=False):
-                                err_1 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
-                                fb_1 = gr.Textbox(
-                                    label="Otra corrección (texto libre)",
-                                    placeholder="Ej. la tapa es roja, no azul",
-                                    lines=2,
-                                )
-                                btn_limpiar_hist_1 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
-                            btn_rehacer_1 = gr.Button("🔄 Rehacer HD con feedback")
-
-                        # ---------- Slot 2: Lifestyle ----------
-                        with gr.Column():
-                            out_img2 = gr.Image(label="Lifestyle", type="filepath")
-                            with gr.Accordion("🔧 ¿Qué salió mal? (Lifestyle)", open=False):
-                                err_2 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
-                                fb_2 = gr.Textbox(
-                                    label="Otra corrección (texto libre)",
-                                    placeholder="Ej. la mano tapa el nombre del producto",
-                                    lines=2,
-                                )
-                                btn_limpiar_hist_2 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
-                            btn_rehacer_2 = gr.Button("🔄 Rehacer Life con feedback")
-
-                        # ---------- Slot 3: Comercial ----------
-                        with gr.Column():
-                            out_img3 = gr.Image(label="Comercial", type="filepath")
-                            with gr.Accordion("🔧 ¿Qué salió mal? (Comercial)", open=False):
-                                err_3 = gr.CheckboxGroup(choices=ETIQUETAS_ERRORES, label="Errores detectados")
-                                fb_3 = gr.Textbox(
-                                    label="Otra corrección (texto libre)",
-                                    placeholder="Ej. inventó un sello de 'premium quality'",
-                                    lines=2,
-                                )
-                                btn_limpiar_hist_3 = gr.Button("🧹 Olvidar correcciones previas", size="sm")
-                            btn_rehacer_3 = gr.Button("🔄 Rehacer Com con feedback")
-
-            gr.Markdown("---")
-            btn_guardar = gr.Button(
-                "💾 APROBAR Y GUARDAR EN MI INVENTARIO (Google Sheets)",
-                variant="primary",
-                size="lg",
-                elem_id="tour-save-product",
-            )
-
-        # ==================================
-        # PESTAÑA 2: VARIANTES DE PRESENTACIÓN (GOOGLE LENS IA)
-        # ==================================
-        with gr.Tab("2. Variantes de Presentación (Google Lens IA)"):
-            gr.Markdown(
-                "### 🔎 Busca con IA si el producto existe en otros gramajes/tamaños\n"
-                "Sube o reutiliza la foto del producto para que la IA lo identifique visualmente "
-                "(como Google Lens) y busque en internet si existen otras presentaciones o gramajes "
-                "del MISMO producto. Así sabrás si conviene marcarlo como **Variable** en la Pestaña 1 "
-                "en vez de **Simple**."
-            )
-            with gr.Row():
-                with gr.Column(scale=1):
-                    img_lens = gr.Image(
-                        label="Foto del producto a investigar",
-                        type="filepath",
-                        sources=["upload", "webcam", "clipboard"],
-                        elem_id="tour-lens-image",
-                        format="jpeg",
-                        **({"webcam_options": gr.WebcamOptions(mirror=False, constraints={"facingMode": {"ideal": "environment"}, "width": {"ideal": 1280}, "height": {"ideal": 720}})} if hasattr(gr, "WebcamOptions") else {}),
-                    )
-                    btn_usar_foto_tab1 = gr.Button("📋 Usar foto de la Pestaña 1", size="sm")
-                    btn_buscar_lens = gr.Button("🔍 Buscar Variantes con Google Lens (IA)", variant="primary")
-                with gr.Column(scale=2):
-                    recomendacion_tipo_box = gr.Textbox(label="Recomendación", interactive=False)
-                    reporte_variantes = gr.Markdown(label="Reporte de Variantes Encontradas")
-                    state_tipo_recomendado = gr.State("Simple")
-                    btn_aplicar_recomendacion = gr.Button("✅ Aplicar recomendación de Tipo en la Pestaña 1")
-
-    # ==========================================
-    # 7. CONEXIONES
-    # ==========================================
-    btn_ajustes.click(lambda: gr.update(selected=0), outputs=main_tabs, queue=False)
-    demo.load(cargar_estado_inicial, inputs=None, outputs=[estado_login, in_cat, in_subcat], queue=False)
-
-    btn_guardar_key.click(
-        guardar_api_key,
-        inputs=[in_api_key],
-        outputs=[estado_config, estado_login, in_api_key],
-        queue=False,
-    )
-    btn_refrescar_cats.click(refrescar_categorias, inputs=None, outputs=[in_cat, in_subcat])
-    btn_guardar_carpeta.click(guardar_carpeta_personalizada, inputs=[in_carpeta], outputs=[estado_config, estado_login])
-
-    entradas_textos = [img1, img2, desc_input]
-    salidas_textos = [estado, in_sku, in_nombre, in_marca, in_gramaje, in_precio, in_tipo,
-                      in_sku_padre, in_cat, in_subcat, in_desc_corta, in_desc_larga, in_etiquetas, memoria_ruta_base]
-    sonidos.change(fn=None, inputs=[sonidos], outputs=None,
-                   js="(enabled) => { window.suiteGenerationSound?.setEnabled(enabled); }", queue=False)
-    entradas_revision = [in_sku, in_nombre, in_marca, in_gramaje, in_codigo_barras,
-                         in_sku_padre, in_atributo_nombre, in_atributo_valor]
-    btn_extraer.click(modulo_extraer_textos, inputs=entradas_textos, outputs=salidas_textos,
-                      concurrency_id="image_generation", concurrency_limit=1,
-                      js=_sonido_inicio("textos")).then(captura.detect_from_product,
-                      inputs=[img1, img2, in_codigo_barras], outputs=[in_codigo_barras]).then(captura.check,
-                      inputs=entradas_revision, outputs=[estado_coincidencia]).then(
-                      fn=None, inputs=None, outputs=None, js=_sonido_fin("textos"), queue=False)
-    btn_leer_codigo.click(captura.scan, inputs=[foto_codigo, in_codigo_barras],
-                         outputs=[in_codigo_barras, estado_codigo]).then(captura.check,
-                         inputs=entradas_revision, outputs=[estado_coincidencia])
-    btn_verificar_producto.click(captura.check, inputs=entradas_revision, outputs=[estado_coincidencia])
-    in_codigo_barras.submit(captura.check, inputs=entradas_revision, outputs=[estado_coincidencia])
-
-    btn_act_sku.click(recalcular_sku_ui, inputs=[in_nombre, in_marca, in_gramaje], outputs=[in_sku])
-    btn_act_precio.click(recalcular_precio_ui, inputs=[in_nombre, in_marca, in_gramaje, in_cat], outputs=[in_precio])
-    btn_act_etiquetas.click(
-        recalcular_etiquetas_ui,
-        inputs=[in_nombre, in_marca, in_cat, in_subcat, desc_input],
-        outputs=[in_etiquetas]
-    )
-    entradas_padres = [in_tipo, modo_padre, in_nombre, in_marca, in_sku, padres_existentes]
-    salidas_padres = [padres_existentes, in_sku_padre, grupo_padre, nombre_padre, in_atributo_nombre, modo_padre]
-    entradas_portada = [in_tipo, modo_padre, in_sku_padre, nombre_padre, in_sku, memoria_ruta_base]
-    salidas_portada = [portada_padre, estado_portada, memoria_portada_padre]
-    js_inicio_portada = "(...args) => { if (args[0] === 'Variable') window.suiteGenerationSound?.start('portada'); return args; }"
-    for trigger in [in_tipo.change, modo_padre.input, btn_refrescar_padres.click]:
-        trigger(captura.load_parents, inputs=entradas_padres, outputs=salidas_padres).then(
-            captura.cover, inputs=entradas_portada, outputs=salidas_portada,
-            js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
-            captura.check, inputs=entradas_revision, outputs=[estado_coincidencia]).then(
-            fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
-    padres_existentes.input(captura.select_parent, inputs=[padres_existentes],
-                           outputs=[in_sku_padre, nombre_padre, in_atributo_nombre]).then(
-        captura.cover, inputs=entradas_portada, outputs=salidas_portada,
-        js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
-        captura.check, inputs=entradas_revision, outputs=[estado_coincidencia]).then(
-        fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
-    btn_portada.click(captura.regenerate_cover, inputs=entradas_portada, outputs=salidas_portada,
-                     js=js_inicio_portada, concurrency_id="family_cover", concurrency_limit=1).then(
-                     fn=None, inputs=None, outputs=None, js=_sonido_fin("portada"), queue=False)
-
-    # Primera pasada: resetea los 3 historiales de feedback
-    btn_generar_fotos.click(
-        modulo_generar_todo,
-        inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta],
-        outputs=[estado, out_img1, out_img2, out_img3, hist_1, hist_2, hist_3],
-        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagenes"),
-    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagenes"), queue=False)
-
-    # Re-generaciones con retroalimentación
-    btn_rehacer_1.click(
-        rehacer_hd,
-        inputs=[memoria_ruta_base, in_sku, err_1, fb_1, hist_1],
-        outputs=[out_img1, hist_1, estado],
-        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_1"),
-    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_1"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_1, fb_1])
-
-    btn_rehacer_2.click(
-        rehacer_life,
-        inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_2, fb_2, hist_2],
-        outputs=[out_img2, hist_2, estado],
-        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_2"),
-    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_2"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_2, fb_2])
-
-    btn_rehacer_3.click(
-        rehacer_comercial,
-        inputs=[memoria_ruta_base, in_sku, in_nombre, in_marca, in_desc_corta, err_3, fb_3, hist_3],
-        outputs=[out_img3, hist_3, estado],
-        concurrency_id="image_generation", concurrency_limit=1, js=_sonido_inicio("imagen_3"),
-    ).then(fn=None, inputs=None, outputs=None, js=_sonido_fin("imagen_3"), queue=False).then(limpiar_feedback, inputs=None, outputs=[err_3, fb_3])
-
-    btn_limpiar_hist_1.click(lambda: ([], "🧹 Historial de correcciones (Fondo Blanco) reiniciado."),
-                             inputs=None, outputs=[hist_1, estado])
-    btn_limpiar_hist_2.click(lambda: ([], "🧹 Historial de correcciones (Lifestyle) reiniciado."),
-                             inputs=None, outputs=[hist_2, estado])
-    btn_limpiar_hist_3.click(lambda: ([], "🧹 Historial de correcciones (Comercial) reiniciado."),
-                             inputs=None, outputs=[hist_3, estado])
-
-    btn_guardar.click(
-        captura.save,
-        inputs=[in_sku, in_tipo, in_sku_padre, in_nombre, in_marca, in_gramaje,
-                in_atributo_nombre, in_atributo_valor, in_precio,
-                in_cat, in_subcat, in_etiquetas, in_desc_corta, in_desc_larga,
-                in_codigo_barras, modo_padre, nombre_padre, memoria_portada_padre],
-        outputs=[estado], concurrency_id="image_generation", concurrency_limit=1
-    )
-
-    btn_usar_foto_tab1.click(lambda x: x, inputs=[img1], outputs=[img_lens])
-    btn_buscar_lens.click(
-        buscar_variantes_por_imagen,
-        inputs=[img_lens, in_nombre, in_marca],
-        outputs=[recomendacion_tipo_box, reporte_variantes, state_tipo_recomendado]
-    )
-    btn_aplicar_recomendacion.click(
-        aplicar_recomendacion_tipo,
-        inputs=[state_tipo_recomendado, in_nombre, in_marca],
-        outputs=[in_tipo, in_sku_padre]
-    )
-
-# ==========================================
-# 8. MONTAJE FINAL (FastAPI + Gradio)
-# ==========================================
-demo.queue(max_size=16, default_concurrency_limit=2)
-fastapi_app = gr.mount_gradio_app(
-    fastapi_app,
-    demo,
-    path="/",
-    favicon_path=os.path.join(os.path.dirname(__file__), "static", "rincon-logo.png"),
-    theme=gr.themes.Soft(),
-    head=TUTORIAL_HEAD,
-)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))

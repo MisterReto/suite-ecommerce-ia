@@ -1,4 +1,4 @@
-"""Gradio capture workflow, scoped to the connected customer's inventory."""
+"""Product capture and family covers scoped to the connected customer."""
 import hashlib
 import io
 from pathlib import Path
@@ -7,11 +7,15 @@ import secrets
 import textwrap
 import time
 
-import gradio as gr
+from fastapi import Request
+
+
+def field_update(**values):
+    return values
 from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from catalog_capture import (barcode, family_name, next_parent_sku,
+from catalog_capture import (barcode, family_name, next_parent_sku, record_barcode,
                              prepare_capture_updates, review_product, text)
 from inventory_schema import MASTER_COLUMNS, is_variable_parent
 from product_generation import branded_image
@@ -85,7 +89,7 @@ class ProductCapture:
         session["capture_snapshot"] = (time.monotonic(), snapshot)
         return snapshot
 
-    def check(self, sku, name, brand, size, code, parent, attribute, value, request: gr.Request):
+    def check(self, sku, name, brand, size, code, parent, attribute, value, request: Request):
         try:
             session = self.session(request)
             _, _, rows = self.snapshot(session)
@@ -107,7 +111,7 @@ class ProductCapture:
         except Exception as error:
             return f"⚠️ No pude verificar: {error}"
 
-    def scan(self, photo, current_code, request: gr.Request):
+    def scan(self, photo, current_code, request: Request):
         try:
             self.session(request)
             codes = read_barcodes(photo)
@@ -118,7 +122,7 @@ class ProductCapture:
         except Exception:
             return current_code, "⚠️ No pude leer la foto; captura el código manualmente."
 
-    def detect_from_product(self, front, back, current_code, request: gr.Request):
+    def detect_from_product(self, front, back, current_code, request: Request):
         try:
             session = self.session(request)
             codes = list(dict.fromkeys(read_barcodes(back) + read_barcodes(front)))
@@ -129,7 +133,7 @@ class ProductCapture:
         except Exception:
             return ""
 
-    def load_parents(self, kind, mode, name, brand, sku, selected, request: gr.Request):
+    def load_parents(self, kind, mode, name, brand, sku, selected, request: Request, code=""):
         visible = kind == "Variable"
         try:
             session = self.session(request)
@@ -146,23 +150,23 @@ class ProductCapture:
             title = text(parent.get("nombre_producto"))
             attribute = text(parent.get("atributo_nombre")) or "Tamaño"
             if mode == NEW_PARENT:
-                parent_sku = next_parent_sku(name, brand, rows) if name else ""
+                parent_sku = next_parent_sku(name, brand, rows, code or record_barcode({"sku": sku})) if name else ""
                 title = family_name(name)
-            return (gr.update(choices=choices, value=selected, visible=visible and mode == EXISTING_PARENT),
-                    gr.update(visible=visible, value=parent_sku, interactive=mode == NEW_PARENT),
-                    gr.update(visible=visible), gr.update(value=title, interactive=mode == NEW_PARENT),
-                    gr.update(value=attribute), gr.update(value=mode))
+            return (field_update(choices=choices, value=selected, visible=visible and mode == EXISTING_PARENT),
+                    field_update(visible=visible, value=parent_sku, interactive=mode == NEW_PARENT),
+                    field_update(visible=visible), field_update(value=title, interactive=mode == NEW_PARENT),
+                    field_update(value=attribute), field_update(value=mode))
         except Exception:
-            return (gr.update(choices=[], value=None, visible=visible), gr.update(visible=visible, value=""),
-                    gr.update(visible=visible), gr.update(value=family_name(name)), gr.update(), gr.update())
+            return (field_update(choices=[], value=None, visible=visible), field_update(visible=visible, value=""),
+                    field_update(visible=visible), field_update(value=family_name(name)), field_update(), field_update())
 
-    def select_parent(self, selected, request: gr.Request):
+    def select_parent(self, selected, request: Request):
         try:
             _, _, rows = self.snapshot(self.session(request))
             parent = next(r for r in rows if text(r.get("sku")) == selected and is_variable_parent(r))
             return selected, text(parent.get("nombre_producto")), text(parent.get("atributo_nombre")) or "Tamaño"
         except Exception:
-            return "", "", gr.update()
+            return "", "", field_update()
 
     def _namespace(self, session):
         return re.sub(r"[^a-zA-Z0-9_-]", "", session.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
@@ -221,7 +225,7 @@ class ProductCapture:
             image.thumbnail((1200, 1200))
             return image
 
-    def cover(self, kind, mode, parent, title, sku, reference, request: gr.Request):
+    def cover(self, kind, mode, parent, title, sku, reference, request: Request):
         if kind != "Variable":
             return None, "", None
         try:
@@ -281,7 +285,7 @@ class ProductCapture:
         except Exception:
             return None, "⚠️ No pude preparar la portada. Revisa la conexión y pulsa Actualizar portada.", None
 
-    def regenerate_cover(self, kind, mode, parent, title, sku, reference, request: gr.Request):
+    def regenerate_cover(self, kind, mode, parent, title, sku, reference, request: Request):
         try:
             session = self.session(request)
             for info in session.get("family_covers", {}).values():
@@ -293,7 +297,7 @@ class ProductCapture:
 
     def save(self, sku, kind, parent, name, brand, size, attribute, value, price,
              category, subcategory, tags, short, long, code, mode, title, cover_token,
-             request: gr.Request):
+             request: Request):
         try:
             session = self.session(request)
             if not text(name):
@@ -301,6 +305,11 @@ class ProductCapture:
             session.pop("capture_snapshot", None)
             service, sheet, rows = self.snapshot(session)
             images = self.draft_images(session, text(sku))
+            current = session.get("studio_draft", {})
+            if current.get("revision") == session.get("capture_revision") and current.get("product", {}).get("sku") == text(sku):
+                for index, path in enumerate(self._references(session, current.get("references", []))):
+                    side = "frente" if index == 0 else "reverso"
+                    images.append((f"{sku}_referencia_{side}.jpg", path))
             record = {"sku": text(sku), "tipo": "variation" if kind == "Variable" else "simple",
                       "sku_padre": text(parent) if kind == "Variable" else "", "nombre_producto": text(name),
                       "Marca": text(brand), "gramaje": text(size), "atributo_nombre": text(attribute),
@@ -320,6 +329,13 @@ class ProductCapture:
                         "nombre_producto": title, "Marca": brand, "categorias": record["categorias"], "etiquetas": tags,
                         "descripcion_corta": f"{title}. Selecciona una variación para consultar su presentación.",
                         "descripcion_larga": f"Familia de productos {title}. Selecciona una opción para consultar sus características, precio y disponibilidad."}
+                elif not any(text(row.get("sku")) == text(parent) for row in rows):
+                    # A parent captured in the master may not yet have a Sheet
+                    # row. The caller supplied this authenticated master row.
+                    source_parent = session.get("capture_parent_record")
+                    if not source_parent or text(source_parent.get("sku")) != text(parent):
+                        raise ValueError("El padre no está en el inventario compatible. Revisa su ficha antes de guardar.")
+                    record["_new_parent"] = source_parent
             # Validate before uploading; the adapter repeats validation on a fresh
             # Sheet snapshot under a lock before one atomic parent+child write.
             values = [list(MASTER_COLUMNS) + ["", "", "", "", "atributo_nombre", "atributo_valor", "codigo_barras"]]
@@ -331,6 +347,14 @@ class ProductCapture:
                     self.backend["_subir_imagen_drive"](service, folder, filename, path)
             if info:
                 self.backend["_subir_imagen_drive"](service, folder, record["_parent_cover"], info["path"])
+            if current and current.get("revision") == session.get("capture_revision"):
+                from catalog_platform.capture_bridge import checkpoint
+                current["save_phase"] = "saving"
+                try:
+                    checkpoint(session, current)
+                except Exception:
+                    current.pop("save_phase", None)  # No Sheet write was attempted.
+                    raise
             self.backend["_agregar_fila_google_sheet"](session, sheet, record)
             session.pop("capture_snapshot", None)
             detail = f" {len(images)} imagen(es) guardadas en Drive."

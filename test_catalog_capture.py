@@ -17,6 +17,35 @@ def values(*rows):
 
 
 class Identity(unittest.TestCase):
+    def test_numeric_legacy_skus_establish_gtin_identity_without_a_barcode_column(self):
+        legacy = dict(CHILD, sku="036000291452", codigo_barras="")
+        row, reason = find_duplicate([legacy], dict(CHILD, sku="0036000291452", codigo_barras=""))
+        self.assertEqual(row, legacy)
+        self.assertEqual(reason, "código de barras")
+
+    def test_single_product_parent_masks_everything_after_six_digits(self):
+        self.assertEqual(next_parent_sku("Panko 1 kg", "Brand", [], "036000291452"), "036000xxxxxx")
+        self.assertEqual(next_parent_sku("Panko 1 kg", "Brand", [], "4006381333931"), "400638xxxxxxx")
+
+    def test_variants_use_their_shared_prefix_and_exclude_other_brands(self):
+        sibling = dict(CHILD, codigo_barras="036000292459")
+        unrelated = dict(CHILD, Marca="Other", codigo_barras="4006381333931")
+        self.assertEqual(next_parent_sku("Panko 1 kg", "Brand", [sibling, unrelated], "036000291452"), "03600029xxxx")
+
+    def test_repeated_sources_and_equivalent_gtins_are_not_distinct_variants(self):
+        self.assertEqual(next_parent_sku("Panko 1 kg", "Brand", [CHILD, dict(CHILD, codigo_barras="0036000291452")],
+                                       "036000291452"), "036000xxxxxx")
+
+    def test_parent_without_own_code_uses_available_variants(self):
+        siblings = [CHILD, dict(CHILD, codigo_barras="036000292459")]
+        self.assertEqual(next_parent_sku("Panko 1 kg", "Brand", siblings), "03600029xxxx")
+
+    def test_mask_collision_and_unrelated_barcode_ranges_require_review(self):
+        with self.assertRaisesRegex(ValueError, "ya existe"):
+            next_parent_sku("Panko 1 kg", "Brand", [{"sku": "036000xxxxxx", "tipo": "variable"}], "036000291452")
+        with self.assertRaisesRegex(ValueError, "no comparten"):
+            next_parent_sku("Panko 1 kg", "Brand", [dict(CHILD, codigo_barras="4006381333931")], "036000291452")
+
     def test_barcode_preserves_leading_zero_and_equivalent_formats(self):
         self.assertEqual(barcode("036000291452"), "036000291452")
         self.assertEqual(barcode_key("036000291452"), barcode_key("0036000291452"))

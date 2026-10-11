@@ -7,6 +7,9 @@ import time
 
 STORE_CONTEXT = ContextVar("store_context", default={})
 TOOL_PATHS = {
+    "/api/tools/inventory", "/api/tools/history", "/api/tools/review", "/api/tools/media-preview",
+    "/api/tools/batch-status", "/api/tools/counts", "/api/tools/movement", "/api/tools/media-sync",
+    "/api/tools/product-sync", "/api/tools/batch-create", "/api/tools/batch-step", "/api/tools/batch-resume",
     "/inventory-hub", "/inventory-manager", "/inventory-count",
     "/inventory-movement", "/inventory-count-bulk", "/inventory-history", "/inventory-review",
     "/inventory-sync", "/wc-health", "/wc-preview", "/wp-media-health",
@@ -23,7 +26,8 @@ STORE_KEYS = (
 
 
 def setting(key, default=""):
-    return STORE_CONTEXT.get().get(key, os.getenv(key, default))
+    aliases={"WC_URL":"WOOCOMMERCE_URL","WC_CONSUMER_KEY":"WOOCOMMERCE_CONSUMER_KEY","WC_CONSUMER_SECRET":"WOOCOMMERCE_CONSUMER_SECRET","WP_URL":"WORDPRESS_URL"}
+    return STORE_CONTEXT.get().get(key, os.getenv(key,os.getenv(aliases.get(key,""),default)))
 
 
 def signature(body: bytes, timestamp: str, nonce: str, key: str) -> str:
