@@ -4003,6 +4003,8 @@ details p {
 .p-native-tools .button { min-height: 44px; margin: 8px 8px 8px 0; }
 .p-native-tools progress { width: 100%; accent-color: var(--purple); }
 @media (max-width: 760px) {
+  html { scroll-padding-top: 78px; scroll-padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
+  .p-main :is(button, input, select, textarea, a) { scroll-margin-bottom: calc(160px + env(safe-area-inset-bottom)); }
   .p-navigation { height: auto; flex-direction: column; padding: 0 8px env(safe-area-inset-bottom); overflow: visible; }
   .p-primary-navigation { flex-direction: row; gap: 0; width: 100%; padding: 6px 0; }
   .p-subnavigation { order: -1; flex-direction: row; width: 100%; overflow-x: auto; gap: 6px; margin: 0; padding: 8px 0; border-top: 0; border-bottom: 1px solid var(--line); scrollbar-width: thin; }

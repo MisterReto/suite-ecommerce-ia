@@ -24,7 +24,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
   });
   let diagnostics = "";
   server.stderr.on("data", chunk => { diagnostics = (diagnostics + chunk).slice(-3000); });
-  let browser;
+  let browser, releaseWave;
   try {
     for (let attempt = 0; attempt < 100; attempt++) {
       try { if ((await fetch("http://127.0.0.1:23002/")).ok) break; } catch {}
@@ -40,7 +40,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const requests = [];
     const controls = [];
     const nativeWrites = [];
-    let remaining = 2, releaseWave, batchSteps = 0;
+    let remaining = 2, batchSteps = 0;
     let catalogRemoved = false;
     let jobList = ["studio_generation", "ecommerce_pull", "ecommerce_pull"].map((kind, index) => ({
       id: "queued-"+index, kind, actor: "test@example.test", product_id: null,
@@ -222,6 +222,8 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     assert.deepEqual(errors, [], "No browser exceptions");
     console.log("Browser: 360/390/430px, sidebar/bottom tools, native Drive and WordPress, confirmed counts, safe batch pause, deletion/cancellation and paid idempotency passed.");
   } finally {
+    // A failed assertion must release the synthetic in-flight wave before closing the browser.
+    releaseWave?.();
     if (browser) await browser.close();
     server.kill("SIGTERM");
   }
