@@ -1,6 +1,6 @@
 # Suite Ecommerce IA · El Rincón de Asia
 
-Migración incremental de Gradio a **Next.js / React + FastAPI**. La generación
+Interfaz unificada **Next.js / React + FastAPI**. La generación
 creativa aceptada se encapsula en `ImageGenerationService` y se protege con un
 contrato AST y pruebas de generación, correcciones y almacenamiento. No se
 cambian automáticamente proveedor, modelo, prompts ni referencias.
@@ -36,13 +36,14 @@ revisar según el fallo y qué reglas conservar al modificarlo.
 
 [Plan obligatorio de pruebas](TEST_PLAN.md) · [Evidencia y límites](docs/VERIFICATION.md)
 
-Los dos servicios históricos conservan `41d0599`. La app separada utiliza
-`rincon-frontend`, `rincon-catalog-api` y `rincon-catalog-worker`, con sesiones
-durables, conectividad WooCommerce y controles de eliminar/cancelar en la rama
-`feature/woocommerce-and-product-removal-20261009`. La base funcional de la guía
-actual es `ba19067`; esta entrega añade comentarios y documentación sin cambiar
-el código ejecutable. El pase manual real y las pruebas que realizan escrituras
-se distinguen de las pruebas automáticas con proveedores/datos sintéticos.
+Los dos dominios históricos redirigen al frontend; su ejecutor de sincronización
+conserva solo la API interna firmada. Ver [herramientas integradas y retirada de
+Gradio](docs/NATIVE_TOOLS.md). La app utiliza `rincon-frontend`, `rincon-catalog-api`
+y `rincon-catalog-worker`, con sesión durable, WooCommerce y controles de
+eliminar/cancelar en `feature/woocommerce-and-product-removal-20261009`.
+La unificación de navegación parte de `a7869dc` y conserva el generador protegido.
+Las pruebas automáticas usan datos sintéticos; el pase manual con escrituras se
+realiza por separado.
 
 El Blueprint configura los tres servicios separados gratuitos sin modificar los
 dos históricos. El Dockerfile compatible conserva el modo exportado. Los

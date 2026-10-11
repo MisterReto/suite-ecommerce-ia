@@ -74,8 +74,15 @@ const { spawn, spawnSync } = require("node:child_process");
     assert.equal(session.status, 200, "Proxy response: " + output);
     assert.equal(session.headers.get("cache-control"), "no-store");
     assert.equal((await session.json()).cookie, cookie);
-    for (const tool of ["/inventory-sync", "/wc-health", "/wc-preview",
-      "/woocommerce-publish-preview", "/stock-preview-start", "/stock-preview-result"]) {
+    for (const [oldPath, hash] of [["/inventory-hub","inventory/count"],
+      ["/woocommerce-image-preview","more/media"],["/woocommerce-batch-sync","more/publication"]]) {
+      const response = await fetch(origin + oldPath, {redirect:"manual"});
+      assert.equal(response.status,307);
+      assert.ok(response.headers.get("location").endsWith("/#"+hash),"Legacy bookmark opens native tools");
+    }
+    const native = await fetch(origin+"/api/tools/inventory",{headers:{Cookie:cookie}});
+    assert.equal((await native.json()).path,"/api/tools/inventory","Native tools use the existing authenticated API proxy");
+    for (const tool of ["/wc-health", "/wc-preview", "/stock-preview-start", "/stock-preview-result"]) {
       const response = await fetch(origin + tool, { headers: { Cookie: cookie } });
       assert.equal(response.status, 200, "Forward WooCommerce tool: " + tool);
       const received = await response.json();

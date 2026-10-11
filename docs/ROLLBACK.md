@@ -1,3 +1,5 @@
+> Retirada autorizada de Gradio y herramientas nativas: ver [NATIVE_TOOLS](NATIVE_TOOLS.md) para rollback coordinado.
+
 # Rollback por componente
 
 Los controles de eliminación/cancelación del 10 de octubre están documentados

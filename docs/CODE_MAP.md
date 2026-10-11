@@ -1,5 +1,9 @@
 # Archivos que conviene conocer
 
+Navegación y retirada pública de Gradio: [NATIVE_TOOLS](NATIVE_TOOLS.md).
+`native_tools.py` contiene los adaptadores JSON; `InventoryTools.tsx` las tres
+pantallas nativas; `retired_service.py` los dominios antiguos sin interfaz.
+
 **Lectura actual:** [guía de reparación del 10 de octubre](CODE_GUIDE.md) e
 [índice de funciones y objetos](FUNCTION_INDEX.md). Este mapa inicial conserva
 referencias históricas; la guía distingue el estado actual de sesiones, cola,

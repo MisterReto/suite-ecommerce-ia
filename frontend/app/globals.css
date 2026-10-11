@@ -2224,8 +2224,52 @@ details p {
   flex-direction: column;
   gap: 8px;
   z-index: 25;
+  overflow-y: auto;
 }
-.p-navigation > a {
+.p-primary-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.p-subnavigation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 8px;
+  flex-shrink: 0;
+}
+.p-subnavigation button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.p-subnavigation button.active {
+  background: #f1e4fb;
+  color: var(--purple-dark);
+}
+.p-subnavigation button:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: -2px;
+}
+.p-subnavigation button span {
+  background: #fff8;
+  border-radius: 20px;
+  padding: 2px 7px;
+  margin-left: auto;
+}
+.p-primary-navigation > a {
   display: flex;
   align-items: center;
   gap: 13px;
@@ -2236,14 +2280,14 @@ details p {
   font-weight: 500;
   min-height: 52px;
 }
-.p-navigation > a.active {
+.p-primary-navigation > a.active {
   color: var(--berry);
   background: #fcf0f5;
 }
-.p-navigation > a.active svg {
+.p-primary-navigation > a.active svg {
   color: var(--red);
 }
-.p-navigation > a:hover {
+.p-primary-navigation > a:hover {
   background: #faf5fa;
 }
 .p-nav-note {
@@ -3467,7 +3511,7 @@ details p {
     gap: 0;
     box-shadow: 0 -4px 25px #59226a09;
   }
-  .p-navigation > a {
+  .p-primary-navigation > a {
     flex: 1;
     padding: 9px 2px;
     min-height: 55px;
@@ -3476,10 +3520,10 @@ details p {
     justify-content: center;
     font-size: 0.6rem;
   }
-  .p-navigation > a.active {
+  .p-primary-navigation > a.active {
     background: #fbf0f8;
   }
-  .p-navigation > a svg {
+  .p-primary-navigation > a svg {
     width: 22px;
     height: 22px;
   }
@@ -3937,4 +3981,35 @@ details p {
   .app .photo-upload {
     height: 250px;
   }
+}
+/* Native tools share the platform shell; only their table scrolls horizontally. */
+.p-native-tools { min-width: 0; }
+.p-native-tools > p[role="status"] { display: flex; gap: 8px; align-items: center; }
+.p-native-tools .p-toolbar { align-items: end; flex-wrap: wrap; }
+.p-native-tools .p-toolbar .p-form-field { margin: 0; flex: 1 1 180px; }
+.p-tool-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.p-tool-options { display: flex; flex-wrap: wrap; gap: 14px; margin: 18px 0; }
+.p-tool-options label { display: flex; gap: 8px; align-items: center; min-height: 44px; font-size: .78rem; }
+.p-tool-metrics { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+.p-tool-metrics p { padding: 10px 14px; border-radius: 12px; background: #faf4fe; font-size: .76rem; }
+.p-native-tools .p-table-wrap { width: 100%; overflow: auto; margin: 18px 0; max-height: 600px; }
+.p-native-tools table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+.p-native-tools th, .p-native-tools td { padding: 10px; text-align: left; border-bottom: 1px solid var(--line); min-width: 100px; }
+.p-native-tools th { position: sticky; top: 0; background: #f9f3fb; }
+.p-native-tools td small { display: block; color: var(--muted); }
+.p-native-tools td input[type="number"] { width: 100px; min-height: 44px; }
+.p-native-tools td input[type="checkbox"], .p-tool-options input { width: 22px; height: 22px; }
+.p-native-tools td:has(input[type="checkbox"]) { min-width: 60px; }
+.p-native-tools .button { min-height: 44px; margin: 8px 8px 8px 0; }
+.p-native-tools progress { width: 100%; accent-color: var(--purple); }
+@media (max-width: 760px) {
+  .p-navigation { height: auto; flex-direction: column; padding: 0 8px env(safe-area-inset-bottom); overflow: visible; }
+  .p-primary-navigation { flex-direction: row; gap: 0; width: 100%; padding: 6px 0; }
+  .p-subnavigation { order: -1; flex-direction: row; width: 100%; overflow-x: auto; gap: 6px; margin: 0; padding: 8px 0; border-top: 0; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+  .p-subnavigation button { flex-shrink: 0; white-space: nowrap; min-height: 44px; padding: 8px 13px; font-size: .7rem; }
+  .has-section-tools .p-main { padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
+  .has-section-tools .p-busy { bottom: calc(145px + env(safe-area-inset-bottom)); }
+  .p-tool-form { grid-template-columns: 1fr; }
+  .p-native-tools .p-card { min-width: 0; }
+  .p-native-tools td { max-width: 220px; overflow-wrap: anywhere; }
 }

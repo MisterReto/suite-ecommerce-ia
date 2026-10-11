@@ -14,6 +14,8 @@ if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":
 else:
     from studio_api import app as fastapi_app
     import product_web
+    import native_tools
+    native_tools.register(fastapi_app)
 
 
 if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":

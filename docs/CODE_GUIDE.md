@@ -1,8 +1,13 @@
 # Guía del código y de reparación
 
-Actualizada el 10 de octubre de 2026. Rama de trabajo:
+Actualizada el 11 de octubre de 2026 (UTC; petición del 10 en México). Rama de trabajo:
 `feature/woocommerce-and-product-removal-20261009`. Base funcional documentada:
 `ba19067b096d36807a4ca77e7d4d6b7abec704be`.
+
+La navegación nativa y la retirada autorizada de Gradio se describen en
+[NATIVE_TOOLS](NATIVE_TOOLS.md): lateral en escritorio, herramientas abajo en
+celular, pantallas JSON de inventario/WordPress/lotes y dominios históricos con
+redirección. Sus clientes comerciales y el generador se conservan.
 
 Esta guía explica dónde empieza cada operación y qué debe conservarse al
 corregirla. El [índice de funciones y objetos](FUNCTION_INDEX.md) enumera las
@@ -52,9 +57,12 @@ Frontend: `https://rincon-frontend.onrender.com`. API:
 `https://rincon-catalog-api.onrender.com`. Worker:
 `https://rincon-catalog-worker.onrender.com`.
 
-Los tres servicios nuevos siguen la rama de trabajo. Los servicios históricos
-`suite-ecommerce-ia` y `suite-ecommerce-ia-ai` conservan su propia rama/versionado;
-no se deben redeplegar al corregir estos tres. El Blueprint vive en
+Los tres servicios nuevos siguen la rama de trabajo. Los dominios históricos se
+retiran por solicitud explícita del usuario y usan `retired_service`, conservando
+solo el ejecutor firmado y las referencias de credenciales necesarias. Para
+reparaciones posteriores consultar [NATIVE_TOOLS](NATIVE_TOOLS.md); no restaurar
+Gradio ni cambiar esos contratos como efecto de una reparación visual.
+El Blueprint vive en
 `deploy/render-platform.yaml`; su sincronización puede reconciliar configuración
 manual de Render. Antes de desplegar, comprobar rama, commit y variables de cada
 servicio, no solo el estado «live».
@@ -289,7 +297,7 @@ repetir. [Conexión y pruebas manuales](WOOCOMMERCE.md).
 | Stock no coincide/409 | `catalog.move_stock`, `inventory.sync_stock`, `WooCommerceService.resolve` | Versión, ID padre/variante, cantidad remota y evento | No sobrescribir cambios ajenos ni repetir timeout; `test_variation_stock.py`, catálogo |
 | Cambiar ficha sobrescribe otro cambio | `catalog.save_product`, `api.update_product` | UUID, version enviada y AuditLog | Mantener bloqueo/versionado; `test_catalog_platform.py` |
 | Imagen/guardado duplicado tras timeout | `Platform.durablePost`, `studio_jobs.enqueue_capture`, `capture_bridge.recover_saved` | request_key, checksum, job y resultado confirmado | Misma intención/idempotencia; `test_frontend_mobile.cjs`, `test_capture_workflow.py` |
-| Desplegado pero pantalla/código viejo | `next.config.ts`, Blueprint y entrypoints | Comparar rama, commit y deploy en los tres servicios; caché pública | No cambiar servicios históricos; proxy/CI y health por versión |
+| Desplegado pero pantalla/código viejo | `next.config.ts`, Blueprint y entrypoints | Comparar rama, commit y deploy en los tres servicios; caché pública | Comprobar retirada de Gradio en NATIVE_TOOLS; proxy/CI y health por versión |
 
 ## Partes protegidas y límites del cambio
 

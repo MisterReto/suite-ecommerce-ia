@@ -39,6 +39,8 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     const requests = [];
     const controls = [];
+    const nativeWrites = [];
+    let remaining = 2, releaseWave, batchSteps = 0;
     let catalogRemoved = false;
     let jobList = ["studio_generation", "ecommerce_pull", "ecommerce_pull"].map((kind, index) => ({
       id: "queued-"+index, kind, actor: "test@example.test", product_id: null,
@@ -47,6 +49,28 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
     await page.route("**/api/**", async route => {
       const request = route.request(); const pathname = new URL(request.url()).pathname;
+      if (pathname.startsWith("/api/tools/")) {
+        const operation = pathname.slice("/api/tools/".length);
+        if (request.method() === "POST") nativeWrites.push({operation,body:request.postDataJSON()});
+        if (operation === "inventory") return route.fulfill({json:{total:2,pending:1,
+          movement_types:["Entrada","Ajuste"],summary:{products:1,units:10,retail_value:350,low_stock:0,out_of_stock:0},
+          rows:[{sku:product.sku,nombre_producto:product.name,Marca:product.brand,categorias:"Dulces",Existencias:10,precio:35,counted:false,variable_parent:false},
+            {sku:"123456xxxxxxx",nombre_producto:"Portada de prueba",Existencias:0,precio:0,counted:false,variable_parent:true}]}});
+        if (operation === "history") return route.fulfill({json:{rows:[]}});
+        if (operation === "media-preview") return route.fulfill({json:{summary:{ready:1},
+          wordpress_configured:true,wordpress_write:true,woocommerce_write:true,
+          rows:[{sku:product.sku,name:product.name,ready:true,wc_id:10,images:[{requested_filename:product.sku+"_1_hd.jpg",resolved_filename:product.sku+"_1_hd.jpg",resolution:"exact"}]}]}});
+        if (operation === "batch-create") return route.fulfill({json:{batch_id:"test-native-batch"}});
+        if (operation === "batch-status") return route.fulfill({json:{batch_id:"test-native-batch",processing:false,
+          summary:{total:2,success:2-remaining,error:0,pending:remaining,running:0},rows:[]}});
+        if (operation === "batch-step") {
+          batchSteps++;
+          await new Promise(resolve => { releaseWave = resolve; });
+          remaining--;
+          return route.fulfill({json:{done:false}});
+        }
+        return route.fulfill({json:{ok:true,message:"Guardado en prueba"}});
+      }
       if (pathname === "/api/platform/products/"+product.id && request.method() === "DELETE") {
         controls.push({method:request.method(),path:pathname,body:request.postDataJSON()});
         catalogRemoved = true;
@@ -90,7 +114,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Horizontal overflow: ${name}, ${width}px`);
       }
       const bounds = await nav.boundingBox();
-      assert.ok(bounds.y > 700 && bounds.y + bounds.height <= 845, "Mobile navigation stays at the bottom");
+      assert.ok(bounds.y > 660 && bounds.y + bounds.height <= 845, "Mobile navigation stays at the bottom");
     }
     await nav.getByRole("link", { name: "Productos", exact: true }).click();
     const removeButton = page.getByRole("button", {name:"Eliminar "+product.name,exact:true});
@@ -153,8 +177,50 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByText("En línea", { exact: true }).waitFor();
     await page.setViewportSize({ width: 1280, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    const desktopNav = await nav.boundingBox();
+    assert.ok(desktopNav.x < 10 && desktopNav.width < 250,"Desktop navigation uses the sidebar");
+    await nav.getByRole("link",{name:"Más",exact:true}).click();
+    assert.equal(await page.locator(".p-main .p-tabs").count(),0,"Section tools moved out of the content");
+    await nav.getByRole("button",{name:"Revisar Drive y WordPress",exact:true}).click();
+    await page.getByRole("heading",{name:"Revisar Drive y WordPress",exact:true}).waitFor();
+    assert.equal(nativeWrites.length,0,"Opening native tools does not write");
+    await page.getByRole("button",{name:"Revisar imágenes de Drive y WordPress",exact:true}).click();
+    await page.getByText(product.sku+"_1_hd.jpg · exact",{exact:true}).waitFor();
+    assert.equal(await page.locator(".p-native-tools iframe").count(),0,"Tools are native components");
+    fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
+    await page.screenshot({path:path.join(__dirname,"test-results","navigation-desktop.png"),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    await nav.getByRole("link",{name:"Inventario",exact:true}).click();
+    await nav.getByRole("button",{name:"Conteo y movimientos",exact:true}).click();
+    await page.getByRole("heading",{name:"Conteo y movimientos de Drive",exact:true}).waitFor();
+    const toolBounds = await nav.getByRole("button",{name:"Conteo y movimientos",exact:true}).boundingBox();
+    assert.ok(toolBounds.y > 650 && toolBounds.height >= 44,"Tools have bottom mobile touch targets");
+    await page.getByRole("button",{name:"Cargar inventario de Drive",exact:true}).click();
+    const parentCount = page.getByRole("checkbox",{name:"Seleccionar conteo 123456xxxxxxx",exact:true});
+    await parentCount.waitFor(); assert.ok(await parentCount.isDisabled(),"Parent has no physical stock");
+    await page.getByRole("checkbox",{name:"Seleccionar conteo "+product.sku,exact:true}).check();
+    await page.getByLabel("Conteo físico de "+product.sku,{exact:true}).fill("7");
+    await page.getByRole("button",{name:"Guardar conteos seleccionados (1)",exact:true}).click();
+    assert.equal(nativeWrites.length,0,"Count confirmation opens without writing");
+    await page.getByRole("dialog").getByRole("button",{name:"Guardar conteos",exact:true}).click();
+    await page.getByText("Guardado en prueba",{exact:true}).waitFor();
+    assert.deepEqual(nativeWrites[0],{operation:"counts",body:{confirm:true,counts:[{sku:product.sku,stock:7}]}});
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native inventory fits phone width");
+    await page.screenshot({path:path.join(__dirname,"test-results","navigation-mobile.png"),fullPage:true});
+    await nav.getByRole("link",{name:"Más",exact:true}).click();
+    await nav.getByRole("button",{name:"Publicación masiva",exact:true}).click();
+    await page.getByRole("button",{name:"Crear y publicar lote",exact:true}).click();
+    await page.getByRole("dialog").getByRole("button",{name:"Crear y publicar",exact:true}).click();
+    for(let i=0;i<100 && !releaseWave;i++) await page.waitForTimeout(50);
+    assert.equal(batchSteps,1,"A confirmed publication starts one wave");
+    await page.getByRole("button",{name:"Pausar publicación",exact:true}).click();
+    releaseWave();
+    await page.getByText("Pausado",{exact:true}).waitFor();
+    await page.waitForTimeout(350);
+    assert.equal(batchSteps,1,"Pausing while a wave runs prevents the next write");
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native batch fits phone width");
     assert.deepEqual(errors, [], "No browser exceptions");
-    console.log("Browser: 360/390/430px, five menus, cards/form, 1280px, deletion confirmation, individual/bulk cancellation, connection and paid idempotency passed.");
+    console.log("Browser: 360/390/430px, sidebar/bottom tools, native Drive and WordPress, confirmed counts, safe batch pause, deletion/cancellation and paid idempotency passed.");
   } finally {
     if (browser) await browser.close();
     server.kill("SIGTERM");

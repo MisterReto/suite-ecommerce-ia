@@ -4,6 +4,7 @@ No crea una segunda FastAPI: reutiliza la aplicación original para conservar el
 lifespan y la cola de Gradio, y añade rutas WooCommerce en modo diagnóstico.
 """
 from __future__ import annotations
+import os
 
 import html
 from collections import Counter
@@ -148,6 +149,14 @@ fastapi_app = legacy_app.fastapi_app
 @fastapi_app.middleware("http")
 async def pause_store_tools(request: Request, call_next):
     path = request.url.path.rstrip("/")
+    if path.startswith("/api/tools/"):
+        # Native JSON routes validate role, confirmation and store gates themselves.
+        return await call_next(request)
+    if request.method == "GET" and os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
+        from retired_service import DESTINATIONS, PUBLIC_ORIGIN
+        if path in DESTINATIONS:
+            return RedirectResponse(os.getenv("APP_PUBLIC_ORIGIN", PUBLIC_ORIGIN).rstrip("/") + "/#" + DESTINATIONS[path],
+                                    status_code=303, headers={"Cache-Control": "no-store"})
     store_tool = path in TOOL_PATHS or path.startswith((
         "/woocommerce-", "/wc-", "/wp-media-", "/product-sync-",
         "/image-sync-", "/stock-preview-", "/batch-",

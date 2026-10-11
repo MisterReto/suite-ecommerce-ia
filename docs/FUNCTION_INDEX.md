@@ -1,9 +1,9 @@
 # Índice de funciones y objetos
 
-Actualizado el 10 de octubre de 2026. Complementa [CODE_GUIDE](CODE_GUIDE.md).
+Actualizado el 11 de octubre de 2026 (UTC). Complementa [CODE_GUIDE](CODE_GUIDE.md).
 Base funcional: `ba19067`. Rama: `feature/woocommerce-and-product-removal-20261009`.
 
-Inventario completo de definiciones propias: **81 módulos Python, 735 funciones/métodos y 71 clases** (incluye el handler HTTP anidado del worker); **109 definiciones nombradas del frontend** entre funciones, componentes, tipos, clases y constructores. Se documentan nueve archivos frontend, incluido el service worker sin funciones nombradas propias.
+Inventario completo de definiciones propias: **83 módulos Python, 744 funciones/métodos y 71 clases** (incluye el handler HTTP anidado del worker); **127 definiciones nombradas del frontend** entre funciones, componentes, tipos, clases y constructores. Se documentan diez archivos frontend, incluido el service worker sin funciones nombradas propias.
 
 La descripción procede de los comentarios de esta entrega y de las docstrings existentes. Las docstrings históricas se conservan cuando ya explican la función. Los campos de las clases se obtienen del código; los campos heredados se explican en su clase base. Las firmas son referencias del contrato, nunca valores de configuración reales. No contiene credenciales ni datos del inventario.
 
@@ -3339,3 +3339,89 @@ API compatible del rol sync para sesiones delegadas y herramientas históricas.
 
 - `direct_tool` — Atiende la entrada directa de una herramienta compatible autorizada. [Código, línea 169](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/sync_service.py#L169)
   Firma: `direct_tool(request: Request, tool_path: str)`.
+
+# Herramientas nativas y retirada pública de Gradio
+
+Ver [NATIVE_TOOLS](NATIVE_TOOLS.md): responsabilidades, rutas, controles y reversión.
+
+## native_tools.py
+
+JSON adapters for tools inside Next.js; the established business functions stay intact.
+
+- `movements` — Read existing history without creating its sheet merely to show a screen. [Código, línea 37](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L37)
+
+- `inventory` — Reuse the canonical inventory, with count flags and parent stock rules. [Código, línea 52](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L52)
+
+- `media_preview` — Return the same Drive/WordPress comparison as JSON, without an HTML page. [Código, línea 65](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L65)
+
+- `execute` — Delegate to established handlers; no automatic retry of an external write. [Código, línea 78](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L78)
+
+- `execute.read` — Lee los últimos movimientos del SKU en la hoja del usuario. [Código, línea 86](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L86)
+
+- `register` — Register the identical JSON contract on the public API and signed sync executor. [Código, línea 108](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L108)
+
+- `register.tools` — Valida método, sesión, rol, confirmación y modo tienda; ejecuta o delega JSON. [Código, línea 111](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/native_tools.py#L111)
+
+## retired_service.py
+
+Retired public origins: canonical redirects and the existing signed sync backend.
+
+- `health` — Identifica la versión retirada sin consultar proveedores. [Código, línea 28](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/retired_service.py#L28)
+
+- `retired` — Redirige GET/HEAD al frontend y bloquea escrituras públicas antiguas con 410. [Código, línea 35](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/retired_service.py#L35)
+
+## frontend/components/InventoryTools.tsx
+
+Pantallas React nativas para conteos, revisión Drive/WordPress y publicación por grupos. No monta páginas antiguas ni Gradio.
+
+- `Tool` — Modos count, media y publication de la pantalla integrada. [Código, línea 7](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L7)
+
+- `Row` — Fila canónica de Drive con conteo realizado y regla de portada. [Código, línea 8](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L8)
+
+  Campos declarados: `sku: string;`, `nombre_producto: string;`, `Marca: string;`, `categorias: string;`, `Existencias: number;`, `precio: number;`, `counted: boolean;`, `variable_parent: boolean;`.
+
+- `Inventory` — Filas, resumen de existencias y tipos de movimientos permitidos. [Código, línea 12](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L12)
+
+  Campos declarados: `rows: Row[];`, `total: number;`, `pending: number;`, `movement_types: string[];`, `summary: { products: number; units: number; retail_value: number; low_stock: number; out_of_stock: number };`.
+
+- `History` — Movimiento con fecha, cantidades, stock antes/después y motivo. [Código, línea 16](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L16)
+
+  Campos declarados: `timestamp: string;`, `tipo: string;`, `cantidad: number;`, `stock_anterior: number;`, `stock_nuevo: number;`, `motivo: string;`, `referencia: string;`, `usuario: string`.
+
+- `Review` — Comparación de nombres, stock y precios entre Drive y WooCommerce. [Código, línea 18](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L18)
+
+  Campos declarados: `rows: { sku: string; name: string; status: string; inventory_stock: number | null;   woocommerce_stock: number | null; inventory_price: number | null; woocommerce_price: number | null }[];`, `summary: Record<string, number>`.
+
+- `Media` — Coincidencias de imágenes y gates independientes de WordPress/WooCommerce. [Código, línea 21](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L21)
+
+  Campos declarados: `rows: { sku: string; name: string; ready: boolean; wc_id?: number;   images: { requested_filename: string; resolved_filename: string; resolution: string }[] }[];`, `summary: Record<string, number>;`, `woocommerce_write: boolean;`, `wordpress_write: boolean;`, `wordpress_configured: boolean`.
+
+- `Batch` — ID, progreso y resultados del lote existente de Sheets. [Código, línea 24](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L24)
+
+  Campos declarados: `batch_id: string;`, `processing: boolean;`, `summary: { total: number; success: number; error: number; pending: number; running: number };`, `rows: { position: number; sku: string; status: string; message: string; permalink?: string }[]`.
+
+- `Confirmation` — Datos y callback del modal anterior a la escritura. [Código, línea 27](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L27)
+
+  Campos declarados: `title: string;`, `text: string;`, `label: string;`, `action: () => Promise<void>`.
+
+- `Props` — Permisos, cuenta/carpeta, estado de red y adaptadores de API/confirmación. [Código, línea 28](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L28)
+
+  Campos declarados: `tool: Tool;`, `namespace: string;`, `canEdit: boolean;`, `isAdmin: boolean;`, `online: boolean;`, `api: <T>(path: string, method?: string, body?: unknown, timeout?: number) => Promise<T>;`, `ask: (confirmation: Confirmation) => void;`.
+
+- `money` — Presenta cantidades monetarias o un valor ausente. [Código, línea 33](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L33)
+
+- `InventoryTools` — Organiza las herramientas nativas en el mismo shell y protege sus escrituras. [Código, línea 35](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L35)
+
+- `InventoryTools.request` — Consulta la API JSON con cookie de mismo origen y espera acotada. [Código, línea 73](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L73)
+
+- `InventoryTools.attempt` — Impide doble envío y presenta errores sin reintentar escrituras. [Código, línea 75](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L75)
+
+- `InventoryTools.loadInventory` — Carga filas canónicas y prepara conteos sin enviar cambios. [Código, línea 81](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L81)
+
+- `InventoryTools.inspectHistory` — Consulta los movimientos del SKU seleccionado. [Código, línea 86](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L86)
+
+- `InventoryTools.refreshBatch` — Lee el lote; no inicia publicación ni reanuda automáticamente. [Código, línea 91](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L91)
+
+- `InventoryTools.runBatch` — Ejecuta grupos confirmados; vuelve a comprobar pausa/pantalla antes de cada POST. [Código, línea 96](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L96)
+
+- `InventoryTools.confirm` — Abre el modal; solo la acción confirmada inicia la operación. [Código, línea 115](https://github.com/MisterReto/suite-ecommerce-ia/blob/feature/woocommerce-and-product-removal-20261009/frontend/components/InventoryTools.tsx#L115)

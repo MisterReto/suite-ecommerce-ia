@@ -35,6 +35,7 @@ import {
 import dynamic from "next/dynamic";
 import { recoverSession } from "@/lib/session-recovery";
 import DriveClassification from "@/components/DriveClassification";
+import InventoryTools from "@/components/InventoryTools";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
 // Nombres de las cinco secciones de navegación; no son permisos del servidor.
@@ -311,9 +312,10 @@ async function api<T>(
   path: string,
   method = "GET",
   body?: unknown,
+  timeout = 90000,
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(path, {
       method,
@@ -377,6 +379,7 @@ function Empty({ title, text }: { title: string; text: string }) {
 export default function Platform() {
   const [section, setSection] = useState<Section>("home");
   const [moreTab, setMoreTab] = useState("connections");
+  const [inventoryTab, setInventoryTab] = useState("catalog");
   const [session, setSession] = useState<Session>({ authenticated: false });
   const [status, setStatus] = useState<Status>({
     ready: false,
@@ -514,7 +517,7 @@ export default function Platform() {
   useEffect(() => {
     // Interpreta el hash de navegación para recuperar la sección seleccionada.
     const change = () => {
-      const hash = location.hash.slice(1);
+      const [hash, tool] = location.hash.slice(1).split("/");
       if (nav.some((n) => n.id === hash)) setSection(hash as Section);
       else if (["studio", "catalog", "settings", "loyverse"].includes(hash)) {
         setSection(
@@ -526,6 +529,14 @@ export default function Platform() {
         );
         if (hash === "settings") setMoreTab("settings");
       }
+      if (hash === "products" && ["catalog", "capture"].includes(tool)) setCaptureVisible(tool === "capture");
+      if (hash === "generate" && ["capture", "batch", "review", "jobs"].includes(tool)) {
+        setCaptureVisible(tool === "capture");
+        if (tool !== "capture") setGenerationTab(tool);
+      }
+      if (hash === "inventory" && ["catalog", "count"].includes(tool)) setInventoryTab(tool);
+      if (hash === "more" && ["connections", "sync", "exchange", "settings", "media", "publication", "help"].includes(tool)) setMoreTab(tool);
+      if (hash === "more" && tool === "tools") { setSection("inventory"); setInventoryTab("count"); }
     };
     // Refleja falta de conexión del navegador en la interfaz.
     const disconnected = () => { setOnline(false); setReconnecting(false); };
@@ -810,6 +821,24 @@ export default function Platform() {
         await reloadOperations();
       },
     });
+  // Section tools share the sidebar on desktop and the dock on phones. Hashes are bookmarkable.
+  const sectionTools: string[][] = section === "products" ? [
+    ["products/catalog", "Catálogo"], ["products/capture", "Nuevo producto con IA"],
+  ] : section === "generate" ? [
+    ["generate/capture", "Capturar producto"], ["generate/batch", "Generación masiva"],
+    ["generate/review", "Revisar imágenes"], ["generate/jobs", "Trabajos"],
+  ] : section === "inventory" ? [
+    ["inventory/catalog", "Catálogo y stock"], ["inventory/count", "Conteo y movimientos"],
+  ] : section === "more" ? [
+    ["more/connections", "Conexiones"], ["more/sync", "Sincronización"],
+    ["more/exchange", "Importar / Exportar"], ["more/settings", "Ajustes"],
+    ["inventory/count", "Conteo y movimientos"], ["more/media", "Revisar Drive y WordPress"],
+    ["more/publication", "Publicación masiva"], ["more/help", "Ayuda"],
+  ] : [];
+  const selectedTool = section + "/" + (section === "products" ? captureVisible ? "capture" : "catalog"
+    : section === "generate" ? captureVisible ? "capture" : generationTab
+    : section === "inventory" ? inventoryTab : moreTab);
+
   const heading = {
     home: [
       "Tu tienda, al día",
@@ -828,7 +857,7 @@ export default function Platform() {
   }[section];
 
   return (
-    <div className="platform">
+    <div className={"platform" + (sectionTools.length ? " has-section-tools" : "")}>
       <a className="skip-link" href="#workspace">
         Ir al contenido
       </a>
@@ -863,7 +892,7 @@ export default function Platform() {
         </div>
       </header>
       <nav className="p-navigation" aria-label="Navegación principal">
-        {nav.map((n) => (
+        <div className="p-primary-navigation">{nav.map((n) => (
           <a
             key={n.id}
             href={"#" + n.id}
@@ -878,6 +907,16 @@ export default function Platform() {
             <span>{n.label}</span>
           </a>
         ))}
+        </div>
+        {sectionTools.length > 0 && <div className="p-subnavigation" aria-label="Herramientas de la sección">
+          {sectionTools.map(([id, label]) => <button key={id} className={selectedTool === id ? "active" : ""}
+            aria-pressed={selectedTool === id} aria-controls="workspace"
+            disabled={(id.endsWith("/capture")) && !canEdit}
+            onClick={() => { location.hash = id; setDetail(null); setEditing(false); }}>
+            {label}{id === "generate/jobs" && <span>{jobs.filter(active).length}</span>}
+            {id === "generate/review" && <span>{assets.filter(a => a.status === "completed").length}</span>}
+          </button>)}
+        </div>}
         <div className="p-nav-note">
           <Cloud size={19} />
           <span>
@@ -1205,25 +1244,13 @@ export default function Platform() {
           </>
         )}
 
-        {section === "products" && (
-          <div className="p-chips p-tabs">
-            <button className={!captureVisible ? "active" : ""} onClick={() => setCaptureVisible(false)}>Catálogo</button>
-            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Sparkles size={17} /> Nuevo producto con IA</button>
-          </div>
-        )}
-        {section === "generate" && (
-          <div className="p-chips p-tabs">
-            <button className={captureVisible ? "active" : ""} disabled={!canEdit} onClick={() => setCaptureVisible(true)}><Camera size={17} /> Capturar producto</button>
-            {captureVisible && <button onClick={() => { setCaptureVisible(false); setGenerationTab("batch"); }}>Generación masiva</button>}
-          </div>
-        )}
-        <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || section === "inventory") && !ready && !loading && session.authenticated))}>
+        <div hidden={!((captureVisible && (section === "products" || section === "generate")) || (section === "generate" && !ready) || (section === "more" && moreTab === "settings") || ((section === "products" || (section === "inventory" && inventoryTab === "catalog")) && !ready && !loading && session.authenticated))}>
           <CaptureStudio embedded initialSection={section === "more" ? "settings" : !captureVisible && (section === "products" || section === "inventory") ? "catalog" : "studio"}
             onOpenProduct={id => { setCaptureVisible(false); go("products"); attempt(() => openProduct(id)); }}
             onSessionChange={data => setSession(previous => ({...previous, authenticated: data.authenticated, email: data.email, gemini_configured: data.gemini_configured, folder: data.folder, folder_id: data.folder_id}))}
             onSaved={() => { if (ready) loadProducts().catch(e => setError(e.message)); }} />
         </div>
-        {(section === "products" || section === "inventory") && ready && !(section === "products" && captureVisible) && (
+        {(section === "products" || (section === "inventory" && inventoryTab === "catalog")) && ready && !(section === "products" && captureVisible) && (
           <>
             {!detail && !editing && (
               <>
@@ -1990,29 +2017,6 @@ export default function Platform() {
               <p className="p-muted">Captura y analiza un producto aquí. La generación masiva estará disponible al activar el catálogo maestro.</p>
             ) : (
               <>
-                <div className="p-chips p-tabs">
-                  <button
-                    className={generationTab === "batch" ? "active" : ""}
-                    onClick={() => setGenerationTab("batch")}
-                  >
-                    Generación masiva
-                  </button>
-                  <button
-                    className={generationTab === "review" ? "active" : ""}
-                    onClick={() => setGenerationTab("review")}
-                  >
-                    Revisar imágenes{" "}
-                    <span>
-                      {assets.filter((a) => a.status === "completed").length}
-                    </span>
-                  </button>
-                  <button
-                    className={generationTab === "jobs" ? "active" : ""}
-                    onClick={() => setGenerationTab("jobs")}
-                  >
-                    Trabajos <span>{jobs.filter(active).length}</span>
-                  </button>
-                </div>
                 {generationTab === "batch" && (
                   <div className="p-generation-grid">
                     <section className="p-card">
@@ -2389,26 +2393,15 @@ export default function Platform() {
           </>
         )}
 
+        {(section === "inventory" && inventoryTab === "count" || section === "more" && ["media", "publication"].includes(moreTab)) && session.authenticated && (
+          <InventoryTools key={(session.email || "") + ":" + (session.folder_id || "")}
+            tool={section === "inventory" ? "count" : moreTab as "media" | "publication"}
+            namespace={(session.email || "") + ":" + (session.folder_id || "")}
+            canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask} />
+        )}
+
         {section === "more" && (
           <>
-            <div className="p-chips p-tabs">
-              {[
-                ["connections", "Conexiones"],
-                ["sync", "Sincronización"],
-                ["exchange", "Importar / Exportar"],
-                ["settings", "Ajustes"],
-                ["tools", "Herramientas de Drive"],
-                ["help", "Ayuda"],
-              ].map(([id, label]) => (
-                <button
-                  key={id}
-                  className={moreTab === id ? "active" : ""}
-                  onClick={() => setMoreTab(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
             {moreTab === "connections" && (
               <>
                 <div className="p-connection-grid">
@@ -2551,16 +2544,6 @@ export default function Platform() {
                 </button>
               </section>
             )}
-            {moreTab === "tools" && <section className="p-card">
-              <h2>Herramientas de tu inventario</h2>
-              <p>Consulta el inventario operativo y utiliza las herramientas del tutorial con tu misma cuenta. Cada escritura conserva su revisión y confirmación.</p>
-              <div className="p-chips">
-                <a className="button secondary" target="_blank" rel="noreferrer" href="/inventory-hub">Conteo, movimientos y comparación Sheets–WooCommerce</a>
-                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-image-preview">Revisar Drive y WordPress</a>
-                <a className="button secondary" target="_blank" rel="noreferrer" href="/woocommerce-batch-sync">Publicación masiva, pausa y reanudación</a>
-              </div>
-              <p className="p-muted">Comprueba la conexión en Sincronización. Las publicaciones y los cambios de stock requieren tu confirmación.</p>
-            </section>}
             {moreTab === "exchange" && (
               <div className="p-two-column">
                 <section className="p-card">

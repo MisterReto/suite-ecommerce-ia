@@ -54,6 +54,8 @@ sys.modules["app"] = runtime
 import product_web
 import batch_web_v2
 import inventory_hub
+import native_tools
+native_tools.register(runtime.fastapi_app)
 
 app = FastAPI(title="Suite sync service")
 _NONCES = {}

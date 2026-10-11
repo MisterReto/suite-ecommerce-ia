@@ -25,6 +25,17 @@ const config: NextConfig = {
   ...(separate ? {
     // Match the API upload allowance plus multipart overhead.
     experimental: { proxyClientMaxBodySize: 13_000_000 },
+    async redirects() {
+      // Bookmarks open the native workspace; no tool opens a separate legacy page.
+      return [
+        ["/inventory-hub", "/#inventory/count"], ["/inventory-manager", "/#inventory/count"],
+        ["/inventory-count", "/#inventory/count"], ["/inventory-sync", "/#inventory/count"],
+        ["/woocommerce-publish-preview", "/#inventory/count"],
+        ["/woocommerce-image-preview", "/#more/media"],
+        ["/woocommerce-batch-sync", "/#more/publication"],
+        ["/woocommerce-product-sync", "/#more/publication"], ["/studio", "/#generate/capture"],
+      ].map(([source, destination]) => ({ source, destination, permanent: false }));
+    },
     // Sirve /login localmente, dirige /auth/start al login de FastAPI y conserva el proxy de
     // API/callback con el origen validado.
     async rewrites() {

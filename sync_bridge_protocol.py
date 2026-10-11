@@ -7,6 +7,9 @@ import time
 
 STORE_CONTEXT = ContextVar("store_context", default={})
 TOOL_PATHS = {
+    "/api/tools/inventory", "/api/tools/history", "/api/tools/review", "/api/tools/media-preview",
+    "/api/tools/batch-status", "/api/tools/counts", "/api/tools/movement", "/api/tools/media-sync",
+    "/api/tools/product-sync", "/api/tools/batch-create", "/api/tools/batch-step", "/api/tools/batch-resume",
     "/inventory-hub", "/inventory-manager", "/inventory-count",
     "/inventory-movement", "/inventory-count-bulk", "/inventory-history", "/inventory-review",
     "/inventory-sync", "/wc-health", "/wc-preview", "/wp-media-health",
