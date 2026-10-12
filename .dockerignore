@@ -7,3 +7,6 @@ frontend/.next
 frontend/out
 *.log
 .env*
+
+.test-deps
+test-results

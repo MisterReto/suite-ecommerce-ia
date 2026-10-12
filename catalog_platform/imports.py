@@ -1,5 +1,5 @@
 """Explicit import preview/commit. Originals and operational catalog are backed up."""
-# Importación revisada de CSV/XLSX/Sheets/WooCommerce, con respaldo y sin resucitar eliminados.
+# Importación revisada de CSV/XLSX/Sheets, con respaldo y sin resucitar eliminados.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import csv
@@ -260,7 +260,7 @@ def execute_import(job, value, drive, owner):
 
 # Asocia imágenes existentes por el naming aceptado; no reorganiza originales en Drive.
 def attach_historic_images(job, data, product_id, drive_index, drive, owner):
-    from woocommerce_image_sync import resolve_product_images
+    from drive_image_index import resolve_product_images
     from PIL import Image
     from .models import SyncEvent
 

@@ -11,3 +11,5 @@ frontend/out/
 frontend/tsconfig.tsbuildinfo
 frontend/next-env.d.ts
 *.log
+.test-deps/
+test-results/

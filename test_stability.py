@@ -58,31 +58,7 @@ class Stability(unittest.TestCase):
         response = NS(candidates=[NS(content=NS(parts=parts))])
         self.assertEqual(scope["_extraer_imagen_bytes"](response), b"final")
 
-    def test_parent_stock_is_information(self):
-        scope = functions("woocommerce_publish_preview.py", {"build_stock_publish_preview"},
-                          {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent, "inspect_out_of_stock_visibility": lambda c: {}})
-        client = NS(catalog_by_sku=lambda **kw: ({}, {}))
-        result = scope["build_stock_publish_preview"]([{"sku": "PARENT", "tipo": "variable", "sku_padre": "", "Existencias": ""}], client)
-        self.assertIsNone(result["rows"][0]["stock_to_publish"])
-        self.assertEqual(result["summary"]["missing"], 0)
 
-    def test_parent_payload_does_not_zero_children(self):
-        scope = functions("woocommerce_product_sync.py",
-            {"sync_complete_product", "_text", "_money", "_pricing_and_stock"},
-            {"Any": object, "WooCommerceClient": object, "is_variable_parent": is_variable_parent, "clean_html": clean_html,
-             "resolve_taxonomies": lambda c, r: {"category_ids": [], "tag_ids": [], "brand_ids": [], "warnings": []}})
-        class Client:
-            config = NS(write_enabled=True)
-            def update_product(self, pid, payload):
-                self.payload = payload
-                return dict(payload, id=pid, sku="PARENT", type="variable")
-        client = Client()
-        result = scope["sync_complete_product"](row={"sku": "PARENT", "nombre_producto": "Cover"},
-            wc_client=client, wc_entity={"id": 1, "type": "variable"}, verify_get=False)
-        self.assertFalse(client.payload["manage_stock"])
-        self.assertNotIn("stock_quantity", client.payload)
-        self.assertNotIn("regular_price", client.payload)
-        self.assertTrue(result["backend_verified"])
 
 if __name__ == "__main__":
     unittest.main()

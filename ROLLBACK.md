@@ -1,39 +1,44 @@
-# Rollback de esta restauración
+# Rollback de la limpieza
 
-Base: `405f423fd79419700346c743eb90005e6bbbab82`, rama previa
-`agent/stabilize-architecture-20261006`. Auditoría inicial aislada: `ef1b756`.
-Los deploys anteriores y los IDs de servicio están registrados en
-`docs/FUNCTIONAL_PARITY_AUDIT.md`. No usar main como referencia equivalente.
+## Estado recuperable
 
-| Componente staging | Servicio | Deploy anterior observado |
+Repositorio: `MisterReto/suite-ecommerce-ia`.
+
+| Alcance | Rama de respaldo | Commit exacto |
 |---|---|---|
-| Frontend | `srv-db2mlb2j9qps73eob7og` | `dep-db2mrmbrjlhs73fl00fg` |
-| FastAPI | `srv-db2mlqij9qps73eobrg0` | `dep-db3hfpd9fdbs73dqqgf0` |
-| Image worker | `srv-db2mlqqj9qps73eobsk0` | `dep-db2rgh2d0e5s73e5jru0` |
+| Tres servicios actuales | `backup/pre-integration-cleanup-20261012` | `b4aa4051cd2d1b897cc7a582e67ee8b938cfcc2b` |
+| Dos servicios históricos | `backup/historical-before-cleanup-20261012` | `1a1c3bc9c9e56422c290fb59247a6dff2602d315` |
 
-Ante fallo de captura, credencial, variantes, análisis o generación, detener
-promoción. Registrar job/SKU/revisión y si hay una llamada o escritura en vuelo.
-Pausar solo nuevas solicitudes de staging; no lanzar automáticamente otro job
-para compensar una respuesta incierta. En Render restaurar el deploy anterior
-del componente afectado; si depende de la nueva API, restaurar frontend y API
-coherentemente. El worker conserva el protocolo de jobs y pipeline existentes.
+La rama de trabajo es `cleanup/remove-store-integrations-20261012`, basada en el commit realmente desplegado. Ningún servicio de Render, secreto, dato externo o esquema SQL se modifica durante la preparación. Mientras no se despliegue, **no hay nada que revertir en producción**.
 
-Si se actualizó la rama staging, revertir el commit de restauración mediante
-un nuevo commit sobre esa rama; no reescribir commits de otro colaborador.
-Aplicar despliegue después de CI y comprobar salud y navegación. Los dos servicios
-históricos permanecen fuera de este cambio, en `41d0599` y su rama histórica.
+## Revertir un futuro despliegue
 
-No hay migración de esquema que revertir. Mantener IntegrationAccount/SyncEvent
-y sus filas cifradas nuevas; volver al código previo no requiere borrar claves,
-borradores ni relaciones. Conservar `CREDENTIAL_ENCRYPTION_KEY`, PostgreSQL,
-Redis y las variables anteriores. No rotar el cifrado como paso de rollback.
+1. Detener nuevas solicitudes de generación desde la UI y revisar los jobs en curso. Conservar checkpoints; no volver a lanzar operaciones pagadas inciertas.
+2. Desactivar autodeploy en los tres servicios antes de elegir la versión. No tocar los dos servicios históricos.
+3. En Render → servicio → Deploys, elegir el deploy anterior de la tabla y hacer rollback, o seleccionar la rama de respaldo y el commit exacto b4aa4051. Usar el mismo commit para API, worker y frontend; cambiar primero API/worker y después frontend.
+4. Mantener DATABASE_URL, REDIS_URL, CREDENTIAL_ENCRYPTION_KEY, Google OAuth, carpeta y Sheet existentes. **No generar otra clave de cifrado.** No restaurar una base de datos: no hay migración de esquema que deshacer.
+5. Si se hubiera ejecutado la limpieza de entorno posterior, recuperar las variables necesarias de su respaldo seguro y del archivo de credenciales. Restablecer únicamente las variables del servicio correspondiente; no duplicar alias. Los flags de escritura antiguos deben mantenerse desactivados hasta una autorización específica de uso de tiendas. Restaurar un secreto del puente solo con una clave coordinada válida, nunca el secreto expuesto.
+6. Comprobar service-health, OAuth, sesión, PostgreSQL, Redis, heartbeat del worker, lectura de Drive/Sheet y navegación. No probar generación pagada sin autorización.
+7. Revisar productos archivados: el estado usa la columna existente. La versión previa no ofrece restaurarlos; restaurar los productos deseados desde la rama limpia **antes** del rollback si debe conservarse su visibilidad anterior. No eliminar esos registros ni auditorías.
+8. Registrar deploys, commit y resultado; mantener desactivado autodeploy hasta cerrar la incidencia.
 
-Un rollback de código no deshace el Sheet ni Drive. Verificar productos aceptados
-antes de repetir guardado; conservar portadas, originales, IDs y metadata para
-reparación. No ejecutar DROP/TRUNCATE ni borrar en masa. La variante/padre SQL
-se confirma o revierte completa dentro de su propia transacción.
+| Servicio | ID | Deploy funcional observado |
+|---|---|---|
+| rincon-frontend | srv-db2mlb2j9qps73eob7og | dep-db5go6740ujc73cfjf70 |
+| rincon-catalog-api | srv-db2mlqij9qps73eobrg0 | dep-db5hlb8473hc73b749f0 |
+| rincon-catalog-worker | srv-db2mlqqj9qps73eobsk0 | dep-db5hm6h42hec7390pou0 |
 
-El código previo admite un fallback Gemini global; por eso restaurarlo cambia
-el comportamiento de credenciales. Antes de reabrir generación, comprobar
-explícitamente la fuente usada. No presentar ese fallback como configuración
-personal persistente. Detalles de arquitectura: `docs/ROLLBACK.md`.
+## Recuperación de código sin alterar producción
+
+```sh
+git fetch origin
+git switch -c recovery/pre-cleanup origin/backup/pre-integration-cleanup-20261012
+git rev-parse HEAD
+# Debe imprimir b4aa4051cd2d1b897cc7a582e67ee8b938cfcc2b
+```
+
+Para rescatar un único módulo en otra rama, usar `git restore --source=origin/backup/pre-integration-cleanup-20261012 -- ruta/al/archivo`. Revisar sus consumidores y secretos antes de activarlo. No ejecutar force push, migraciones, DROP/TRUNCATE, restauraciones masivas de Sheets ni borrar archivos de Drive.
+
+## Entorno y credenciales
+
+Antes del cambio de entorno posterior al código, guardar un inventario de nombres/orígenes por servicio y un respaldo cifrado con acceso limitado fuera del repositorio. Las credenciales WC/WP todavía no se han movido ni borrado: las referencias existentes del Blueprint original señalan al servicio histórico suite-ecommerce-ia, y su presencia real sigue pendiente de verificación. Ver [ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md) y [INTEGRATION_REMOVAL_AUDIT.md](docs/INTEGRATION_REMOVAL_AUDIT.md).

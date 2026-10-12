@@ -30,10 +30,10 @@ const config: NextConfig = {
       return [
         ["/inventory-hub", "/#inventory/count"], ["/inventory-manager", "/#inventory/count"],
         ["/inventory-count", "/#inventory/count"], ["/inventory-sync", "/#inventory/count"],
-        ["/woocommerce-publish-preview", "/#inventory/count"],
-        ["/woocommerce-image-preview", "/#more/media"],
-        ["/woocommerce-batch-sync", "/#more/publication"],
-        ["/woocommerce-product-sync", "/#more/publication"], ["/studio", "/#generate/capture"],
+
+
+
+        ["/studio", "/#generate/capture"],
       ].map(([source, destination]) => ({ source, destination, permanent: false }));
     },
     // Sirve /login localmente, dirige /auth/start al login de FastAPI y conserva el proxy de
@@ -43,15 +43,10 @@ const config: NextConfig = {
         // Serve the waiting screen locally; issue OAuth state only after API readiness.
         { source: "/login", destination: "/connect-google" },
         { source: "/auth/start", destination: upstream + "/login" },
-        ...["/api/:path*", "/auth/:path*", "/suite-static/:path*", "/webhooks/:path*",
-            "/logout", "/service-health", "/sync-launch", "/sync-handoff/:path*",
+        ...["/api/:path*", "/auth/:path*", "/suite-static/:path*",
+            "/logout", "/service-health",
             "/inventory-hub", "/inventory-manager", "/inventory-count", "/inventory-history",
-            "/inventory-count-bulk", "/inventory-movement", "/inventory-review",
-            "/inventory-sync", "/wc-health", "/wc-preview",
-            "/woocommerce-image-preview", "/wp-media-health", "/image-sync-one",
-            "/woocommerce-publish-preview", "/stock-preview-start", "/stock-preview-result",
-            "/woocommerce-batch-sync", "/batch-create", "/batch-status", "/batch-step", "/batch-resume",
-            "/woocommerce-product-sync", "/product-sync-one"]
+            "/inventory-count-bulk", "/inventory-movement"]
           .map(source => ({ source, destination: upstream + source })),
       ], afterFiles: [], fallback: [] };
     },

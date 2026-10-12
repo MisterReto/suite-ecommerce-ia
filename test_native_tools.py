@@ -15,19 +15,17 @@ import retired_service
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("SUITE_SERVICE_ROLE", "sync")
-    monkeypatch.setenv("SUITE_DRIVE_ONLY", "false")
-    monkeypatch.setattr(native_tools, "worker_enabled", lambda: False)
     monkeypatch.setitem(native_tools.runtime.SESSIONS, "native-test", {"email": "test@example.test", "role": "admin"})
+    monkeypatch.setenv("APP_ROLE_MAP", '{"test@example.test":"admin"}')
     app = FastAPI()
     native_tools.register(app)
     with TestClient(app, cookies={"session_id": "native-test"}) as value:
         yield value
 
 
-def test_confirmation_role_method_and_store_gates_prevent_writes(client, monkeypatch):
+def test_confirmation_role_and_method_gates_prevent_writes(client, monkeypatch):
     handler = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(native_tools.inventory_web, "inventory_count_bulk", handler)
+    monkeypatch.setattr(native_tools.sheet_inventory, "inventory_count_bulk", handler)
     assert client.post("/api/tools/counts", json={"counts": []}).status_code == 422
     assert client.post("/api/tools/counts", json={"confirm": 1}).status_code == 422
     assert client.post("/api/tools/counts", content="malformed").status_code == 422
@@ -36,10 +34,9 @@ def test_confirmation_role_method_and_store_gates_prevent_writes(client, monkeyp
     native_tools.runtime.SESSIONS["native-test"]["role"] = "viewer"
     assert client.post("/api/tools/counts", json={"confirm": True}).status_code == 403
     native_tools.runtime.SESSIONS["native-test"]["role"] = "editor"
-    assert client.post("/api/tools/batch-step", json={"confirm": True}).status_code == 403
+    assert client.post("/api/tools/batch-step", json={"confirm": True}).status_code == 404
     native_tools.runtime.SESSIONS["native-test"]["role"] = "admin"
-    monkeypatch.setenv("SUITE_DRIVE_ONLY", "true")
-    assert client.post("/api/tools/batch-create", json={"confirm": True}).status_code == 503
+    assert client.post("/api/tools/batch-create", json={"confirm": True}).status_code == 404
     handler.assert_not_called()
 
 
@@ -49,7 +46,7 @@ def test_counts_delegate_the_exact_existing_payload_after_confirmation(client, m
         assert await request.json() == payload
         return {"ok": True, "message": "Guardado"}
     handler = AsyncMock(side_effect=established)
-    monkeypatch.setattr(native_tools.inventory_web, "inventory_count_bulk", handler)
+    monkeypatch.setattr(native_tools.sheet_inventory, "inventory_count_bulk", handler)
     assert client.post("/api/tools/counts", json=payload).json()["message"] == "Guardado"
     handler.assert_awaited_once()
 
@@ -75,21 +72,12 @@ def test_existing_history_is_read_without_creating_a_sheet(monkeypatch):
     sheets.spreadsheets().batchUpdate.assert_not_called()
 
 
-def test_signed_forwarder_is_used_without_replacing_the_session(client, monkeypatch):
-    monkeypatch.setattr(native_tools, "worker_enabled", lambda: True)
-    forwarded = AsyncMock(return_value={"ok": True, "summary": {}})
-    monkeypatch.setattr(native_tools, "forward_tool", forwarded)
-    assert client.get("/api/tools/review").status_code == 200
-    forwarded.assert_awaited_once()
-    request, runtime = forwarded.call_args.args
-    assert request.url.path == "/api/tools/review"
-    assert runtime is native_tools.runtime
 
 
 def test_retired_origins_redirect_without_oauth_or_old_ui():
     with TestClient(retired_service.app, follow_redirects=False) as client:
         for path, destination in [("/", "/#home"), ("/inventory-hub", "/#inventory/count"),
-                                  ("/woocommerce-batch-sync", "/#more/publication"),
+                                  ("/woocommerce-batch-sync", "/#home"),
                                   ("/auth/callback?code=never-forward&state=old", "/login")]:
             result = client.get(path)
             assert result.status_code == 303

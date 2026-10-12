@@ -124,38 +124,9 @@ type Session = {
   usage?: Record<string, number>;
   draft?: Draft;
   job?: Job;
-  loyverse?: {
-    configured: boolean;
-    stores: { id: string; name: string }[];
-    job?: LoyJob;
-  };
 };
 // Fila del inventario histórico que se muestra en consultas de captura.
 type CatalogRow = Record<string, string | number>;
-// Fila de coincidencia de las herramientas Loyverse compatibles.
-type LoyRow = {
-  sku: string;
-  name: string;
-  drive: number;
-  loyverse: number;
-  price: number;
-  status: string;
-  detail: string;
-  eligible: boolean;
-};
-// Progreso de un trabajo compatible Loyverse, separado de la cola SQL de imágenes.
-type LoyJob = {
-  id: string;
-  state: string;
-  done: number;
-  total: number;
-  phase: string;
-  current?: string;
-  error?: string;
-  uncertain?: string;
-  created?: string[];
-  completed?: string[];
-};
 
 const initial: Product = {
   sku: "",
@@ -240,7 +211,7 @@ async function api<T>(
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
-    path.includes("/loyverse/") || path.includes("/catalog") ? 120000 : 45000,
+    path.includes("/catalog") ? 120000 : 45000,
   );
   try {
     const response = await fetch(path, {
@@ -425,16 +396,7 @@ export default function CaptureStudio({
   const [query, setQuery] = useState("");
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [parents, setParents] = useState<[string, string][]>([]);
-  const [token, setToken] = useState("");
-  const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
-  const [store, setStore] = useState("");
-  const [loyRows, setLoyRows] = useState<LoyRow[]>([]);
-  const [preview, setPreview] = useState("");
-  const [loySelected, setLoySelected] = useState<string[]>([]);
-  const [loyConfirmed, setLoyConfirmed] = useState(false);
-  const [loyJob, setLoyJob] = useState<LoyJob | null>(null);
-  const loyWorking = !!loyJob && ["queued", "running"].includes(loyJob.state);
-  const busy = posting || activeJob(job) || loyWorking;
+  const busy = posting || activeJob(job);
   const signedIn = session.authenticated;
   const imageCount = Object.keys(draft?.images || {}).length;
   const allApproved =
@@ -462,11 +424,6 @@ export default function CaptureStudio({
     sessionCallback.current?.(data);
     applyDraft(data.draft);
     if (data.job) setJob(data.job);
-    if (data.loyverse?.job) setLoyJob(data.loyverse.job);
-    if (data.loyverse?.stores?.length) {
-      setStores(data.loyverse.stores);
-      setStore((prev) => prev || data.loyverse!.stores[0].id);
-    }
     return data;
   }, [applyDraft]);
 
@@ -474,7 +431,7 @@ export default function CaptureStudio({
     // Notifica cambios del borrador a los controles de captura.
     const change = () =>
       setSection(
-        ["studio", "catalog", "loyverse", "settings", "help"].includes(
+        ["studio", "catalog", "settings", "help"].includes(
           location.hash.slice(1),
         )
           ? location.hash.slice(1)
@@ -521,32 +478,6 @@ export default function CaptureStudio({
       clearInterval(timer);
     };
   }, [job?.id, job?.status, applyDraft, refresh, onSaved]);
-
-  useEffect(() => {
-    if (!loyWorking || !loyJob) return;
-    let stopped = false;
-    const timer = setInterval(async () => {
-      try {
-        const data = await api<{ job: LoyJob }>(
-          "/loyverse-upload-status?job_id=" + encodeURIComponent(loyJob.id),
-        );
-        if (!stopped && data.job) {
-          setLoyJob(data.job);
-          if (data.job.error) setError(data.job.error);
-        }
-      } catch (e) {
-        if (!stopped && e instanceof ApiError && e.status === 401) {
-          setLoyJob(null);
-          setSession({ authenticated: false });
-        }
-        if (!stopped) setError((e as Error).message);
-      }
-    }, 2200);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [loyJob?.id, loyJob?.state, loyWorking]);
 
   const submitting = useRef(false);
   const generationKeys = useRef(new Map<string, string>());
@@ -751,7 +682,6 @@ export default function CaptureStudio({
             {[
               { id: "studio", name: "Estudio de productos", icon: Images },
               { id: "catalog", name: "Inventario", icon: Package },
-              { id: "loyverse", name: "Loyverse", icon: ShoppingBag },
               { id: "settings", name: "Ajustes", icon: Settings2 },
             ].map((item) => (
               <a
@@ -1644,12 +1574,7 @@ export default function CaptureStudio({
                   <a className="button secondary small" href="/inventory-hub">
                     Conteos y movimientos
                   </a>
-                  <a
-                    className="button secondary small"
-                    href="/woocommerce-batch-sync"
-                  >
-                    Subida a WooCommerce
-                  </a>
+
                 </div>
                 {!catalogLoaded ? (
                   <div className="empty-state">
@@ -1732,265 +1657,7 @@ export default function CaptureStudio({
             </>
           )}
 
-          {section === "loyverse" && (
-            <>
-              <div className="page-heading">
-                <div>
-                  <p className="eyebrow">PUNTO DE VENTA</p>
-                  <h1>
-                    Loyverse<span className="title-dot">.</span>
-                  </h1>
-                  <p>
-                    Compara tu catálogo y revisa los productos antes de
-                    enviarlos.
-                  </p>
-                </div>
-              </div>
-              <div className="connection-grid">
-                <section className="card">
-                  <div className="section-heading">
-                    <ShoppingBag size={23} />
-                    <div>
-                      <h2>Conexión con Loyverse</h2>
-                      <p>Elige la sucursal que vas a actualizar.</p>
-                    </div>
-                  </div>
-                  <Field label="Token de acceso">
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={token}
-                      onChange={(e) => setToken(e.target.value)}
-                      placeholder="Tu token de Loyverse"
-                      disabled={busy}
-                    />
-                  </Field>
-                  <div className="form-actions">
-                    <button
-                      className="button primary"
-                      disabled={!signedIn || busy || !token}
-                      onClick={() =>
-                        attempt(async () => {
-                          const r = await api<{
-                            stores: { id: string; name: string }[];
-                          }>("/loyverse/connect", "POST", { token });
-                          setToken("");
-                          setStores(r.stores);
-                          setStore(r.stores[0]?.id || "");
-                          setPreview("");
-                          setLoyRows([]);
-                          setMessage(
-                            "Loyverse conectado. Elige una sucursal y compara.",
-                          );
-                        })
-                      }
-                    >
-                      Conectar Loyverse
-                    </button>
-                    {stores.length > 0 && (
-                      <button
-                        className="text-button"
-                        disabled={busy}
-                        onClick={() =>
-                          attempt(async () => {
-                            await api("/loyverse/disconnect", "POST", {});
-                            setStores([]);
-                            setLoyRows([]);
-                            setPreview("");
-                            setStore("");
-                          })
-                        }
-                      >
-                        Desconectar
-                      </button>
-                    )}
-                  </div>
-                  <Field label="Sucursal">
-                    <select
-                      value={store}
-                      disabled={busy || stores.length === 0}
-                      onChange={(e) => {
-                        setStore(e.target.value);
-                        setPreview("");
-                        setLoyRows([]);
-                        setLoySelected([]);
-                        setLoyConfirmed(false);
-                      }}
-                    >
-                      <option value="">Selecciona una sucursal</option>
-                      {stores.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <button
-                    className="button purple full"
-                    disabled={busy || !store}
-                    onClick={() =>
-                      attempt(async () => {
-                        setPreview("");
-                        setLoyConfirmed(false);
-                        setLoySelected([]);
-                        const r = await api<{ id: string; rows: LoyRow[] }>(
-                          "/loyverse/preview",
-                          "POST",
-                          { store },
-                        );
-                        setPreview(r.id);
-                        setLoyRows(r.rows);
-                        setMessage(
-                          "Comparación lista. Revisa las acciones y selecciona hasta 20 productos o familias.",
-                        );
-                      })
-                    }
-                  >
-                    <RefreshCw size={17} />
-                    Comparar catálogo
-                  </button>
-                </section>
-                <section className="card connection-note">
-                  <Layers size={32} strokeWidth={1.4} />
-                  <h2>Revisa antes de enviar</h2>
-                  <p>
-                    Los productos existentes actualizan existencias. Los
-                    productos nuevos y sus familias se crean según la revisión.
-                  </p>
-                  <p>
-                    El precio y las variaciones se muestran antes de confirmar.
-                    Cada revisión vence en cinco minutos.
-                  </p>
-                  <button
-                    className="button secondary"
-                    disabled={posting}
-                    onClick={() =>
-                      attempt(async () => {
-                        const r = await api<{ job: LoyJob }>(
-                          "/loyverse-upload-status",
-                        );
-                        if (r.job) setLoyJob(r.job);
-                        else
-                          setMessage(
-                            "No hay una subida en curso en esta sesión.",
-                          );
-                      })
-                    }
-                  >
-                    Consultar última subida
-                  </button>
-                </section>
-              </div>
-              {loyJob && (
-                <div className="job-banner">
-                  <RefreshCw size={20} className={loyWorking ? "spin" : ""} />
-                  <div>
-                    <strong>
-                      {loyJob.done}/{loyJob.total} confirmados
-                    </strong>
-                    <span>
-                      {loyJob.phase}
-                      {loyJob.current ? " · " + loyJob.current : ""}
-                    </span>
-                    <progress value={loyJob.done} max={loyJob.total || 1} />
-                    {loyJob.error && <span>{loyJob.error}</span>}
-                    {loyJob.uncertain && (
-                      <span>
-                        Revisa en Loyverse el resultado de {loyJob.uncertain}{" "}
-                        antes de repetir.
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-              {loyRows.length > 0 && (
-                <section className="card">
-                  <div className="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Enviar</th>
-                          <th>Producto / SKU</th>
-                          <th>Drive</th>
-                          <th>Loyverse</th>
-                          <th>Precio</th>
-                          <th>Acción</th>
-                          <th>Detalle</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {loyRows.map((r) => (
-                          <tr key={r.sku}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                aria-label={"Seleccionar " + r.sku}
-                                disabled={busy || !r.eligible}
-                                checked={loySelected.includes(r.sku)}
-                                onChange={(e) => {
-                                  setLoySelected((s) =>
-                                    e.target.checked
-                                      ? [...s, r.sku]
-                                      : s.filter((v) => v !== r.sku),
-                                  );
-                                  setLoyConfirmed(false);
-                                }}
-                              />
-                            </td>
-                            <td>
-                              <strong>{r.name}</strong>
-                              <small className="block">{r.sku}</small>
-                            </td>
-                            <td>{r.drive}</td>
-                            <td>{r.loyverse ?? "—"}</td>
-                            <td>{r.price}</td>
-                            <td>{r.status}</td>
-                            <td>{r.detail}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div className="send-controls">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={loyConfirmed}
-                        disabled={busy}
-                        onChange={(e) => setLoyConfirmed(e.target.checked)}
-                      />
-                      Revisé los productos y autorizo estas acciones en
-                      Loyverse.
-                    </label>
-                    <button
-                      className="button primary"
-                      disabled={
-                        busy ||
-                        !loyConfirmed ||
-                        !preview ||
-                        loySelected.length < 1 ||
-                        loySelected.length > 20
-                      }
-                      onClick={() =>
-                        attempt(async () => {
-                          const r = await api<LoyJob>(
-                            "/loyverse/apply",
-                            "POST",
-                            { id: preview, skus: loySelected },
-                          );
-                          setLoyJob(r);
-                          setPreview("");
-                          setLoyConfirmed(false);
-                        })
-                      }
-                    >
-                      Enviar {loySelected.length} seleccionados
-                    </button>
-                  </div>
-                </section>
-              )}
-            </>
-          )}
+
 
           {section === "settings" && (
             <>
@@ -2198,7 +1865,7 @@ export default function CaptureStudio({
                   },
                   {
                     name: "Publica o sincroniza",
-                    text: "Desde Inventario puedes abrir conteos y subida a WooCommerce. En Loyverse, compara una sucursal, selecciona los productos, revisa las acciones y confirma el envío.",
+                    text: "Desde Inventario puedes consultar conteos y registrar movimientos. Revisa las imágenes y guarda los resultados en Drive y en el catálogo.",
                   },
                 ].map((s, i) => (
                   <section className="card" key={s.name}>

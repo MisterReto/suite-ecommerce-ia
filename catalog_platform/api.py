@@ -1,8 +1,7 @@
-"""Authenticated catalog API. HTTP validates/enqueues; workers execute remote writes."""
-# Rutas del catálogo SQL, inventario, generación, cancelación, revisión, importación y publicación.
+"""Authenticated catalog API. HTTP validates/enqueues; workers execute image operations."""
+# Rutas del catálogo SQL, inventario, generación, revisión e importación local.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
-from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -13,23 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func, or_
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 from .database import configured, transaction
-from .models import (
-    Product,
-    ProductImage,
-    GenerationJob,
-    GenerationBatch,
-    GeneratedAsset,
-    InventoryMovement,
-    IntegrationAccount,
-    AuditLog,
-    SyncEvent,
-    WorkerHeartbeat,
-    uid,
-)
+from .models import Product, ProductImage, GenerationJob, GenerationBatch, GeneratedAsset, InventoryMovement, AuditLog, uid
 from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
+from .job_types import SUPPORTED_JOB_KINDS
 from .accounts import persist
 from .queue import available, worker_ready, request_lock, dispatch, request_cancel
 
@@ -271,6 +259,7 @@ def products(
 ):
     with transaction() as db:
         query = select(Product).where(Product.tenant_id == tenant(value), Product.status != "deleted")
+        query = query.where(Product.status == "archived" if filter == "archived" else Product.status != "archived")
         if q:
             pattern = "%" + q[:180].replace("%", "\\%").replace("_", "\\_") + "%"
             query = query.where(
@@ -283,10 +272,8 @@ def products(
         filters = {
             "published": Product.status == "published",
             "pending": Product.status == "pending",
-            "error": Product.sync_status == "error",
             "out": Product.stock == 0,
             "low": Product.stock.between(1, 5),
-            "difference": Product.stock != Product.woocommerce_stock,
         }
         if filter in filters:
             query = query.where(filters[filter])
@@ -318,7 +305,7 @@ def products(
 
 
 # Crea una ficha validada en SQL y registra su auditoría; no publica automáticamente en
-# WooCommerce.
+# Drive.
 @router.post("/products", status_code=201)
 def create_product(data: ProductInput, value=Depends(context)):
     edit(value)
@@ -366,7 +353,6 @@ def get_product(product_id: str, value=Depends(context)):
             "assets": related(GeneratedAsset),
             "jobs": related(GenerationJob),
             "movements": related(InventoryMovement),
-            "sync_events": related(SyncEvent),
             "variants": [
                 serialize(p)
                 for p in db.scalars(
@@ -403,7 +389,7 @@ def update_product(product_id: str, data: ProductInput, value=Depends(context)):
 
 
 # Retira solo la ficha de la app: bloquea fila, valida versión/familia/trabajos, guarda
-# tombstone y libera SKU sin borrar Drive o WooCommerce.
+# tombstone y libera SKU sin borrar Drive ni historial.
 @router.delete("/products/{product_id}")
 def delete_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
     admin(value)
@@ -438,7 +424,6 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
         # A tombstone retains references, remote IDs and stock/job history. The
         # original SKU is audited and released for an explicitly created record.
         product.status = "deleted"
-        product.sync_status = "deleted"
         product.sku = "deleted_" + product.id.replace("-", "")
         product.version += 1
         audit(db, tenant(value), actor(value), "product.deleted", product.id, before,
@@ -450,10 +435,6 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
 @router.post("/products/{product_id}/stock")
 def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
     edit(value)
-    if os.getenv("STOCK_AUTHORITY", "app") == "loyverse":
-        raise HTTPException(
-            409, "Loyverse es la autoridad física. Registra el movimiento en POS."
-        )
     with transaction() as db:
         product = product_for(db, tenant(value), product_id, True)
         existing = db.scalar(
@@ -468,17 +449,6 @@ def inventory_change(product_id: str, data: StockInput, value=Depends(context)):
             return {"movement": serialize(existing)}
         if data.version != product.version:
             raise HTTPException(409, "El stock cambió. Recarga antes de registrar.")
-        if db.scalar(
-            select(GenerationJob.id).where(
-                GenerationJob.product_id == product_id,
-                GenerationJob.tenant_id == tenant(value),
-                GenerationJob.kind.in_(["publication", "stock_sync"]),
-                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
-            )
-        ):
-            raise HTTPException(
-                409, "Hay una escritura a la tienda en curso. Espera su resultado."
-            )
         movement = move_stock(
             db,
             product,
@@ -594,7 +564,7 @@ def selection(db, value, data, lock=False):
         raise HTTPException(422, "Tipos de imagen inválidos.")
     query = select(Product).where(
         Product.tenant_id == tenant(value), Product.product_type != "variable",
-        Product.status != "deleted",
+        Product.status.not_in(["deleted", "archived"]),
     )
     if data.product_ids:
         query = query.where(Product.id.in_(list(set(data.product_ids))))
@@ -932,18 +902,6 @@ def review(asset_id: str, data: ReviewInput, value=Depends(context)):
             raise HTTPException(
                 409, "La imagen ya está publicada; genera una corrección nueva."
             )
-        if db.scalar(
-            select(GenerationJob.id).where(
-                GenerationJob.product_id == asset.product_id,
-                GenerationJob.tenant_id == tenant(value),
-                GenerationJob.kind == "publication",
-                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
-            )
-        ):
-            raise HTTPException(
-                409,
-                "La publicación está en curso. Espera su resultado antes de cambiar la aprobación.",
-            )
         image = db.get(ProductImage, asset.image_id)
         previous = asset.status
         asset.status = data.status
@@ -1090,7 +1048,7 @@ def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
 
 
 # Confirmación y request_key idempotente de publicación u operación.
-class PublishInput(BaseModel):
+class OperationInput(BaseModel):
     confirm: bool
     request_key: str = Field(min_length=12, max_length=100)
 
@@ -1098,7 +1056,7 @@ class PublishInput(BaseModel):
 # Encola el guardado explícito de un candidato aprobado; no lo publica por sí solo en la
 # tienda.
 @router.post("/assets/{asset_id}/save", status_code=202)
-def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(context)):
+def save_generated_asset(asset_id: str, data: OperationInput, value=Depends(context)):
     edit(value)
     if not data.confirm:
         raise HTTPException(422, "Confirma el guardado de la imagen aprobada.")
@@ -1113,68 +1071,9 @@ def save_generated_asset(asset_id: str, data: PublishInput, value=Depends(contex
     return enqueue_operation(value, "asset_save", data.request_key, payload, pid)
 
 
-# Encola publicación WooCommerce con permisos, flags y snapshot/versiones comprobados.
-@router.post("/products/{product_id}/publish", status_code=202)
-def publish(product_id: str, data: PublishInput, value=Depends(context)):
-    admin(value)
-    if not data.confirm:
-        raise HTTPException(422, "Confirma la publicación en WooCommerce.")
-    with transaction() as db:
-        request_lock(db, tenant(value), data.request_key)
-        product = product_for(db, tenant(value), product_id, True)
-        old = db.scalar(
-            select(GenerationJob).where(
-                GenerationJob.tenant_id == tenant(value),
-                GenerationJob.request_key == data.request_key,
-                GenerationJob.product_id == product_id,
-            )
-        )
-        if old:
-            return {"job": serialize(old)}
-        if db.scalar(
-            select(GenerationJob.id).where(
-                GenerationJob.tenant_id == tenant(value),
-                GenerationJob.product_id == product_id,
-                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
-            )
-        ):
-            raise HTTPException(409, "El producto ya tiene un trabajo activo.")
-        images = db.scalars(
-            select(ProductImage).where(
-                ProductImage.product_id == product_id,
-                ProductImage.tenant_id == tenant(value),
-                ProductImage.status.in_(["approved", "published"]),
-                ProductImage.role != "reference",
-            )
-        ).all()
-        if not images:
-            raise HTTPException(422, "Aprueba al menos una imagen antes de publicar.")
-        if not available(db):
-            raise HTTPException(503, "No hay worker conectado.")
-        persist(db, tenant(value), actor(value), value)
-        job = GenerationJob(
-            tenant_id=tenant(value),
-            product_id=product_id,
-            actor=actor(value),
-            kind="publication",
-            request_key=data.request_key,
-            provider="woocommerce",
-            payload={"version": product.version, "image_ids": [i.id for i in images]},
-        )
-        db.add(job)
-        db.flush()
-        audit(
-            db,
-            tenant(value),
-            actor(value),
-            "publication.queued",
-            product_id,
-            after={"job_id": job.id},
-        )
-        return {"job": serialize(job)}
 
 
-# Resume catálogo visible, trabajos, actividad y últimos snapshots reales de pedidos.
+# Resume catálogo local, trabajos y actividad.
 @router.get("/dashboard")
 def dashboard(value=Depends(context)):
     with transaction() as db:
@@ -1191,9 +1090,11 @@ def dashboard(value=Depends(context)):
             "pending_products": count(Product, Product.status == "pending"),
             "low_stock": count(Product, Product.stock.between(1, 5), Product.status != "deleted"),
             "out_of_stock": count(Product, Product.stock == 0, Product.status != "deleted"),
-            "sync_errors": count(Product, Product.sync_status == "error", Product.status != "deleted"),
+             "ai_errors": count(GenerationJob, GenerationJob.status == "failed",
+                GenerationJob.kind.in_(["generation", "studio_generation", "enrichment"])) ,
             "pending_jobs": count(
-                GenerationJob, GenerationJob.status.in_(["queued", "processing", "cancelling"])
+                GenerationJob, GenerationJob.status.in_(["queued", "processing", "cancelling"]),
+                GenerationJob.kind.in_(sorted(SUPPORTED_JOB_KINDS))
             ),
             "completed_images": count(
                 GeneratedAsset,
@@ -1211,50 +1112,10 @@ def dashboard(value=Depends(context)):
                 .limit(12)
             )
         ]
-        from .models import OrderSnapshot
-        from zoneinfo import ZoneInfo
-
-        start = (
-            datetime.now(ZoneInfo("America/Mexico_City"))
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .astimezone(timezone.utc)
-        )
-        orders = db.scalars(
-            select(OrderSnapshot)
-            .where(OrderSnapshot.tenant_id == tenant(value))
-            .order_by(OrderSnapshot.ordered_at.desc())
-            .limit(10)
-        ).all()
-        sales = db.scalar(
-            select(func.sum(OrderSnapshot.total)).where(
-                OrderSnapshot.tenant_id == tenant(value),
-                OrderSnapshot.currency == "MXN",
-                OrderSnapshot.ordered_at >= start,
-                OrderSnapshot.status.in_(["processing", "completed"]),
-            )
-        )
-        pending = count(
-            OrderSnapshot,
-            OrderSnapshot.status.in_(["pending", "processing", "on-hold"]),
-        )
-        return {
-            "stats": stats,
-            "activity": activity,
-            "ecommerce": (
-                {
-                    "sales_today": sales or 0,
-                    "pending_orders": pending,
-                    "orders": [serialize(o) for o in orders],
-                }
-                if orders
-                else None
-            ),
-            "pos": None,
-            "note": "Pedidos y ventas proceden de la última lectura o webhook de WooCommerce. POS es una integración futura.",
-        }
+        return {"stats": stats, "activity": activity}
 
 
-# Lista historial de sincronizaciones del tenant.
+# Lista auditoría local del tenant.
 @router.get("/events")
 def events(value=Depends(context)):
     with transaction() as db:
@@ -1262,9 +1123,9 @@ def events(value=Depends(context)):
             "items": [
                 serialize(row)
                 for row in db.scalars(
-                    select(SyncEvent)
-                    .where(SyncEvent.tenant_id == tenant(value))
-                    .order_by(SyncEvent.created_at.desc())
+                    select(AuditLog)
+                    .where(AuditLog.tenant_id == tenant(value))
+                    .order_by(AuditLog.created_at.desc())
                     .limit(100)
                 )
             ]
@@ -1274,80 +1135,17 @@ def events(value=Depends(context)):
 # Describe estados de integración sin exponer credenciales.
 @router.get("/connections")
 def connections(value=Depends(context)):
-    from sync_bridge_protocol import setting
-    from store_connection import drive_only
-    from .worker_wakeup import configured as remote_worker_configured
-
-    state = lambda keys: (
-        "connected" if all(setting(k) for k in keys) else "disconnected"
-    )
-    woo = {
-        "name": "WooCommerce",
-        "status": state(["WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"]),
-    }
-    if drive_only():
-        woo.update(status="disconnected", note="Conexión pausada por el modo solo Drive.")
-    elif remote_worker_configured():
-        # Store credentials live in the worker, not necessarily in the API.
-        # A configured queue alone is not proof of a successful store request.
-        with transaction() as db:
-            latest = db.scalar(
-                select(GenerationJob)
-                .where(GenerationJob.tenant_id == tenant(value),
-                       GenerationJob.kind == "ecommerce_pull")
-                .order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc())
-                .limit(1)
-            )
-            result = latest.status if latest else None
-        woo.update(status="pending", note="Consulta la tienda en Sincronización para comprobar la conexión del worker.")
-        if result == "completed":
-            woo.update(status="connected", note="La última consulta a la tienda terminó correctamente.")
-        elif result == "failed":
-            woo.update(status="error", note="La última consulta falló. Revisa el trabajo en Sincronización.")
-    return {
-        "items": [
-            {
-                "name": "Google Drive",
-                "status": "connected" if value.get("creds") else "disconnected",
-            },
-            {
-                "name": "IA · Gemini",
-                "status": (
-                    "connected"
-                    if value.get("gemini_key")
-                    else "disconnected"
-                ),
-            },
-            woo,
-            {"name": "WordPress", "status": state(["WP_USERNAME", "WP_APP_PASSWORD"])},
-            {
-                "name": "Loyverse",
-                "status": "disconnected",
-                "note": "Integración futura; escrituras deshabilitadas",
-            },
-        ],
-        "note": "Estado de credenciales servidor; la última sincronización confirma la conexión remota.",
-    }
+    connected = "connected" if value.get("creds") else "disconnected"
+    return {"items": [
+        {"name": "Google Drive", "status": connected},
+        {"name": "Google Sheets", "status": connected},
+        {"name": "IA · Gemini", "status": "connected" if value.get("gemini_key") else "disconnected"},
+    ], "note": "Credenciales disponibles; la lectura de Drive y Sheets se verifica al abrir el catálogo."}
 
 
-# Encola una consulta de tienda, diferenciada de una importación completa.
-@router.post("/ecommerce/refresh", status_code=202)
-def ecommerce_refresh(data: PublishInput, value=Depends(context)):
-    admin(value)
-    if not data.confirm:
-        raise HTTPException(422, "Confirma la lectura de WooCommerce.")
-    return enqueue_operation(value, "ecommerce_pull", data.request_key, {})
 
 
-# Encola una importación explícita WooCommerce con confirmación y respaldo.
-@router.post("/import/woocommerce", status_code=202)
-def import_woocommerce(data: PublishInput, value=Depends(context)):
-    admin(value)
-    if not data.confirm:
-        raise HTTPException(422, "Confirma la importación con respaldo previo.")
-    return enqueue_operation(
-        value, "ecommerce_pull", data.request_key, {"import_products": True}
-    )
+
 
 
 # Crea una operación durable e idempotente y persiste la conexión del actor antes de
@@ -1355,6 +1153,8 @@ def import_woocommerce(data: PublishInput, value=Depends(context)):
 def enqueue_operation(
     value, kind, request_key, payload, product_id=None, model="", estimated_cost=None
 ):
+    if kind not in SUPPORTED_JOB_KINDS:
+        raise HTTPException(410, "Este tipo de operación fue retirado.")
     with transaction() as db:
         request_lock(db, tenant(value), request_key)
         previous = db.scalar(
@@ -1480,7 +1280,7 @@ async def preview_file(source: UploadFile = File(), value=Depends(context)):
 
 
 # Referencia de la previsualización/importación que el usuario confirma.
-class ImportConfirm(PublishInput):
+class ImportConfirm(OperationInput):
     preview_id: str = Field(max_length=64)
 
 
@@ -1541,7 +1341,7 @@ def commit_import(data: ImportConfirm, value=Depends(context)):
 
 
 # Confirmación explícita del reintento de un trabajo existente.
-class RetryInput(PublishInput):
+class RetryInput(OperationInput):
     uncertainty_reviewed: bool = False
 
 
@@ -1558,7 +1358,9 @@ def retry(job_id: str, data: RetryInput, value=Depends(context)):
         )
         if not old or old.status != "failed":
             raise HTTPException(422, "Solo se reintentan trabajos fallidos.")
-        if old.kind not in {"generation", "enrichment", "stock_sync"}:
+        if old.kind not in SUPPORTED_JOB_KINDS:
+            raise HTTPException(410, "Este tipo de trabajo fue retirado; se conservó su historial.")
+        if old.kind not in {"generation", "enrichment"}:
             admin(value)
         if (
             not data.confirm
@@ -1571,15 +1373,6 @@ def retry(job_id: str, data: RetryInput, value=Depends(context)):
             )
         payload = {**old.payload, "in_flight": None, "retry_of": old.id}
         kind, pid, model, cost = old.kind, old.product_id, old.model, old.estimated_cost
-        if (
-            kind in {"publication", "stock_sync"}
-            and old.payload.get("version")
-            != product_for(db, tenant(value), pid).version
-        ):
-            raise HTTPException(
-                409,
-                "La ficha cambió. Revisa el producto y confirma una nueva operación.",
-            )
     return enqueue_operation(value, kind, data.request_key, payload, pid, model, cost)
 
 
@@ -1686,7 +1479,7 @@ def export(format: str = "csv", value=Depends(context)):
 
 # Encola una propuesta IA de textos y clasificación para revisión.
 @router.post("/products/{product_id}/enrich", status_code=202)
-def enrich_product(product_id: str, data: PublishInput, value=Depends(context)):
+def enrich_product(product_id: str, data: OperationInput, value=Depends(context)):
     edit(value)
     if not data.confirm or not value.get("gemini_key"):
         raise HTTPException(
@@ -1727,39 +1520,12 @@ def barcode(data: ReferenceInput, value=Depends(context)):
     return {"codes": read_barcodes(file_path(value, data.upload_id))}
 
 
-# Encola una escritura de stock confirmada sobre la entidad remota identificada.
-@router.post("/products/{product_id}/sync-stock", status_code=202)
-def sync_stock(product_id: str, data: PublishInput, value=Depends(context)):
-    edit(value)
-    if not data.confirm:
-        raise HTTPException(422, "Confirma el envío del stock maestro a WooCommerce.")
-    if os.getenv("STOCK_AUTHORITY", "app") != "app":
-        raise HTTPException(
-            409,
-            "El stock lo administra la plataforma configurada como autoridad; usa la lectura de WooCommerce.",
-        )
-    with transaction() as db:
-        p = product_for(db, tenant(value), product_id)
-        if (
-            p.product_type == "variable"
-            or not p.woocommerce_product_id
-            or p.woocommerce_stock is None
-        ):
-            raise HTTPException(
-                422, "Publica y consulta el stock remoto antes de sincronizar."
-            )
-        payload = {
-            "version": p.version,
-            "quantity": p.stock,
-            "expected_remote": p.woocommerce_stock,
-        }
-    return enqueue_operation(value, "stock_sync", data.request_key, payload, product_id)
 
 
 # Marca como revisada una referencia original, conservando permisos y auditoría.
 @router.post("/products/{product_id}/images/{image_id}/approve-original")
 def approve_original(
-    product_id: str, image_id: str, data: PublishInput, value=Depends(context)
+    product_id: str, image_id: str, data: OperationInput, value=Depends(context)
 ):
     edit(value)
     if not data.confirm:
@@ -1807,3 +1573,65 @@ def approve_original(
             after={"reference_id": original.id},
         )
         return {"ok": True}
+
+def change_archive(product_id, data, value, archived):
+    edit(value)
+    if not data.confirm:
+        raise HTTPException(422, "Confirma el cambio de estado.")
+    with transaction() as db:
+        root = product_for(db, tenant(value), product_id, True)
+        if (root.status == "archived") == archived:
+            return {"product": serialize(root), "replayed": True}
+        if root.version != data.version:
+            raise HTTPException(409, "La ficha cambió. Recarga antes de continuar.")
+        if not archived and root.parent_id and product_for(db, tenant(value), root.parent_id, True).status == "archived":
+            raise HTTPException(409, "Restaura primero el padre de esta variante.")
+        rows = [root]
+        if root.product_type == "variable":
+            children = list(db.scalars(select(Product).where(
+                Product.tenant_id == tenant(value), Product.parent_id == root.id,
+                Product.status != "deleted").with_for_update()))
+            if archived:
+                rows += [p for p in children if p.status != "archived"]
+            else:
+                entry = db.scalar(select(AuditLog).where(
+                    AuditLog.tenant_id == tenant(value), AuditLog.product_id == root.id,
+                    AuditLog.action == "product.archived").order_by(AuditLog.created_at.desc()).limit(1))
+                event = entry.after.get("archive_event") if entry else None
+                for child in children:
+                    last = db.scalar(select(AuditLog).where(
+                        AuditLog.tenant_id == tenant(value), AuditLog.product_id == child.id,
+                        AuditLog.action == "product.archived").order_by(AuditLog.created_at.desc()).limit(1))
+                    if child.status == "archived" and event and last and last.after.get("archive_event") == event:
+                        rows.append(child)
+        if db.scalar(select(GenerationJob.id).where(
+            GenerationJob.tenant_id == tenant(value), GenerationJob.product_id.in_([p.id for p in rows]),
+            GenerationJob.status.in_(["queued", "processing", "cancelling"])).limit(1)):
+            raise HTTPException(409, "Detén o termina los trabajos antes de cambiar el estado de esta familia.")
+        event = uid()
+        for row in rows:
+            previous = row.status
+            if archived:
+                row.status = "archived"
+            else:
+                entry = db.scalar(select(AuditLog).where(
+                    AuditLog.tenant_id == tenant(value), AuditLog.product_id == row.id,
+                    AuditLog.action == "product.archived").order_by(AuditLog.created_at.desc()).limit(1))
+                row.status = entry.before.get("status", "pending") if entry else "pending"
+                if row.status in {"archived", "deleted"}:
+                    row.status = "pending"
+            row.version += 1
+            audit(db, tenant(value), actor(value), "product.archived" if archived else "product.restored",
+                  row.id, {"status": previous}, {"status": row.status, "archive_event": event})
+        db.flush()
+        return {"product": serialize(root), "affected": len(rows)}
+
+
+@router.post("/products/{product_id}/archive")
+def archive_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
+    return change_archive(product_id, data, value, True)
+
+
+@router.post("/products/{product_id}/restore")
+def restore_product(product_id: str, data: DeleteProductInput, value=Depends(context)):
+    return change_archive(product_id, data, value, False)

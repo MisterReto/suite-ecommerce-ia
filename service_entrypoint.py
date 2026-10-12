@@ -1,46 +1,33 @@
 """API entrypoint with optional UI hosting for the compatible deployment."""
-# Arranque de FastAPI: selecciona el rol, registra rutas y ordena los controles de sesión y permisos.
+# Arranque de FastAPI: registra rutas y ordena los controles de sesión y permisos.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import os
 from starlette.routing import Mount
 from catalog_platform.render_config import configure_redirect
 from catalog_platform.initialize import initialize_empty_database
 
+os.environ.setdefault("STUDIO_IMAGE_JOBS", "worker")
 configure_redirect()
 initialize_empty_database()
 
-if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":
-    from sync_service import app as fastapi_app
-else:
-    from studio_api import app as fastapi_app
-    import product_web
-    import native_tools
-    native_tools.register(fastapi_app)
-
-
-if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
-    import loyverse_web
-    loyverse_web.register(fastapi_app)
-    if os.getenv("SUITE_SERVE_FRONTEND", "true").lower() == "true":
-        from frontend_host import register_frontend
-        register_frontend(fastapi_app)
-    from catalog_platform.api import router as catalog_router
-    fastapi_app.include_router(catalog_router)
-    from catalog_platform.webhooks import router as webhook_router
-    fastapi_app.include_router(webhook_router)
-
+from studio_api import app as fastapi_app
+import native_tools
+native_tools.register(fastapi_app)
+if os.getenv("SUITE_SERVE_FRONTEND", "false").lower() == "true":
+    from frontend_host import register_frontend
+    register_frontend(fastapi_app)
+from catalog_platform.api import router as catalog_router
+fastapi_app.include_router(catalog_router)
 
 # Informa rol, versión y almacén de sesión sin consultar Drive ni ejecutar generación; no
 # sustituye el heartbeat del worker.
 @fastapi_app.get("/service-health")
 def service_health():
-    return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": os.getenv("SUITE_SERVICE_ROLE", "main"),
-            "remote_sync": bool(os.getenv("SYNC_SERVICE_URL")),
-            "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "local"),
+    return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": "api",
+            "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "worker"),
             "service_id": os.getenv("RENDER_SERVICE_ID", ""),
             "version": os.getenv("RENDER_GIT_COMMIT", ""),
-            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory",
-            "store_connected": os.getenv("SUITE_DRIVE_ONLY", "true").lower() == "false"}
+            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory"}
 
 
 _mounts = [r for r in fastapi_app.routes if (isinstance(r, Mount) and r.path in {"", "/"}) or getattr(r,"path",None) == "/{tool_path:path}"]

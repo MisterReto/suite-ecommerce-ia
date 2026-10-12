@@ -12,7 +12,7 @@ const product = { id: "test-product", sku: "TEST-INTEGRATION-MOBILE", barcode: "
   name: "Producto de prueba móvil", brand: "Glico", category: "Dulces", subcategory: "Chocolate",
   short_description: "Referencia de prueba", long_description: "Ficha sintética de pruebas",
   tags: [], attributes: {}, product_type: "simple", parent_id: null, price: 35, cost: 20,
-  stock: 10, woocommerce_stock: 10, loyverse_stock: null, status: "pending", sync_status: "synced", version: 1 };
+  stock: 10, status: "pending", version: 1 };
 const asset = { id: "test-asset", image_id: "test-image", product_id: product.id, job_id: "test-job",
   provider: "gemini", model: "gemini-3.1-flash-image", sku: product.sku, product_name: product.name,
   slot: "1_hd", estimated_correction_usd: .067, status: "completed", history: [], metadata_json: {} };
@@ -42,7 +42,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const nativeWrites = [];
     let remaining = 2, batchSteps = 0;
     let catalogRemoved = false;
-    let jobList = ["studio_generation", "ecommerce_pull", "ecommerce_pull"].map((kind, index) => ({
+    let jobList = ["studio_generation", "generation", "enrichment"].map((kind, index) => ({
       id: "queued-"+index, kind, actor: "test@example.test", product_id: null,
       status: "queued", progress: 0, message: "En cola", created_at: "2026-10-10T05:57:00Z", payload: {},
     }));
@@ -181,12 +181,10 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     assert.ok(desktopNav.x < 10 && desktopNav.width < 250,"Desktop navigation uses the sidebar");
     await nav.getByRole("link",{name:"Más",exact:true}).click();
     assert.equal(await page.locator(".p-main .p-tabs").count(),0,"Section tools moved out of the content");
-    await nav.getByRole("button",{name:"Revisar Drive y WordPress",exact:true}).click();
-    await page.getByRole("heading",{name:"Revisar Drive y WordPress",exact:true}).waitFor();
-    assert.equal(nativeWrites.length,0,"Opening native tools does not write");
-    await page.getByRole("button",{name:"Revisar imágenes de Drive y WordPress",exact:true}).click();
-    await page.getByText(product.sku+"_1_hd.jpg · Coincidencia exacta",{exact:true}).waitFor();
-    assert.equal(await page.locator(".p-native-tools iframe").count(),0,"Tools are native components");
+    assert.equal(await nav.getByRole("button",{name:"Revisar Drive y WordPress",exact:true}).count(),0);
+    assert.equal(await nav.getByRole("button",{name:"Publicación masiva",exact:true}).count(),0);
+    await nav.getByRole("button",{name:"Trabajos y logs",exact:true}).click();
+    await page.getByRole("heading",{name:"Trabajos y logs",exact:true}).waitFor();
     fs.mkdirSync(path.join(__dirname,"test-results"),{recursive:true});
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-desktop.png"),fullPage:true});
     await page.setViewportSize({width:390,height:844});
@@ -208,19 +206,10 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native inventory fits phone width");
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-mobile.png"),fullPage:true});
     await nav.getByRole("link",{name:"Más",exact:true}).click();
-    await nav.getByRole("button",{name:"Publicación masiva",exact:true}).click();
-    await page.getByRole("button",{name:"Crear y publicar lote",exact:true}).click();
-    await page.getByRole("dialog").getByRole("button",{name:"Crear y publicar",exact:true}).click();
-    for(let i=0;i<100 && !releaseWave;i++) await page.waitForTimeout(50);
-    assert.equal(batchSteps,1,"A confirmed publication starts one wave");
-    await page.getByRole("button",{name:"Pausar publicación",exact:true}).click();
-    releaseWave();
-    await page.getByText("Pausado",{exact:true}).waitFor();
-    await page.waitForTimeout(350);
-    assert.equal(batchSteps,1,"Pausing while a wave runs prevents the next write");
-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native batch fits phone width");
+    assert.equal(await nav.getByRole("button",{name:"Publicación masiva",exact:true}).count(),0);
+    assert.ok(!nativeWrites.some(row => /media|product-sync|batch/.test(row.operation)), "No store writes");
     assert.deepEqual(errors, [], "No browser exceptions");
-    console.log("Browser: 360/390/430px, sidebar/bottom tools, native Drive and WordPress, confirmed counts, safe batch pause, deletion/cancellation and paid idempotency passed.");
+    console.log("Browser: 360/390/430px, sidebar/bottom tools, local counts and logs, removed integration controls, deletion/cancellation and paid idempotency passed.");
   } finally {
     // A failed assertion must release the synthetic in-flight wave before closing the browser.
     releaseWave?.();

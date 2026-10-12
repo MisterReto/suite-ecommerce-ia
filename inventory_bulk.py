@@ -1,7 +1,7 @@
 """Conteo inicial masivo con trazabilidad.
 
 Permite registrar existencias físicas para muchos SKU en una sola operación de
-Google Sheets. No modifica WooCommerce.
+Google Sheets. Conserva el historial local.
 """
 from __future__ import annotations
 

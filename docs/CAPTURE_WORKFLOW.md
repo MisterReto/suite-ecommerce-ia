@@ -1,9 +1,6 @@
 # Captura recuperada
 
-Referencia: tutorial de 555 s entregado por el usuario y auditoría previa en
-`FUNCTIONAL_PARITY_AUDIT.md`. Base del cambio: `405f423`; commit de auditoría
-publicado antes del código: `ef1b756`. La aceptación con teléfonos y proveedor
-real se registra por separado en `../TEST_PLAN.md`.
+Flujo de captura conservado en la limpieza del 2026-10-12. La aceptación real pendiente se registra en REGRESSION_RESULTS.md.
 
 ## Desde la interfaz
 

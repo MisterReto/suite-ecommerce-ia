@@ -1,6 +1,5 @@
-# Additive staging. Existing services are referenced, never managed or modified.
-# Every resource is free. PostgreSQL expires after 30 days: staging only.
-# Release 2026-10-10: resync the three services for the cancellation protocol.
+# Proposed cleanup for the existing services. Do not apply automatically.
+# No historical service, SQL schema, credential or external data changes.
 previews:
   generation: 'off'
 databases:
@@ -23,12 +22,12 @@ services:
   name: rincon-frontend
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: cleanup/remove-store-integrations-20261012
   dockerfilePath: ./Dockerfile.frontend
   dockerContext: .
   plan: free
   region: oregon
-  autoDeployTrigger: checksPass
+  autoDeployTrigger: "off"
   healthCheckPath: /
   envVars:
   - key: SUITE_API_ORIGIN
@@ -40,12 +39,12 @@ services:
   name: rincon-catalog-api
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: cleanup/remove-store-integrations-20261012
   dockerfilePath: ./Dockerfile.api
   dockerContext: .
   plan: free
   region: oregon
-  autoDeployTrigger: checksPass
+  autoDeployTrigger: "off"
   healthCheckPath: /service-health
   envVars:
   - key: SUITE_SERVE_FRONTEND
@@ -59,8 +58,6 @@ services:
     fromDatabase:
       name: rincon-catalog-db
       property: connectionString
-  - key: INITIALIZE_EMPTY_DATABASE
-    value: 'true'
   - key: IMAGE_WORKER_ORIGIN
     fromService:
       type: web
@@ -82,7 +79,7 @@ services:
   - key: MAX_ESTIMATED_BATCH_COST
     sync: false
   - key: CREDENTIAL_ENCRYPTION_KEY
-    generateValue: true
+    sync: false
   - key: GOOGLE_CLIENT_ID
     fromService:
       type: web
@@ -101,24 +98,6 @@ services:
     sync: false
   - key: APP_DEFAULT_ROLE
     value: viewer
-  - key: SUITE_SERVICE_ROLE
-    value: main
-  - key: SUITE_DRIVE_ONLY
-    value: 'false'
-  - key: SYNC_SERVICE_URL
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: SYNC_SERVICE_URL
-  - key: SYNC_SERVICE_SHARED_KEY
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: SYNC_SERVICE_SHARED_KEY
-  - key: WC_WRITE_ENABLED
-    sync: false
-  - key: WP_MEDIA_WRITE_ENABLED
-    sync: false
   - key: GOOGLE_SHEET_ID
     value: 1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE
   - key: GOOGLE_REDIRECT_BASE
@@ -130,21 +109,19 @@ services:
   name: rincon-catalog-worker
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: cleanup/remove-store-integrations-20261012
   dockerfilePath: ./Dockerfile.worker
   dockerCommand: python -m catalog_platform.worker_web
   dockerContext: .
   plan: free
   region: oregon
-  autoDeployTrigger: checksPass
+  autoDeployTrigger: "off"
   healthCheckPath: /service-health
   envVars:
   - key: DATABASE_URL
     fromDatabase:
       name: rincon-catalog-db
       property: connectionString
-  - key: INITIALIZE_EMPTY_DATABASE
-    value: 'true'
   - key: REDIS_URL
     fromService:
       name: rincon-generation-queue
@@ -183,46 +160,6 @@ services:
       envVarKey: APP_ROLE_MAP
   - key: APP_DEFAULT_ROLE
     value: viewer
-  - key: SUITE_SERVICE_ROLE
-    value: sync
-  - key: SUITE_DRIVE_ONLY
-    value: 'false'
-  - key: STOCK_AUTHORITY
-    value: app
-  - key: WOOCOMMERCE_URL
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WC_URL
-  - key: WOOCOMMERCE_CONSUMER_KEY
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WC_CONSUMER_KEY
-  - key: WOOCOMMERCE_CONSUMER_SECRET
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WC_CONSUMER_SECRET
-  - key: WORDPRESS_URL
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WP_URL
-  - key: WP_USERNAME
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WP_USERNAME
-  - key: WP_APP_PASSWORD
-    fromService:
-      type: web
-      name: suite-ecommerce-ia
-      envVarKey: WP_APP_PASSWORD
-  - key: WC_WRITE_ENABLED
-    sync: false
-  - key: WP_MEDIA_WRITE_ENABLED
-    sync: false
   - key: GOOGLE_SHEET_ID
     fromService:
       type: web

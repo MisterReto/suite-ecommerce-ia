@@ -12,17 +12,8 @@ PUBLIC_ORIGIN = "https://rincon-frontend.onrender.com"
 DESTINATIONS = {
     "/inventory-hub": "inventory/count", "/inventory-manager": "inventory/count",
     "/inventory-count": "inventory/count", "/inventory-history": "inventory/count",
-    "/inventory-sync": "inventory/count", "/woocommerce-publish-preview": "inventory/count",
-    "/woocommerce-image-preview": "more/media", "/woocommerce-batch-sync": "more/publication",
-    "/woocommerce-product-sync": "more/publication", "/studio": "generate/capture",
 }
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-
-if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":
-    import sync_service
-    # Keep the authenticated internal executor, never its public legacy pages.
-    app.post("/internal/tools")(sync_service.tools)
-
 
 @app.get("/service-health")
 def health():

@@ -1,10 +1,9 @@
 """One Render worker. Browser-independent jobs reuse the frozen studio pipeline."""
-# Ejecución de un trabajo reclamado: imágenes, guardado, ecommerce y limpieza temporal.
+# Ejecución de un trabajo reclamado: imágenes y guardado y limpieza temporal.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 from copy import deepcopy
 import hashlib
-import json
 import logging
 import os
 from pathlib import Path
@@ -15,18 +14,10 @@ import time
 from PIL import Image
 from sqlalchemy import select
 from .database import transaction
-from .models import (
-    Product,
-    ProductImage,
-    GeneratedAsset,
-    GenerationJob,
-    SyncEvent,
-    IntegrationMapping,
-    now,
-    uid,
-)
+from .models import ProductImage, GeneratedAsset, GenerationJob, uid
 from .accounts import load, persist
-from .catalog import serialize, audit, product_for
+from .catalog import audit, product_for
+from .job_types import SUPPORTED_JOB_KINDS
 from . import queue
 
 log = logging.getLogger("rincon.worker")
@@ -277,169 +268,6 @@ def generation(job, value, drive):
 
 # Publica ficha y medios aprobados solo después de validar versiones, identidad remota y
 # flags de escritura.
-def publication(job, value, drive):
-    from ecommerce_services import WordPressMediaService, WooCommerceService
-    from woocommerce_product_sync import resolve_taxonomies
-
-    media = WordPressMediaService()
-    woo = WooCommerceService()
-    with transaction() as db:
-        product = product_for(db, job["tenant_id"], job["product_id"])
-        if product.version != job["payload"]["version"]:
-            raise ValueError(
-                "El producto cambió después de confirmar. Revisa otra vez antes de publicar."
-            )
-        parent = (
-            product_for(db, job["tenant_id"], product.parent_id)
-            if product.parent_id
-            else None
-        )
-        rows = db.scalars(
-            select(ProductImage).where(
-                ProductImage.tenant_id == job["tenant_id"],
-                ProductImage.product_id == product.id,
-                ProductImage.id.in_(job["payload"]["image_ids"]),
-            )
-        ).all()
-        if len(rows) != len(job["payload"]["image_ids"]) or any(
-            row.status not in {"approved", "published"} for row in rows
-        ):
-            raise ValueError(
-                "La selección de imágenes aprobadas cambió. Confirma de nuevo."
-            )
-        images = [
-            serialize(row)
-            for row in sorted(rows, key=lambda r: 0 if r.role == "main" else 1)
-        ]
-    ids = []
-    payload = deepcopy(job["payload"])
-    for image in images:
-        mid = image["metadata_json"].get("wordpress_media_id")
-        if not mid:
-            payload["in_flight"] = {
-                "operation": "wordpress_upload",
-                "image_id": image["id"],
-            }
-            queue.checkpoint(
-                job["id"],
-                OWNER,
-                payload=payload,
-                message="Subiendo imagen aprobada a WordPress",
-            )
-            result = media.upload(
-                drive.download(image["drive_file_id"]),
-                image["metadata_json"].get("filename", product.sku + ".jpg"),
-                product.name,
-            )
-            mid = int(result["id"])
-            with transaction() as db:
-                row = db.get(ProductImage, image["id"])
-                row.metadata_json = {
-                    **row.metadata_json,
-                    "wordpress_media_id": mid,
-                    "wordpress_media_url": result.get("source_url", ""),
-                }
-            payload["in_flight"] = None
-            queue.checkpoint(job["id"], OWNER, payload=payload)
-        ids.append(mid)
-    payload["in_flight"] = {"operation": "woocommerce_publish"}
-    queue.checkpoint(
-        job["id"], OWNER, payload=payload, message="Publicando producto en WooCommerce"
-    )
-    row = {
-        "categorias": product.category
-        + (" > " + product.subcategory if product.subcategory else ""),
-        "etiquetas": ", ".join(product.tags),
-        "Marca": product.brand,
-    }
-    terms = resolve_taxonomies(woo.client, row)
-    taxonomy = {
-        "categories": [{"id": i} for i in terms.get("category_ids", [])],
-        "tags": [{"id": i} for i in terms.get("tag_ids", [])],
-    }
-    if terms.get("brand_ids"):
-        taxonomy["brands"] = [{"id": i} for i in terms["brand_ids"]]
-    result = woo.publish(product, ids, parent, taxonomy)
-    # Verify by permanent ID before marking the local product published.
-    remote = (
-        woo.variation(parent.woocommerce_product_id, int(result["id"]))
-        if parent
-        else woo.product(int(result["id"]))
-    )
-    if str(remote.get("sku", "")) != product.sku or remote.get("status") != "publish":
-        raise ValueError(
-            "WooCommerce no confirmó SKU/estado. Revisa la operación antes de repetir."
-        )
-    with transaction() as db:
-        stored = product_for(db, job["tenant_id"], product.id, True)
-        if parent:
-            stored.woocommerce_product_id = parent.woocommerce_product_id
-            stored.woocommerce_variation_id = int(result["id"])
-        else:
-            stored.woocommerce_product_id = int(result["id"])
-        stored.wordpress_media_ids = ids
-        stored.status = "published"
-        stored.sync_status = (
-            "synced" if stored.version == product.version else "pending"
-        )
-        stored.last_woocommerce_sync = now()
-        ext = str(result["id"])
-        kind = "variation" if parent else "product"
-        mapping = db.scalar(
-            select(IntegrationMapping).where(
-                IntegrationMapping.tenant_id == job["tenant_id"],
-                IntegrationMapping.provider == "woocommerce",
-                IntegrationMapping.entity_type == kind,
-                IntegrationMapping.external_id == ext,
-            )
-        )
-        if mapping and mapping.internal_product_id != product.id:
-            raise ValueError(
-                "El ID externo está asociado a otro producto; no se cambió el mapping."
-            )
-        if not mapping:
-            db.add(
-                IntegrationMapping(
-                    tenant_id=job["tenant_id"],
-                    internal_product_id=product.id,
-                    provider="woocommerce",
-                    entity_type=kind,
-                    external_id=ext,
-                    parent_external_id=(
-                        str(parent.woocommerce_product_id) if parent else None
-                    ),
-                )
-            )
-        for image in images:
-            db.get(ProductImage, image["id"]).status = "published"
-            for asset in db.scalars(
-                select(GeneratedAsset).where(GeneratedAsset.image_id == image["id"])
-            ):
-                asset.status = "published"
-        db.add(
-            SyncEvent(
-                tenant_id=job["tenant_id"],
-                product_id=product.id,
-                source="app",
-                destination="woocommerce",
-                action="Publicación/actualización",
-                status="completed",
-                message="Producto y medios verificados",
-                job_id=job["id"],
-            )
-        )
-        audit(
-            db,
-            job["tenant_id"],
-            job["actor"],
-            "product.published",
-            product.id,
-            after={"woocommerce_id": result["id"], "media_ids": ids},
-            system="woocommerce",
-        )
-        stored_job = db.get(GenerationJob, job["id"])
-        stored_job.payload = {**payload, "in_flight": None}
-    return True
 
 
 # Guarda un candidato aprobado en Drive mediante respaldo previo y versionado; conserva IDs e
@@ -476,10 +304,8 @@ def save_asset(job, value, drive):
 # Despacha por kind con la conexión cifrada del actor; no trata JobCancelled como error de
 # proveedor.
 def process(job):
-    if job["kind"] == "webhook":
-        from .webhooks import process_event
-
-        return process_event(job, OWNER)
+    if job["kind"] not in SUPPORTED_JOB_KINDS:
+        raise ValueError("Este tipo de trabajo fue retirado. Se conservó su historial y no se ejecutó.")
     import studio_api
     from drive_service import DriveService
 
@@ -512,24 +338,14 @@ def process(job):
             done = process_capture(job, value, drive, OWNER)
         elif job["kind"] == "asset_save":
             done = save_asset(job, value, drive)
-        elif job["kind"] == "publication":
-            done = publication(job, value, drive)
         elif job["kind"] == "import":
             from .imports import execute_import
 
             done = execute_import(job, value, drive, OWNER)
-        elif job["kind"] == "ecommerce_pull":
-            from .ecommerce import refresh
-
-            done = refresh(job, OWNER, value, drive)
         elif job["kind"] == "enrichment":
             from .enrichment import enrich
 
             done = enrich(job, OWNER, value, drive)
-        elif job["kind"] == "stock_sync":
-            from .inventory import sync_stock
-
-            done = sync_stock(job, OWNER)
         else:
             raise ValueError("Tipo de trabajo no disponible.")
         with transaction() as db:
@@ -574,7 +390,7 @@ def execute_job(job_id):
     try:
         queue.checkpoint(job_id, OWNER)
         if process(job):
-            queue.finish(job_id, OWNER, True, "Completado. Revisa el resultado antes de publicar.")
+            queue.finish(job_id, OWNER, True, "Completado. Revisa el resultado antes de guardar.")
         return {"executed": True}
     except queue.JobCancelled:
         return {"executed": True, "cancelled": True}
@@ -588,8 +404,6 @@ def execute_job(job_id):
                 return {"executed": True, "cancelled": True}
             audit(db, job["tenant_id"], job["actor"], job["kind"] + ".failed",
                   job["product_id"], after={"job_id": job_id}, result="failed")
-            if job["kind"] in {"publication", "stock_sync"}:
-                product_for(db, job["tenant_id"], job["product_id"]).sync_status = "error"
         log.warning("Trabajo falló: tipo=%s; detalles disponibles en el panel", job["kind"])
         return {"executed": True, "failed": True}
     finally:
@@ -649,7 +463,7 @@ def main():
                     job["id"],
                     OWNER,
                     True,
-                    "Completado. Revisa las imágenes antes de publicar.",
+                    "Completado. Revisa las imágenes antes de guardar.",
                 )
         except queue.JobCancelled:
             continue
@@ -662,21 +476,6 @@ def main():
             with transaction() as db:
                 if db.get(GenerationJob, job["id"]).status == "cancelled":
                     continue
-                if job["kind"] in {"publication", "stock_sync"}:
-                    p = product_for(db, job["tenant_id"], job["product_id"])
-                    p.sync_status = "error"
-                    db.add(
-                        SyncEvent(
-                            tenant_id=job["tenant_id"],
-                            product_id=p.id,
-                            source="app",
-                            destination="woocommerce",
-                            action="Publicación",
-                            status="failed",
-                            message="No se confirmó la operación. Revisa antes de reintentar.",
-                            job_id=job["id"],
-                        )
-                    )
                 audit(
                     db,
                     job["tenant_id"],

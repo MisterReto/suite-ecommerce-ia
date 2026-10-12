@@ -43,7 +43,7 @@ def _canonical_row(record):
     }
     kind = aliases.get(raw_kind, "variation" if parent else "simple")
     # La interfaz heredada llama "Variable" a una fila hija. Si trae SKU padre,
-    # se guarda con el tipo real que WooCommerce espera: variation.
+    # se guarda con el tipo canónico de variante: variation.
     if sku.upper().endswith("FULL"):
         kind = "variable"
     elif kind == "variable" and parent:

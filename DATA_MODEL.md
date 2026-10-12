@@ -1,7 +1,3 @@
-# Data Model
+# Referencia vigente
 
-La documentación actualizada y basada en el proyecto está en
-[docs/DATA_MODEL.md](docs/DATA_MODEL.md).
-
-Producción histórica permanece intacta; distinguir implementación en rama
-y validación real pendiente. Consultar [TEST_PLAN](TEST_PLAN.md).
+La documentación actual está en [docs/DATA_MODEL.md](docs/DATA_MODEL.md). La versión anterior se conserva en el respaldo Git; no describe el runtime limpio.

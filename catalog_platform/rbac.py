@@ -52,10 +52,6 @@ class RoleMiddleware:
             "/logout",
             "/sync-handoff/redeem",
             "/internal/tools",
-            "/webhooks/woocommerce",
-            "/webhooks/loyverse",
-            "/api/webhooks/woocommerce",
-            "/api/webhooks/loyverse",
             "/api/uploads",
             "/api/platform/barcode",
         }:

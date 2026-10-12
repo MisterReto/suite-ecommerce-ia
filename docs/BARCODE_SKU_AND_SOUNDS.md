@@ -79,18 +79,4 @@ No se cambian credenciales, planes ni los dos servicios históricos de Render.
 
 ## Reversión
 
-La versión inmediatamente anterior es `f74396ace7f3ce49b46bb44edcbee7bfd594b0e8`,
-que conserva las correcciones de OAuth y clave Gemini. Para revertir por código,
-aplicar `git revert <commit que incorpora SKU y sonidos>` sobre esta rama y
-publicar; CI debe pasar antes del despliegue automático.
-
-Para una reversión inmediata en Render, seleccionar los despliegues anteriores:
-
-- `rincon-frontend`: `dep-db3tcl3ncjis7389ss2g`.
-- `rincon-catalog-api`: `dep-db3tcl3ncjis7389ss50`.
-
-No revertir inventario ni borrar datos. Los productos ya guardados con SKU
-numérico siguen siendo válidos; los padres enmascarados se reconocen por
-`tipo=variable`, que ya admite la versión anterior. Si se desea revertir también
-el worker de la misma rama, elegir su despliegue de `f74396a`; su generador no
-se modifica con esta corrección.
+Procedimiento vigente: [ROLLBACK.md](../ROLLBACK.md). No revertir inventario, borrar datos ni reutilizar deploys de entregas anteriores como base de esta limpieza.

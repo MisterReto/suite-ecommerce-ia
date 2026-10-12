@@ -59,16 +59,9 @@ type Product = {
   price: number | null;
   cost: number | null;
   stock: number | null;
-  woocommerce_stock: number | null;
-  loyverse_stock: number | null;
   status: string;
-  sync_status: string;
   version: number;
   image_id?: string;
-  woocommerce_product_id?: number;
-  woocommerce_variation_id?: number;
-  loyverse_item_id?: string;
-  last_woocommerce_sync?: string;
 };
 // Metadata y referencia Drive de una imagen del catálogo.
 type Picture = {
@@ -125,18 +118,8 @@ type Job = {
     product?: { name?: string; sku?: string };
   };
 };
-// Evento de sincronización mostrado en el historial.
-type Event = {
-  id: string;
-  product_id?: string;
-  action: string;
-  source: string;
-  destination: string;
-  status: string;
-  message: string;
-  created_at: string;
-  job_id?: string;
-};
+// Entrada de auditoría local mostrada en logs.
+type Event = { id: string; product_id?: string; action: string; actor: string; created_at: string; };
 // Respuesta compuesta de ficha, variantes, imágenes, movimientos y trabajos.
 type Detail = {
   product: Product;
@@ -152,7 +135,6 @@ type Detail = {
     delta: number;
     created_at: string;
   }[];
-  sync_events: Event[];
   variants: Product[];
 };
 // Estado público de sesión; no contiene tokens Google ni la clave Gemini.
@@ -178,17 +160,6 @@ type Status = {
 type Dashboard = {
   stats: Record<string, number>;
   activity: { id: string; action: string; created_at: string }[];
-  ecommerce: null | {
-    sales_today: number;
-    pending_orders: number;
-    orders: {
-      id: string;
-      woocommerce_id: number;
-      status: string;
-      total: number;
-      currency: string;
-    }[];
-  };
 };
 // Selección/coste cotizados antes de confirmar generación.
 type Quote = {
@@ -233,6 +204,7 @@ const stateLabel: Record<string, string> = {
   approved: "Aprobada",
   rejected: "Rechazada",
   published: "Publicada",
+  archived: "Archivado",
   pending: "Pendiente",
   synced: "Sincronizado",
   difference: "Diferencia",
@@ -291,10 +263,7 @@ const blank = (): Product => ({
   price: 0,
   cost: null,
   stock: 0,
-  woocommerce_stock: null,
-  loyverse_stock: null,
   status: "pending",
-  sync_status: "pending",
   version: 1,
 });
 // Error HTTP con estado e información de respuesta perdida/incertidumbre.
@@ -519,7 +488,7 @@ export default function Platform() {
     const change = () => {
       const [hash, tool] = location.hash.slice(1).split("/");
       if (nav.some((n) => n.id === hash)) setSection(hash as Section);
-      else if (["studio", "catalog", "settings", "loyverse"].includes(hash)) {
+      else if (["studio", "catalog", "settings"].includes(hash)) {
         setSection(
           hash === "catalog"
             ? "products"
@@ -535,7 +504,7 @@ export default function Platform() {
         if (tool !== "capture") setGenerationTab(tool);
       }
       if (hash === "inventory" && ["catalog", "count"].includes(tool)) setInventoryTab(tool);
-      if (hash === "more" && ["connections", "sync", "exchange", "settings", "media", "publication", "help"].includes(tool)) setMoreTab(tool);
+      if (hash === "more" && ["connections", "jobs", "exchange", "settings", "help"].includes(tool)) setMoreTab(tool);
       if (hash === "more" && tool === "tools") { setSection("inventory"); setInventoryTab("count"); }
     };
     // Refleja falta de conexión del navegador en la interfaz.
@@ -666,10 +635,10 @@ export default function Platform() {
     setConfirm(value);
   };
   // Confirma retirada de la app y envía UUID/version; no borra archivos Drive, hojas ni
-  // tienda.
+  // historial.
   const deleteProduct = (product: Product) => ask({
     title: "Eliminar producto",
-    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
+    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario y el historial. Sus procesos en cola también se cancelarán.`,
     label: "Eliminar producto",
     action: async () => {
       await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
@@ -799,7 +768,7 @@ export default function Platform() {
     setSelectedAsset(null);
     setNotice(
       state === "approved"
-        ? "Imagen aprobada. Publicar es una acción separada."
+        ? "Imagen aprobada. "
         : "Imagen rechazada; el archivo se conserva.",
     );
   };
@@ -809,7 +778,7 @@ export default function Platform() {
     ask({
       title: "Reintentar trabajo",
       text: job.payload.in_flight
-        ? "La operación se interrumpió con resultado incierto. Verifica los archivos de Drive y la tienda antes de autorizar otro intento; puede generar un cargo adicional."
+        ? "La operación se interrumpió con resultado incierto. Verifica los archivos de Drive y el catálogo antes de autorizar otro intento; puede generar un cargo adicional."
         : "Se conservarán las imágenes ya terminadas. Las operaciones de IA restantes pueden generar consumo adicional.",
       label: "Autorizar intento",
       uncertain: !!job.payload.in_flight,
@@ -830,10 +799,10 @@ export default function Platform() {
   ] : section === "inventory" ? [
     ["inventory/catalog", "Catálogo y stock"], ["inventory/count", "Conteo y movimientos"],
   ] : section === "more" ? [
-    ["more/connections", "Conexiones"], ["more/sync", "Sincronización"],
+    ["more/connections", "Conexiones"], ["more/jobs", "Trabajos y logs"],
     ["more/exchange", "Importar / Exportar"], ["more/settings", "Ajustes"],
-    ["inventory/count", "Conteo y movimientos"], ["more/media", "Revisar Drive y WordPress"],
-    ["more/publication", "Publicación masiva"], ["more/help", "Ayuda"],
+    ["inventory/count", "Conteo y movimientos"],
+    ["more/help", "Ayuda"],
   ] : [];
   const selectedTool = section + "/" + (section === "products" ? captureVisible ? "capture" : "catalog"
     : section === "generate" ? captureVisible ? "capture" : generationTab
@@ -849,10 +818,10 @@ export default function Platform() {
       "Dale vida a tus productos",
       "Genera, revisa y publica con el control en tus manos.",
     ],
-    inventory: ["Inventario", "Existencias y diferencias entre tus canales."],
+    inventory: ["Inventario", "Stock local, conteos y movimientos."],
     more: [
       "Tu espacio de trabajo",
-      "Conexiones, sincronización y herramientas.",
+      "Conexiones, ajustes y herramientas locales.",
     ],
   }[section];
 
@@ -869,14 +838,7 @@ export default function Platform() {
           </span>
         </a>
         <div className="p-header-actions">
-          <a
-            href="https://rincon.creandotusite.com/"
-            target="_blank"
-            rel="noreferrer"
-            className="p-store"
-          >
-            Ver tienda <ExternalLink size={14} />
-          </a>
+
           <button
             aria-label="Cuenta y conexiones"
             onClick={() => {
@@ -1081,23 +1043,16 @@ export default function Platform() {
               </div>
             </div>
             <div className="p-stats">
-              {[
-                {
-                  label: "Ventas online · hoy",
-                  value: ready
-                    ? dashboard?.ecommerce
-                      ? currency(dashboard.ecommerce.sales_today)
-                      : "Sin lectura"
-                    : "—",
-                  icon: ShoppingBag,
-                  target: "more",
+              {[{
+                  label: "Productos registrados", value: dashboard?.stats.products ?? "—", icon: Package, target: "products",
                 },
                 {
-                  label: "Pedidos pendientes",
-                  value: dashboard?.ecommerce?.pending_orders ?? "—",
-                  icon: Package,
-                  target: "more",
+                  label: "Productos pendientes", value: dashboard?.stats.pending_products ?? "—", icon: Package, target: "products", filter: "pending",
                 },
+                {
+                  label: "Imágenes generadas", value: dashboard?.stats.completed_images ?? "—", icon: Sparkles, target: "generate",
+                },
+
                 {
                   label: "Stock bajo",
                   value: dashboard?.stats.low_stock ?? "—",
@@ -1113,11 +1068,10 @@ export default function Platform() {
                   filter: "out",
                 },
                 {
-                  label: "Errores de sincronización",
-                  value: dashboard?.stats.sync_errors ?? "—",
+                  label: "Errores de IA",
+                  value: dashboard?.stats.ai_errors ?? "—",
                   icon: RefreshCw,
-                  target: "products",
-                  filter: "error",
+                  target: "more",
                 },
                 {
                   label: "Generaciones pendientes",
@@ -1132,7 +1086,7 @@ export default function Platform() {
                   onClick={() => {
                     go(s.target as Section);
                     setFilter(s.filter || "all");
-                    setMoreTab("sync");
+                    setMoreTab("jobs");
                   }}
                 >
                   <span className="p-stat-icon">
@@ -1179,25 +1133,12 @@ export default function Platform() {
                     Productos pendientes
                     <small>
                       {dashboard?.stats.pending_products ?? "—"} fichas por
-                      publicar
+                      revisar
                     </small>
                   </span>
                   <ChevronRight size={18} />
                 </button>
-                <button
-                  className="p-action-row"
-                  onClick={() => {
-                    go("more");
-                    setMoreTab("sync");
-                  }}
-                >
-                  <RefreshCw size={22} />
-                  <span>
-                    Actualizar pedidos y stock
-                    <small>Consultar WooCommerce</small>
-                  </span>
-                  <ChevronRight size={18} />
-                </button>
+
               </section>
               <section className="p-card">
                 <div className="p-card-title">
@@ -1222,25 +1163,7 @@ export default function Platform() {
                 )}
               </section>
             </div>
-            {dashboard?.ecommerce && (
-              <section className="p-card">
-                <h2>Pedidos recientes</h2>
-                {dashboard.ecommerce.orders.map((o) => (
-                  <div className="p-action-row" key={o.id}>
-                    <Package size={20} />
-                    <span>
-                      Pedido #{o.woocommerce_id}
-                      <small>{o.status}</small>
-                    </span>
-                    <strong>
-                      {o.currency === "MXN"
-                        ? currency(o.total)
-                        : `${o.currency} ${o.total}`}
-                    </strong>
-                  </div>
-                ))}
-              </section>
-            )}
+
           </>
         )}
 
@@ -1295,14 +1218,14 @@ export default function Platform() {
                         ["all", "Todo"],
                         ["low", "Stock bajo"],
                         ["out", "Sin stock"],
-                        ["difference", "Diferencias"],
-                        ["error", "Error"],
+
+
                       ]
                     : [
                         ["all", "Todos"],
-                        ["published", "Publicados"],
-                        ["pending", "Pendientes"],
-                        ["error", "Errores"],
+                        ["published", "Históricos guardados"],
+                        ["pending", "Pendientes"], ["archived", "Archivados"],
+
                         ["out", "Sin stock"],
                       ]
                   ).map(([id, label]) => (
@@ -1371,27 +1294,11 @@ export default function Platform() {
                               <span>
                                 Maestro<strong>{p.stock ?? "—"}</strong>
                               </span>
-                              <span>
-                                WooCommerce
-                                <strong>{p.woocommerce_stock ?? "—"}</strong>
-                              </span>
-                              <span>
-                                Loyverse
-                                <strong>{p.loyverse_stock ?? "—"}</strong>
-                              </span>
+
+
                             </div>
                           )}
-                          <div className="p-channel-row">
-                            <span>
-                              WooCommerce <Badge value={p.sync_status} />
-                            </span>
-                            <small>
-                              Loyverse ·{" "}
-                              {p.loyverse_item_id
-                                ? "Vinculado"
-                                : "Próximamente"}
-                            </small>
-                          </div>
+
                         </div>
                         </button>
                         {isAdmin && section === "products" && (
@@ -1408,7 +1315,7 @@ export default function Platform() {
                 ) : (
                   <Empty
                     title="Tu catálogo empieza aquí"
-                    text="Importa tus archivos o WooCommerce desde Más, o crea tu primer producto."
+                    text="Importa tus archivos o Google Sheets desde Más, o crea tu primer producto."
                   />
                 )}
                 {total > 50 && (
@@ -1621,7 +1528,7 @@ export default function Platform() {
                                     </span>
                                     <Badge value={i.status} />
                                   </div>
-                                  {canEdit && i.role === "reference" && <button className="p-link" disabled={busy} onClick={() => ask({ title: "Aprobar foto original", text: "Usar esta fotografía también en la galería del producto. La referencia original se conserva. Publicar es una acción separada.", label: "Aprobar original", action: async () => { await api(`/api/platform/products/${form.id}/images/${i.id}/approve-original`, "POST", { confirm: true, request_key: crypto.randomUUID() }); await openProduct(form.id); } })}>Aprobar original para galería</button>}
+                                  {canEdit && i.role === "reference" && <button className="p-link" disabled={busy} onClick={() => ask({ title: "Aprobar foto original", text: "Usar esta fotografía también en la galería del producto. La referencia original se conserva. ", label: "Aprobar original", action: async () => { await api(`/api/platform/products/${form.id}/images/${i.id}/approve-original`, "POST", { confirm: true, request_key: crypto.randomUUID() }); await openProduct(form.id); } })}>Aprobar original para galería</button>}
                               {canEdit && i.role !== "reference" && (
                                     <button
                                       className="p-link"
@@ -1689,18 +1596,8 @@ export default function Platform() {
                                   .join(" / ") || "—"}
                               </dd>
                             </div>
-                            <div>
-                              <dt>WooCommerce</dt>
-                              <dd>
-                                <Badge value={detail.product.sync_status} />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>Última lectura</dt>
-                              <dd>
-                                {date(detail.product.last_woocommerce_sync)}
-                              </dd>
-                            </div>
+
+
                             <div>
                               <dt>ID interno</dt>
                               <dd>
@@ -1710,6 +1607,20 @@ export default function Platform() {
                           </dl>
                           <div className="p-button-row">
                             {canEdit && (
+                              <button className="button secondary" disabled={busy || !online}
+                                onClick={() => ask({
+                                  title: form.status === "archived" ? "Restaurar producto" : "Archivar producto",
+                                  text: "Se conserva la ficha, sus variantes, imágenes, inventario e historial. Un padre incluye las variantes archivadas en esta misma operación.",
+                                  label: form.status === "archived" ? "Restaurar" : "Archivar",
+                                  action: async () => {
+                                    await api("/api/platform/products/" + form.id + (form.status === "archived" ? "/restore" : "/archive"), "POST", {confirm: true, version: form.version});
+                                    await openProduct(form.id); await loadProducts();
+                                  },
+                                })}>
+                                {form.status === "archived" ? "Restaurar producto" : "Archivar producto"}
+                              </button>
+                            )}
+                            {canEdit && form.status !== "archived" && (
                               <>
                                 <button
                                   className="button primary"
@@ -1749,41 +1660,8 @@ export default function Platform() {
                                 )}
                               </>
                             )}
-                            {isAdmin && (
-                              <button
-                                className="button primary"
-                                disabled={busy || !workerCanQueue}
-                                onClick={() =>
-                                  ask({
-                                    title: form.woocommerce_product_id
-                                      ? "Actualizar WooCommerce"
-                                      : "Publicar en WooCommerce",
-                                    text: "Se enviará la ficha y únicamente las imágenes aprobadas. WordPress recibirá los archivos y la tienda asociará sus IDs. El stock se sincroniza por separado.",
-                                    label: form.woocommerce_product_id
-                                      ? "Actualizar"
-                                      : "Publicar",
-                                    action: () =>
-                                      operation(
-                                        `/api/platform/products/${form.id}/publish`,
-                                      ),
-                                  })
-                                }
-                              >
-                                {form.woocommerce_product_id
-                                  ? "Actualizar WooCommerce"
-                                  : "Publicar WooCommerce"}
-                              </button>
-                            )}
-                            {form.woocommerce_product_id && (
-                              <a
-                                className="button secondary"
-                                target="_blank"
-                                rel="noreferrer"
-                                href={`https://rincon.creandotusite.com/?p=${form.woocommerce_product_id}`}
-                              >
-                                Ver en tienda <ExternalLink size={16} />
-                              </a>
-                            )}
+
+
                           </div>
                         </section>
                       </div>
@@ -1885,19 +1763,13 @@ export default function Platform() {
                           )}
                         </section>
                         <section className="p-card">
-                          <h2>Inventario y sincronización</h2>
+                          <h2>Inventario local</h2>
                           <div className="p-stock-grid">
                             <span>
                               Maestro<strong>{form.stock ?? "—"}</strong>
                             </span>
-                            <span>
-                              WooCommerce
-                              <strong>{form.woocommerce_stock ?? "—"}</strong>
-                            </span>
-                            <span>
-                              Loyverse
-                              <strong>{form.loyverse_stock ?? "—"}</strong>
-                            </span>
+
+
                           </div>
                           {canEdit && form.product_type !== "variable" && (
                             <>
@@ -1952,24 +1824,7 @@ export default function Platform() {
                                 >
                                   Registrar stock
                                 </button>
-                                <button
-                                  className="button secondary"
-                                  disabled={busy || !workerCanQueue}
-                                  onClick={() =>
-                                    ask({
-                                      title: "Sincronizar stock",
-                                      text: `Enviar ${form.stock} unidades del stock maestro a WooCommerce. Si la tienda cambió desde la última lectura, la operación se detendrá para revisar.`,
-                                      label: "Enviar stock",
-                                      action: () =>
-                                        operation(
-                                          `/api/platform/products/${form.id}/sync-stock`,
-                                        ),
-                                    })
-                                  }
-                                >
-                                  <RefreshCw size={16} />
-                                  Sincronizar
-                                </button>
+
                               </div>
                             </>
                           )}
@@ -1989,18 +1844,7 @@ export default function Platform() {
                               <code>{m.source_event_id}</code>
                             </div>
                           ))}
-                          {detail.sync_events.map((e) => (
-                            <div className="p-log" key={e.id}>
-                              <strong>
-                                {e.action} <Badge value={e.status} />
-                              </strong>
-                              <span>
-                                {e.source} → {e.destination} ·{" "}
-                                {date(e.created_at)}
-                              </span>
-                              <p>{e.message}</p>
-                            </div>
-                          ))}
+
                         </section>
                       </div>
                     </>
@@ -2340,12 +2184,9 @@ export default function Platform() {
                               <strong>
                                 {j.payload.product?.name ||
                                   {
-                                    publication: "Publicación WooCommerce",
                                     studio_generation: "Generación de imágenes",
                                     import: "Importación de catálogo",
-                                    ecommerce_pull: "Consulta WooCommerce",
                                     enrichment: "Datos con IA",
-                                    stock_sync: "Sincronización de stock",
                                     webhook: "Evento recibido",
                                   }[j.kind] ||
                                   j.kind}
@@ -2393,9 +2234,9 @@ export default function Platform() {
           </>
         )}
 
-        {(section === "inventory" && inventoryTab === "count" || section === "more" && ["media", "publication"].includes(moreTab)) && session.authenticated && (
+        {(section === "inventory" && inventoryTab === "count") && session.authenticated && (
           <InventoryTools key={(session.email || "") + ":" + (session.folder_id || "")}
-            tool={section === "inventory" ? "count" : moreTab as "media" | "publication"}
+            tool="count"
             namespace={(session.email || "") + ":" + (session.folder_id || "")}
             canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask} />
         )}
@@ -2420,13 +2261,6 @@ export default function Platform() {
                             ? "connected"
                             : "disconnected",
                         },
-                        { name: "WooCommerce", status: "disconnected" },
-                        { name: "WordPress", status: "disconnected" },
-                        {
-                          name: "Loyverse",
-                          status: "disconnected",
-                          note: "Integración futura",
-                        },
                       ]
                   ).map((c) => (
                     <section className="p-card" key={c.name}>
@@ -2436,11 +2270,7 @@ export default function Platform() {
                       <h2>{c.name}</h2>
                       <Badge value={c.status} />
                       {c.note && <p>{c.note}</p>}
-                      {c.name === "WooCommerce" && isAdmin && (
-                        <button className="button secondary" onClick={() => setMoreTab("sync")}>
-                          Comprobar conexión
-                        </button>
-                      )}
+
                     </section>
                   ))}
                 </div>
@@ -2458,47 +2288,28 @@ export default function Platform() {
                     Configurar conexiones
                   </button>
                   <p className="p-muted">
-                    Las credenciales de la tienda se configuran en el servidor.
-                    El estado de credenciales se confirma al ejecutar una
-                    consulta.
+                    La clave Gemini se configura en Ajustes y se guarda cifrada para tu usuario.
                   </p>
                 </div>
               </>
             )}
-            {moreTab === "sync" && (
+            {moreTab === "jobs" && (
               <section className="p-card">
                 <div className="p-card-title">
-                  <h2>Sincronización</h2>
-                  {isAdmin && ready && (
-                    <button
-                      className="button secondary"
-                      disabled={busy || !workerCanQueue}
-                      onClick={() =>
-                        ask({
-                          title: "Consultar WooCommerce",
-                          text: "Leer pedidos recientes y stock por los IDs guardados. No se cambiarán los productos de la tienda.",
-                          label: "Consultar",
-                          action: () =>
-                            operation("/api/platform/ecommerce/refresh"),
-                        })
-                      }
-                    >
-                      <RefreshCw size={18} />
-                      Consultar tienda
-                    </button>
-                  )}
+                  <h2>Trabajos y logs</h2>
+
                 </div>
                 {events.length ? (
                   events.map((e) => (
                     <div className="p-log" key={e.id}>
                       <div>
                         <strong>{e.action}</strong>
-                        <Badge value={e.status} />
+
                       </div>
                       <span>
-                        {e.source} → {e.destination} · {date(e.created_at)}
+                        {e.actor} · {date(e.created_at)}
                       </span>
-                      <p>{e.message}</p>
+
                       {e.product_id && (
                         <button
                           className="p-link"
@@ -2510,21 +2321,7 @@ export default function Platform() {
                           Ver producto
                         </button>
                       )}
-                      {e.status === "failed" && e.job_id && isAdmin && (
-                        <button
-                          className="p-link"
-                          onClick={() => {
-                            const j = jobs.find((j) => j.id === e.job_id);
-                            if (j) retry(j);
-                            else {
-                              go("generate");
-                              setGenerationTab("jobs");
-                            }
-                          }}
-                        >
-                          Revisar error
-                        </button>
-                      )}
+
                     </div>
                   ))
                 ) : (
@@ -2579,27 +2376,8 @@ export default function Platform() {
                       <Cloud size={18} />
                       Google Sheets existente
                     </button>
-                    <button
-                      className="button secondary"
-                      disabled={
-                        !isAdmin || !ready || !workerCanQueue || busy
-                      }
-                      onClick={() =>
-                        ask({
-                          title: "Importar WooCommerce",
-                          text: "Crear las fichas y familias que todavía no estén en el catálogo maestro. Se respaldará el catálogo antes de importar. Los datos existentes y los productos de la tienda se conservan.",
-                          label: "Importar",
-                          action: () =>
-                            operation("/api/platform/import/woocommerce"),
-                        })
-                      }
-                    >
-                      <ShoppingBag size={18} />
-                      WooCommerce
-                    </button>
-                    <button className="button secondary" disabled>
-                      Loyverse · Próximamente
-                    </button>
+
+
                   </div>
                   {preview && (
                     <div className="p-quote">
@@ -2729,15 +2507,13 @@ export default function Platform() {
                     <strong>Publica y sincroniza</strong>
                     <p>
                       Guarda la captura revisada para incorporarla a Sheets y al catálogo maestro. Si queda una sincronización pendiente, repárala desde la captura. Un administrador publica las imágenes aprobadas en
-                      WordPress y WooCommerce. El inventario registra cada
+                      Drive y el catálogo local. El inventario registra cada
                       movimiento por separado.
                     </p>
                   </li>
                 </ol>
                 <p>
-                  Loyverse está preparado como integración futura; su activación
-                  requiere validar credenciales, firma y autoridad de stock.
-                </p>
+                  El catálogo y las imágenes se guardan con confirmación explícita.</p>
                 <p>
                   Si un trabajo queda incierto, comprueba sus archivos y la
                   tienda antes de autorizar otro intento.
@@ -2903,7 +2679,7 @@ export default function Platform() {
                 <button className="button secondary" disabled={busy}
                   onClick={() => ask({
                     title: "Guardar imagen aprobada",
-                    text: "Se guardará en imagenes_generadas con su nombre compatible. Si existe una versión anterior, se conservará un respaldo antes de sustituirla. Publicar en la tienda es otra acción.",
+                    text: "Se guardará en imagenes_generadas con su nombre compatible. Si existe una versión anterior, se conservará un respaldo antes de sustituirla. ",
                     label: "Guardar en Drive",
                     action: async () => {
                       await durablePost(`/api/platform/assets/${selectedAsset.id}/save`, {
@@ -2961,7 +2737,7 @@ export default function Platform() {
                 )}
               </details>
             )}
-            {canEdit && selectedAsset.status !== "published" && (
+            {canEdit && selectedAsset.status !== "archived" && (
               <>
                 <label className="p-form-field">
                   Usar como
@@ -3074,7 +2850,7 @@ export default function Platform() {
                   onChange={(e) => setUncertainChecked(e.target.checked)}
                 />
                 <span>
-                  Revisé los archivos y la tienda; autorizar otro intento es
+                  Revisé los archivos y el catálogo; autorizar otro intento es
                   necesario.
                 </span>
               </label>

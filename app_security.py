@@ -15,7 +15,6 @@ import bleach
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
-from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS
 
 
 # Sanea HTML de textos de producto antes de publicarlos o mostrarlos.
@@ -73,8 +72,7 @@ def public_error(exc):
     if not isinstance(exc, (ValueError, RuntimeError)):
         return "No se pudo confirmar la operación. Revisa su estado antes de reintentar."
     message = str(exc)
-    values = dict(STORE_CONTEXT.get())
-    values.update({key: os.getenv(key, "") for key in (*STORE_KEYS, "GOOGLE_CLIENT_SECRET", "SYNC_SERVICE_SHARED_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AI_API_KEY", "GOOGLE_REFRESH_TOKEN", "DATABASE_URL", "REDIS_URL", "LOYVERSE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON")})
+    values = os.environ
     for key, value in values.items():
         if any(part in key for part in ("SECRET", "KEY", "PASSWORD", "TOKEN", "DATABASE_URL", "REDIS_URL", "SERVICE_ACCOUNT")) and isinstance(value, str) and len(value) >= 6:
             message = message.replace(value, "[REDACTED]")
@@ -141,7 +139,7 @@ class SecurityMiddleware:
                     (b"permissions-policy", b"camera=(self), microphone=(), geolocation=()"),
                     (b"content-security-policy", policy),
                 ])
-                if request.cookies.get("sync_session") or request.cookies.get("session_id") or path in {"/internal/tools", "/sync-handoff/redeem"} or path.startswith(("/session/", "/auth/", "/sync-", "/api/")):
+                if request.cookies.get("sync_session") or request.cookies.get("session_id") or path.startswith(("/session/", "/auth/", "/api/")):
                     headers = [(key, val) for key, val in headers if key.lower() != b"cache-control"]
                     headers.append((b"cache-control", b"no-store"))
                 message = dict(message, headers=headers)
@@ -160,7 +158,7 @@ class SecurityMiddleware:
                 return await JSONResponse({"error": "Configura APP_PUBLIC_ORIGIN como origen HTTPS."},
                                           status_code=503)(scope, receive, send)
         origin = public or external or str(request.base_url).rstrip("/")
-        internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse", "/api/webhooks/woocommerce", "/api/webhooks/loyverse"}
+        internal = False
         paid = path == "/api/generate" or path == "/api/platform/generation/jobs" or (
             path.startswith(("/api/images/", "/api/platform/assets/")) and path.endswith(("/correct", "/regenerate")))
         if method not in {"GET", "HEAD", "OPTIONS"} and not internal:
@@ -173,7 +171,7 @@ class SecurityMiddleware:
                 return await JSONResponse({"error": "Origen no autorizado."}, status_code=403)(scope, receive, send)
         peer = request.client.host if request.client else "unknown"
         if not self.limiter.allow((peer, "all"), 600) or (
-            path in {"/login", "/auth/callback", "/session/start", "/sync-handoff/redeem"}
+            path in {"/login", "/auth/callback", "/session/start"}
             and not self.limiter.allow((peer, "auth"), 30, 300)
         ):
             return await JSONResponse({"error": "Demasiadas solicitudes. Intenta en un minuto."}, status_code=429,
@@ -218,7 +216,7 @@ class SecurityMiddleware:
             input_receive = buffered
         else:
             input_receive = receive
-        heavy = path in {"/batch-step", "/product-sync-one", "/image-sync-one", "/inventory-count-bulk", "/inventory-movement", "/inventory-review", "/stock-preview-start", "/woocommerce-publish-preview"}
+        heavy = path in {"/api/tools/counts", "/api/tools/movement"}
         if heavy:
             with self.lock:
                 available = self.busy < 3

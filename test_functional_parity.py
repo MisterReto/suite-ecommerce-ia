@@ -697,21 +697,3 @@ def test_upload_exif_and_real_file_type_are_checked(capture_store):
     response = client.post("/api/uploads", files={"image":("vertical.jpg",raw.getvalue(),"image/jpeg")}, headers=ORIGIN)
     assert response.status_code == 200 and (response.json()["width"],response.json()["height"]) == (180,120)
     assert client.post("/api/uploads", files={"image":("fake.jpg",b"<script>bad</script>","image/jpeg")}, headers=ORIGIN).status_code == 422
-
-
-def test_woo_candidate_queries_are_read_only_and_tenant_scoped(capture_store, monkeypatch):
-    _, value, *_ = capture_store
-    monkeypatch.setenv("SUITE_DRIVE_ONLY", "false")
-    monkeypatch.setenv("WOOCOMMERCE_TENANT_ID", value["platform_tenant"])
-    client = Mock()
-    client.config.configured = True
-    client.find_entity_by_sku.return_value = None
-    client.request.return_value = [{"sku":"POCKFR40", "name":"Pocky Fresa 40 g", "brands":[{"name":"Glico"}], "attributes":[]}]
-    constructor = Mock(return_value=client)
-    monkeypatch.setattr("woocommerce_client.WooCommerceClient", constructor)
-    rows, note = capture_bridge.woo_rows(value, studio.Product(sku="POCKCH40",name="Pocky Chocolate 40 g").model_dump())
-    assert rows[0]["_source"] == "WooCommerce"
-    assert all(call.args[0] == "GET" for call in client.request.call_args_list)
-    constructor.reset_mock()
-    assert capture_bridge.woo_rows({**value,"platform_tenant":"foreign"}, studio.Product().model_dump())[0] == []
-    constructor.assert_not_called()

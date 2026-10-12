@@ -77,83 +77,15 @@ def master_rows(value):
                 for p in records]
 
 
-# Traduce relaciones WooCommerce registradas a filas compatibles de captura.
-def woo_rows(value, product):
-    from store_connection import drive_only
-    from woocommerce_client import WooCommerceClient
-    if drive_only():
-        return [], "WooCommerce pausado por el modo solo Drive."
-    # The existing store credentials are global; only the configured store may
-    # use them. Never search another tenant's store with those credentials.
-    store = os.getenv("WOOCOMMERCE_TENANT_ID") or os.getenv("WEBHOOK_TENANT_ID") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-    if not store or store != root_for(value):
-        return [], "WooCommerce no está asociado a esta tienda; no se consultó."
-    client = WooCommerceClient()
-    if not client.config.configured:
-        return [], "WooCommerce no tiene una conexión configurada."
-    entities = []
-    parents = {}
-    if product["sku"]:
-        entity = client.find_entity_by_sku(product["sku"])
-        if entity:
-            parent_id = entity.get("parent_id") or entity.get("_parent_product_id")
-            if entity.get("id"):
-                if parent_id:
-                    parent = client.get_product(int(parent_id))
-                    parents[int(parent_id)] = parent
-                    entity = dict(client.request("GET", f"products/{int(parent_id)}/variations/{int(entity['id'])}"), parent_id=int(parent_id))
-                else:
-                    entity = client.get_product(int(entity["id"]))
-            entities.append(entity)
-    if product["name"]:
-        entities += client.request("GET", "products", params={"search": family_label(product["name"]), "per_page": 30})
-    complete = True
-    for parent in list(entities):
-        if parent.get("type") != "variable" or not parent.get("id"):
-            continue
-        parents[int(parent["id"])] = parent
-        for page in range(1, 4):
-            children = client.request("GET", f"products/{int(parent['id'])}/variations", params={"page": page, "per_page": 100})
-            entities += [dict(child, parent_id=int(parent["id"]), type="variation") for child in children]
-            if len(children) < 100:
-                break
-        else:
-            complete = False
-    rows = []
-    seen = set()
-    for p in entities:
-        identity = (p.get("parent_id"), p.get("id"), p.get("sku"))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        parent = parents.get(p.get("parent_id"), {})
-        attrs = {a.get("name", ""): a.get("option") or ", ".join(a.get("options", [])) for a in p.get("attributes", [])}
-        meta = {m.get("key"): m.get("value") for m in p.get("meta_data", [])}
-        images = p.get("images", []) or ([p["image"]] if p.get("image") else [])
-        rows.append(dict(sku=p.get("sku", ""), nombre_producto=p.get("name", ""),
-                         Marca=", ".join(b.get("name", "") for b in p.get("brands", parent.get("brands", []))) or str(meta.get("Marca", "")),
-                         tipo=p.get("type", "variation" if p.get("parent_id") else "simple"),
-                         sku_padre=parent.get("sku", ""), codigo_barras=p.get("global_unique_id") or meta.get("_barcode", ""),
-                         gramaje=attrs.get("Tamaño", attrs.get("Presentación", "")),
-                         precio=p.get("price"), attributes=attrs, atributo_nombre=next(iter(attrs), ""),
-                         atributo_valor=next(iter(attrs.values()), ""),
-                         image_url=images[0].get("src", "") if images else "", _source="WooCommerce"))
-    return rows, "WooCommerce consultado en lectura (búsqueda acotada)." if complete else "Lectura de WooCommerce incompleta: revisa una familia con más de 300 variaciones antes de guardar."
 
 
-# Coteja el borrador con el catálogo existente y sus identidades remotas.
-def check(value, product, include_woo=False):
+
+# Coteja el borrador con el catálogo existente y sus identidades locales.
+def check(value, product):
     from studio_api import runtime
     _, _, sheet_rows = runtime.captura.snapshot(value)
     rows = master_rows(value) + [dict(r, _source="Google Sheets") for r in sheet_rows]
-    notes = []
-    if include_woo:
-        try:
-            remote, note = woo_rows(value, product)
-            rows += remote
-            notes.append(note)
-        except Exception:
-            notes.append("No se pudo completar la lectura de WooCommerce. Verifica la conexión antes de crear una ficha.")
+    notes = ["Catálogo local y Google Sheets consultados."]
     result = review_product(rows, candidate(product))
     for row in rows:
         if not row.get("image_url") and text(row.get("imagenes")):

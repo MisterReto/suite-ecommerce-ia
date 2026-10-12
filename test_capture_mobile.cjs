@@ -109,7 +109,7 @@ async function exercise(browser, engine, width) {
       json=complete();
     } else if (p === "/api/check-product") {
       draft.identity_review={status:"possible_variation",case:"existing_parent",message:"Posible variación nueva de GLIPOCFULL",
-        recommendation:"Revisar los atributos",suggested:"GLIPOCFULL",parents:[],sources:["WooCommerce pausado"],
+        recommendation:"Revisar los atributos",suggested:"GLIPOCFULL",parents:[],sources:["Catálogo local y Google Sheets consultados."],
         candidates:[{sku:"POCKFR40",nombre_producto:"Pocky Fresa 40 g",Marca:"Glico",precio:35,_source:"Google Sheets",atributo_nombre:"Sabor",atributo_valor:"Fresa",matching_attributes:["Marca","Familia"],different_attributes:["Sabor: Fresa / Chocolate"]}]};
       json={...draft.identity_review,draft};
     } else if (p === "/api/parents") json={choices:[["Pocky · Glico · GLIPOCFULL","GLIPOCFULL"]],parent_sku:"GLIPOCFULL",parent_name:"Pocky",attribute:"Sabor",draft};

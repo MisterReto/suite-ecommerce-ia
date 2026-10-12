@@ -5,22 +5,10 @@
 import csv
 import io
 import json
-import os
 from sqlalchemy import select
 from fastapi import HTTPException
 from app_security import clean_html
-from .models import (
-    Product,
-    ProductImage,
-    ProductVariant,
-    Category,
-    Brand,
-    InventoryMovement,
-    AuditLog,
-    SyncEvent,
-    GenerationJob,
-    uid,
-)
+from .models import Product, ProductVariant, Category, Brand, InventoryMovement, AuditLog, uid
 
 FIELDS = (
     "sku",
@@ -45,6 +33,8 @@ FIELDS = (
 def serialize(record):
     result = {
         column.name: getattr(record, column.name) for column in record.__table__.columns
+        if not column.name.startswith(("woocommerce_", "loyverse_", "wordpress_", "last_woocommerce_", "last_loyverse_"))
+        and column.name not in {"sync_status", "last_sync_error"}
     }
     for key, value in list(result.items()):
         if hasattr(value, "isoformat"):
@@ -150,24 +140,10 @@ def save_product(
         if product_id
         else Product(tenant_id=tenant, id=uid())
     )
+    if product_id and product.status == "archived":
+        raise HTTPException(409, "Restaura el producto antes de editarlo.")
     if product_id and expected_version != product.version:
         raise HTTPException(409, "El producto cambió. Recarga antes de guardar.")
-    if (
-        product_id
-        and source == "app"
-        and db.scalar(
-            select(GenerationJob.id).where(
-                GenerationJob.product_id == product.id,
-                GenerationJob.tenant_id == tenant,
-                GenerationJob.kind.in_(["publication", "stock_sync"]),
-                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
-            )
-        )
-    ):
-        raise HTTPException(
-            409,
-            "El producto tiene una escritura a la tienda en curso. Espera su resultado antes de editar.",
-        )
     before = (
         {field: getattr(product, field, None) for field in FIELDS} if product_id else {}
     )
@@ -189,15 +165,6 @@ def save_product(
     ):
         raise ValueError(
             "Este padre tiene variaciones. Conserva su tipo para proteger la familia."
-        )
-    if (
-        source == "app"
-        and os.getenv("STOCK_AUTHORITY", "app") == "loyverse"
-        and data.get("stock") is not None
-        and data["stock"] != product.stock
-    ):
-        raise ValueError(
-            "Loyverse es la autoridad de stock; registra el cambio en POS."
         )
     if data.get("parent_id"):
         parent = product_for(db, tenant, data["parent_id"])
@@ -230,7 +197,6 @@ def save_product(
         move_stock(db, product, float(data["stock"]), source, event_id or uid(), actor)
     if product_id:
         product.version += 1
-    product.sync_status = "pending"
     for kind, name in ((Category, product.category), (Brand, product.brand)):
         if name and not db.scalar(
             select(kind.id).where(kind.tenant_id == tenant, kind.name == name)

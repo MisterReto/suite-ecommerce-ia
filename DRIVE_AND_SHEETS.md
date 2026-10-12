@@ -1,7 +1,3 @@
-# Drive And Sheets
+# Referencia vigente
 
-La documentación actualizada y basada en el proyecto está en
-[docs/DRIVE_AND_SHEETS.md](docs/DRIVE_AND_SHEETS.md).
-
-Producción histórica permanece intacta; distinguir implementación en rama
-y validación real pendiente. Consultar [TEST_PLAN](TEST_PLAN.md).
+La documentación actual está en [docs/DRIVE_AND_SHEETS.md](docs/DRIVE_AND_SHEETS.md). La versión anterior se conserva en el respaldo Git; no describe el runtime limpio.

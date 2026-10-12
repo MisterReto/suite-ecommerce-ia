@@ -10,7 +10,7 @@ import pytest
 import zxingcpp
 
 os.environ.update(GOOGLE_CLIENT_ID="test", GOOGLE_CLIENT_SECRET="test", GOOGLE_REDIRECT_URI="https://example.com/auth/callback", GRADIO_ANALYTICS_ENABLED="False", SUITE_SERVICE_ROLE="main")
-import product_web_ai
+import ai_app
 import app
 import ai_app
 from catalog_capture import records_from_values

@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field, SecretStr
 from typing import Annotated
 
 import ai_app
-import loyverse_jobs
 from ai_app import legacy as runtime
 from app_security import checked_image_type
 from catalog_capture import review_product, barcode, text, next_parent_sku, family_label
@@ -308,8 +307,6 @@ def session_status(request: Request, auth_only: bool = False):
             "image_model": IMAGE_MODEL, "text_model": TEXT_MODEL,
             "image_provider": "gemini", "estimated_image_usd": image_unit(IMAGE_MODEL),
             "generation_backend": "worker" if studio_jobs.enabled() else "local",
-            "loyverse": {"configured": bool(value.get("loyverse_token")), "stores": value.get("loyverse_stores", []),
-                         "job": loyverse_jobs.status(value)},
             "usage": usage,
             "draft": view(value), "job": active, "errors": runtime.ETIQUETAS_ERRORES}
 
@@ -585,7 +582,7 @@ def analyze(request: Request, value=Depends(editor)):
         product.attribute_value = product.variant or product.size
         current["product"] = product.model_dump()
         current.pop("brief_key", None)
-        current["identity_review"] = capture_bridge.check(value, current["product"], include_woo=True)
+        current["identity_review"] = capture_bridge.check(value, current["product"])
         update(90, "Datos listos para revisar; puedes investigar el precio por separado.")
     return start_job(value, "Analizando producto", action)
 
@@ -612,7 +609,7 @@ def find_variants(request: Request, value=Depends(editor)):
     def action(update):
         p = current["product"]
         from catalog_platform.capture_bridge import check
-        result = check(value, p, include_woo=True)
+        result = check(value, p)
         current["identity_review"] = result
         if result["case"] in {"existing", "existing_parent", "new_family"}:
             current["variant_recommendation"] = result["message"]
@@ -759,7 +756,7 @@ def check(request: Request, value=Depends(editor)):
     idle(value)
     p = draft(value)["product"]
     from catalog_platform.capture_bridge import check as compare, checkpoint
-    result = compare(value, p, include_woo=True)
+    result = compare(value, p)
     draft(value)["identity_review"] = result
     checkpoint(value, draft(value))
     return {**result, "draft": view(value)}
@@ -771,7 +768,7 @@ def parents(request: Request, value=Depends(session)):
     p = draft(value)["product"]
     fields = runtime.captura.load_parents(p["kind"], p["parent_mode"], p["name"], p["brand"], p["sku"], p["parent_sku"], request, code=p["barcode"])
     from catalog_platform.capture_bridge import check as compare, master_rows
-    result = compare(value, p, include_woo=p["parent_mode"] == NEW_PARENT)
+    result = compare(value, p)
     available = {text(r.get("sku")): r for r in reversed(result["parents"])}
     chosen = available.get(p["parent_sku"] or result.get("suggested", ""), {})
     choices = [(f"{r.get('nombre_producto', '')} · {r.get('Marca', '')} · {sku}", sku) for sku, r in available.items()]
@@ -821,12 +818,12 @@ def save(data: Save, request: Request, value=Depends(editor)):
         if current.get("save_phase") == "saving":
             capture_bridge.recover_saved(value, current)
             return
-        result = capture_bridge.check(value, p, include_woo=True)
+        result = capture_bridge.check(value, p)
         current["identity_review"] = result
         if result["status"] == "duplicate":
             raise ValueError(result["message"])
         if not result["complete"]:
-            raise ValueError("La verificación de coincidencias quedó incompleta. Comprueba WooCommerce antes de guardar.")
+            raise ValueError("La verificación de coincidencias quedó incompleta. Revisa el catálogo y Google Sheets antes de guardar.")
         value.pop("capture_parent_record", None)
         if p["kind"] == "Variable" and p["parent_mode"] == EXISTING_PARENT:
             parent = next((r for r in result["parents"] if text(r.get("sku")) == p["parent_sku"]), None)

@@ -118,7 +118,8 @@ def load(db, tenant, actor):
         raise ValueError(
             "La conexión del usuario no está disponible. Conecta de nuevo y reintenta."
         )
-    data = unseal(record.encrypted_credentials)
+    snapshot = unseal(record.encrypted_credentials)
+    data = {key: snapshot[key] for key in ("creds", "carpeta_raiz_id_manual", "carpeta_raiz_nombre_manual") if key in snapshot}
     data.pop("gemini_key", None)  # Old snapshots may contain a global Render key.
     key = gemini_for(db, tenant, actor)
     if key:

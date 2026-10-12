@@ -230,24 +230,6 @@ def test_delete_waits_for_process_and_preserves_family(setup):
     assert remove(client, parent).status_code == 200
 
 
-def test_refresh_does_not_restore_deleted_remote_product(setup, monkeypatch):
-    client, value, drive = setup
-    product = create(client)
-    with transaction() as db:
-        db.get(Product, product["id"]).woocommerce_product_id = 321
-    assert remove(client, product).status_code == 200
-    woo = Mock()
-    woo.orders.return_value = []
-    woo.client.list_all_products.return_value = [{"id": 321, "sku": product["sku"]}]
-    monkeypatch.setattr("ecommerce_services.WooCommerceService", lambda: woo)
-    job_id = new_job(value, kind="ecommerce_pull", payload={"import_products": True})
-    claimed = queue.claim("owner", job_id)
-    from catalog_platform.ecommerce import refresh
-    assert refresh(claimed, "owner", value, drive)
-    woo.product.assert_not_called()
-    woo.resolve.assert_not_called()
-    assert client.get("/api/platform/products").json()["total"] == 0
-    queue.finish(job_id, "owner", True, "Read completed")
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="Requires real PostgreSQL row locks")

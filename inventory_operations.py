@@ -2,7 +2,7 @@
 
 La fuente de verdad es la pestaña `Lista completa` del Sheet `inventario_completo`.
 Cada modificación de existencias se registra en `Movimientos Inventario`.
-Este módulo NO escribe en WooCommerce.
+Cada ajuste modifica únicamente el inventario local.
 """
 from __future__ import annotations
 

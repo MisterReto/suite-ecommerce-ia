@@ -26,7 +26,6 @@ from catalog_platform.models import Base,Product,ProductImage,GenerationJob,Gene
 from catalog_platform import queue,worker
 from catalog_platform.security import unseal
 from creative_pipeline import fallback_brief,IMAGE_MODEL
-from ecommerce_services import WooCommerceService
 
 ORIGIN={"Origin":"https://suite.example"}
 
@@ -128,29 +127,6 @@ def test_auth_roles_and_tenant_isolation(setup):
     assert client.get("/api/platform/products").status_code==401
 
 
-@pytest.mark.parametrize("job_status,expected", [(None,"pending"),("queued","pending"),("processing","pending"),("completed","connected"),("failed","error")])
-def test_store_connection_uses_worker_result_without_api_secrets(setup,monkeypatch,job_status,expected):
-    client,value,_=setup
-    monkeypatch.setenv("SUITE_DRIVE_ONLY","false")
-    monkeypatch.setenv("GENERATION_QUEUE_BACKEND","rq")
-    monkeypatch.setenv("IMAGE_WORKER_ORIGIN","https://rincon-catalog-worker.onrender.com")
-    for key in ("WC_CONSUMER_KEY","WC_CONSUMER_SECRET","WOOCOMMERCE_CONSUMER_KEY","WOOCOMMERCE_CONSUMER_SECRET"):
-        monkeypatch.delenv(key,raising=False)
-    with transaction() as db:
-        # A different tenant's success must never verify this tenant's store.
-        db.add(GenerationJob(tenant_id="other_"+uid(),actor=value["email"],kind="ecommerce_pull",request_key=uid(),status="completed"))
-        if job_status:
-            db.add(GenerationJob(tenant_id=value["platform_tenant"],actor=value["email"],kind="ecommerce_pull",request_key=uid(),status=job_status))
-    response=client.get("/api/platform/connections")
-    assert response.status_code==200
-    woo=next(item for item in response.json()["items"] if item["name"]=="WooCommerce")
-    assert woo["status"]==expected
-    assert "private-token" not in response.text and "private-refresh" not in response.text
-    monkeypatch.setenv("SUITE_DRIVE_ONLY","true")
-    woo=next(item for item in client.get("/api/platform/connections").json()["items"] if item["name"]=="WooCommerce")
-    assert woo["status"]=="disconnected" and "solo Drive" in woo["note"]
-    client.cookies.clear()
-    assert client.get("/api/platform/connections").status_code==401
 
 
 def test_versions_stock_events_and_full_families(setup):
@@ -228,20 +204,6 @@ def test_worker_reuses_accepted_pipeline_and_corrects_previous_image(setup,monke
     assert maker.call_count==4
 
 
-def test_review_then_publish_and_editor_cannot_publish(setup,monkeypatch):
-    client,value,drive=setup
-    p=create(client);reference(client,p);fake_provider(monkeypatch)
-    job,_=enqueue(client,value,p,slots=["1_hd"]);execute(job,value,drive)
-    publish=f"/api/platform/products/{p['id']}/publish"
-    assert client.post(publish,json={"confirm":True,"request_key":uid()},headers=ORIGIN).status_code==422
-    asset=client.get("/api/platform/assets").json()["items"][0]
-    assert client.post(f"/api/platform/assets/{asset['id']}/review",json={"status":"approved","role":"main"},headers=ORIGIN).status_code==200
-    value["email"]="editor@example.test"
-    assert client.post(publish,json={"confirm":True,"request_key":uid()},headers=ORIGIN).status_code==403
-    value["email"]="admin@example.test"
-    result=client.post(publish,json={"confirm":True,"request_key":uid()},headers=ORIGIN)
-    assert result.status_code==202 and result.json()["job"]["kind"]=="publication"
-    assert not any(a.get("wordpress_media_id") for a in client.get(f"/api/platform/products/{p['id']}").json()["images"])
 
 
 def test_restart_safe_checkpoint_and_uncertain_generation_not_repeated(setup):
@@ -258,32 +220,6 @@ def test_restart_safe_checkpoint_and_uncertain_generation_not_repeated(setup):
     assert result.status_code==422
 
 
-def test_signed_webhooks_duplicates_and_out_of_order_stock(setup,monkeypatch):
-    client,value,_=setup
-    monkeypatch.setenv("WOOCOMMERCE_WEBHOOK_SECRET","webhook-test-secret");monkeypatch.setenv("WEBHOOK_TENANT_ID",value["platform_tenant"]);monkeypatch.setenv("STOCK_AUTHORITY","woocommerce")
-    p=create(client)
-    with transaction() as db: db.get(Product,p["id"]).woocommerce_product_id=123
-    body=json.dumps({"id":123,"sku":p["sku"],"stock_quantity":7,"date_modified_gmt":"2026-10-06T12:00:00"}).encode()
-    signature=base64.b64encode(hmac.new(b"webhook-test-secret",body,hashlib.sha256).digest()).decode()
-    headers={"X-WC-Webhook-Signature":signature,"X-WC-Webhook-Delivery-ID":"event-"+uid(),"X-WC-Webhook-Topic":"product.updated"}
-    assert client.post("/webhooks/woocommerce",content=body).status_code==401
-    first=client.post("/webhooks/woocommerce",content=body,headers=headers)
-    second=client.post("/webhooks/woocommerce",content=body,headers=headers)
-    assert first.status_code==202 and second.json()["duplicate"]
-    renamed=client.post("/webhooks/woocommerce",content=body,headers={**headers,"X-WC-Webhook-Delivery-ID":"other-"+uid()})
-    assert renamed.json()["duplicate"] # same signed body cannot replay under an unsigned new delivery ID
-    claimed=queue.claim(worker.OWNER);assert claimed["kind"]=="webhook"
-    from catalog_platform.webhooks import process_event
-    assert process_event(claimed,worker.OWNER);assert process_event(claimed,worker.OWNER)
-    with transaction() as db:
-        product=db.get(Product,p["id"]);assert product.stock==7
-        assert db.scalar(select(func.count()).select_from(WebhookEvent).where(WebhookEvent.tenant_id==value["platform_tenant"]))==1
-        assert db.scalar(select(func.count()).select_from(InventoryMovement).where(InventoryMovement.product_id==p["id"],InventoryMovement.source=="woocommerce"))==1
-        from catalog_platform.ecommerce import apply_snapshot
-        assert apply_snapshot(db,product,{"sku":p["sku"],"stock_quantity":99,"date_modified_gmt":"2026-10-05T12:00:00"},"old",value["email"]) is False
-        assert product.stock==7
-    changed=body.replace(b'7,',b'6,');sig=base64.b64encode(hmac.new(b"webhook-test-secret",changed,hashlib.sha256).digest()).decode()
-    assert client.post("/webhooks/woocommerce",content=changed,headers={**headers,"X-WC-Webhook-Signature":sig}).status_code==409
 
 
 def test_import_export_roundtrip_keeps_tags_attributes_and_formula_safe(setup):
@@ -298,41 +234,8 @@ def test_import_export_roundtrip_keeps_tags_attributes_and_formula_safe(setup):
         assert rows[0]["name"].startswith("'")
 
 
-def test_permanent_mapping_never_searches_sku_again_or_writes_wrong_id():
-    client=Mock();service=WooCommerceService(client)
-    p=Product(id=uid(),tenant_id="test",sku="POCK41",woocommerce_product_id=123)
-    client.request.return_value={"id":123,"sku":"POCK41"}
-    assert service.resolve(p)["id"]==123
-    client.find_entity_by_sku.assert_not_called()
-    client.request.return_value={"id":123,"sku":"OTHER"}
-    with pytest.raises(ValueError): service.resolve(p)
-    client.update_product.assert_not_called()
 
 
-def test_worker_publication_reuses_wordpress_ids_and_verifies_mapping(setup,monkeypatch):
-    client,value,drive=setup
-    p=create(client);reference(client,p);fake_provider(monkeypatch)
-    job,_=enqueue(client,value,p,slots=["1_hd"]);execute(job,value,drive)
-    a=client.get("/api/platform/assets").json()["items"][0]
-    client.post(f"/api/platform/assets/{a['id']}/review",json={"status":"approved","role":"main"},headers=ORIGIN)
-    media=Mock();media.upload.return_value={"id":456,"source_url":"https://store.example/pocky.jpg"}
-    woo=Mock();woo.publish.return_value={"id":123};woo.product.return_value={"id":123,"sku":p["sku"],"status":"publish"}
-    import ecommerce_services,woocommerce_product_sync
-    monkeypatch.setattr(ecommerce_services,"WordPressMediaService",lambda:media)
-    monkeypatch.setattr(ecommerce_services,"WooCommerceService",lambda:woo)
-    monkeypatch.setattr(woocommerce_product_sync,"resolve_taxonomies",lambda *args:{})
-    for _ in range(2):
-        response=client.post(f"/api/platform/products/{p['id']}/publish",json={"confirm":True,"request_key":uid()},headers=ORIGIN)
-        assert response.status_code==202,response.text
-        pending=queue.claim(worker.OWNER)
-        assert worker.publication(pending,value,drive)
-        queue.finish(pending["id"],worker.OWNER,True,"Publicación verificada")
-    media.upload.assert_called_once();assert woo.publish.call_count==2
-    result=client.get(f"/api/platform/products/{p['id']}").json()
-    assert result["product"]["woocommerce_product_id"]==123
-    assert result["product"]["wordpress_media_ids"]==[456]
-    assert result["assets"][0]["status"]=="published"
-    assert client.post(f"/api/platform/assets/{a['id']}/review",json={"status":"rejected"},headers=ORIGIN).status_code==409
 
 
 @pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"),reason="Requires dedicated CI PostgreSQL for actual SKIP LOCKED")
@@ -379,14 +282,6 @@ def test_private_images_and_catalog_are_not_in_pwa_cache(setup):
         assert {icon["sizes"] for icon in manifest.json()["icons"]}=={"192x192","512x512"}
 
 
-def test_loyverse_authority_blocks_stock_edits_in_all_master_forms(setup,monkeypatch):
-    client,value,_=setup
-    p=create(client)
-    monkeypatch.setenv("STOCK_AUTHORITY","loyverse")
-    assert client.post(f"/api/platform/products/{p['id']}/stock",json={"quantity":20,"event_id":uid(),"version":p["version"],"reason":"conteo"},headers=ORIGIN).status_code==409
-    assert client.put(f"/api/platform/products/{p['id']}",json={**p,"stock":20},headers=ORIGIN).status_code==422
-    assert client.post(f"/api/platform/products/{p['id']}/sync-stock",json={"confirm":True,"request_key":uid()},headers=ORIGIN).status_code==409
-    assert client.get(f"/api/platform/products/{p['id']}").json()["product"]["stock"]==10
 
 
 def test_unlisted_google_account_cannot_read_shared_catalog(setup):
