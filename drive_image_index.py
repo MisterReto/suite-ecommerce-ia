@@ -78,4 +78,3 @@ def resolve_product_images(row: dict[str, Any], drive_index: dict[str, dict[str,
                 ref["optional_legacy"] = True
                 ref["resolution"] = "optional_legacy_missing"
     return resolved
-

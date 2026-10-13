@@ -109,4 +109,3 @@ async def inventory_movement(request: Request):
         return JSONResponse(status_code=400, content={"ok": False, "error": public_error(exc)})
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": public_error(exc)})
-
