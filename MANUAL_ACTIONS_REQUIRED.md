@@ -2,7 +2,7 @@
 
 El código se prepara en cleanup/remove-store-integrations-20261012. Producción y servicios históricos siguen intactos.
 
-1. Completar CI y revisar el diff/PR; no fusionar ni desplegar automáticamente.
+1. Revisar el diff del PR #28. CI del código 63c1b511 está verde (run 38320147296), incluidos PostgreSQL/Redis de prueba; no fusionar ni desplegar automáticamente.
 2. Inventariar por nombre/origen las variables y grupos de los cinco servicios en Render, sin compartir valores. Comparar con docs/ENVIRONMENT_VARIABLES.md.
 3. Confirmar presencia real de WC/WP y aliases. Guardar una copia única recuperable en el gestor de secretos existente, fuera de grupos activos; documentar solo ubicación/nombre de entrada. No borrar ni rotar esas credenciales.
 4. Preparar la rotación coordinada del secreto expuesto SYNC_SERVICE_SHARED_KEY si aún sirve a los históricos; no modificar esos servicios en esta entrega.
