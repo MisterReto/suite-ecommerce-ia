@@ -1,6 +1,7 @@
 """Controlled individual publication through FastAPI, durable SQL jobs and the real worker."""
 from copy import deepcopy
 from unittest.mock import Mock
+from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
@@ -53,10 +54,32 @@ def test_catalog_search_and_filters_use_sheet_source(publication):
     assert result.json()["brands"] == ["Marca original"]
 
 
+def test_preview_blocks_trashed_product_before_a_job_is_accepted(publication):
+    client, _, (calls, products, *_) = publication
+    products["S1"] = {"id": 8772, "sku": "S1", "status": "trash"}
+    response = client.post("/api/woocommerce/preview", json={
+        "selection": {"kind": "simple", "sku": "S1"}, "options": {"images": False}}, headers=ORIGIN)
+    assert response.status_code == 422 and "papelera" in response.json()["detail"]
+    assert all(c["method"] == "GET" for c in calls)
+    assert client.get("/api/woocommerce/jobs").json()["jobs"] == []
+
+
+def test_existing_job_errors_are_readable_and_redacted(store):
+    from catalog_platform.woocommerce_jobs import public_job
+    row = SimpleNamespace(id="test", batch_id=None, status="failed", progress=0,
+        message='products: HTTP 400: {&amp;quot;code&amp;quot;:&amp;quot;woocommerce_rest_product_not_created&amp;quot;, '
+        '&amp;quot;message&amp;quot;:&amp;quot;SKU ya presente en la tabla de búsqueda&amp;quot;}',
+        payload={}, created_at=None)
+    assert "papelera" in public_job(row)["message"]
+    row.message = "Error &quot;test-read-write-secret&quot;"
+    message = public_job(row)["message"]
+    assert "&quot;" not in message and "test-read-write-secret" not in message
+
+
 def test_individual_is_reviewed_and_durable_before_worker_writes(publication, monkeypatch):
     client, value, (calls, products, *_) = publication
     reviewed = preview(client)
-    assert not calls
+    assert all(call["method"] == "GET" for call in calls)
     assert submit(client, reviewed, confirm=False).status_code == 422
     key = uid()
     accepted = submit(client, reviewed, key)
@@ -142,7 +165,8 @@ def test_preview_errors_never_partially_submit_a_batch(publication):
     accepted = client.post("/api/woocommerce/batch-jobs", json={"preview_token": body["preview_token"],
         "request_key": uid(), "confirm": True}, headers=ORIGIN)
     assert accepted.status_code == 422
-    assert client.get("/api/woocommerce/jobs").json()["jobs"] == [] and not calls
+    assert client.get("/api/woocommerce/jobs").json()["jobs"] == []
+    assert all(call["method"] == "GET" for call in calls)
 
 
 def test_failed_batch_insert_rolls_back_every_job(publication, monkeypatch):

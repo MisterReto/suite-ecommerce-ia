@@ -1,6 +1,8 @@
 """Durable WooCommerce jobs reuse the accepted exporter; image generation stays separate."""
 from copy import deepcopy
 from contextlib import nullcontext
+import html
+import json
 import time
 
 from sqlalchemy import select
@@ -16,8 +18,22 @@ KIND = "woocommerce_export"
 
 
 def public_job(job):
+    message = job.message
+    for _ in range(3):
+        message = html.unescape(message)
+    if ("woocommerce_rest_product_not_created" in message and "SKU" in message
+            and any(text in message.lower() for text in ("tabla de b", "lookup table"))):
+        message = "WooCommerce rechazó la creación: el SKU ya figura en la tabla de búsqueda. Revisa los productos y la papelera de la tienda antes de reintentar."
+    elif "{" in message:
+        try:
+            detail = json.loads(message[message.index("{"):])
+            if isinstance(detail.get("message"), str):
+                message = detail["message"]
+        except (ValueError, TypeError, AttributeError):
+            pass
+    message = html.unescape(safe_error(ValueError(message)))
     return {"id": job.id, "batch_id": job.batch_id, "status": job.status, "progress": job.progress,
-        "message": job.message, "selection": job.payload.get("selection"),
+        "message": message, "selection": job.payload.get("selection"),
         "events": job.payload.get("events", [])[-100:], "uncertain": bool(job.payload.get("in_flight")),
         "store": job.payload.get("store_url"), "created_at": job.created_at.isoformat() if job.created_at else None}
 

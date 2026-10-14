@@ -108,6 +108,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
   };
   const prepare = () => attempt(async () => {
     if (!selected.length) return;
+    clearReview();
     if (selected.length === 1) {
       const selection = { kind: selected[0].kind, sku: selected[0].sku };
       const result = await api<{ preview: Preview; preview_token: string; store: string }>(
@@ -196,6 +197,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
         <label><input type="checkbox" checked={options.stock} onChange={e => changeOption("stock", e.target.checked)} disabled={disabled} /> Inventario</label>
         <label><input type="checkbox" checked={options.tags} onChange={e => changeOption("tags", e.target.checked)} disabled={disabled} /> Etiquetas</label>
       </fieldset>
+      <p className="p-muted">Al incluir etiquetas se usan las de cada fila de Sheets. Revisa sus valores en la vista previa.</p>
       <details><summary>Familias ya publicadas</summary><label>
         <input type="checkbox" checked={options.allow_published_family} onChange={e => changeOption("allow_published_family", e.target.checked)} disabled={disabled} />
         Permitir añadir variantes a familias ya publicadas. Estas variantes podrían quedar visibles al crearlas.

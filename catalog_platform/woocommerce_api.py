@@ -107,6 +107,7 @@ def preview(data: Preview, value=Depends(context)):
         options, selection = data.options.model_dump(), data.selection.model_dump()
         engine = Exporter().load(value, include_images=options["images"])
         public = engine.preview(selection["kind"], selection["sku"], options)
+        engine.preflight(selection["kind"], selection["sku"])
         source = engine.snapshot(selection["kind"], selection["sku"])
         token = fingerprint(source, {**selection, "store": store_url()}, options)
         previews = value.setdefault("woocommerce_previews", {})
@@ -167,6 +168,7 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
         for selection in selected:
             try:
                 public = engine.preview(selection["kind"], selection["sku"], options)
+                engine.preflight(selection["kind"], selection["sku"])
                 source = engine.snapshot(selection["kind"], selection["sku"])
                 token = fingerprint(source, {**selection, "store": store_url()}, options)
                 previews.append(public)

@@ -65,6 +65,13 @@ pierde su respuesta, el trabajo exige revisar el SKU y los medios antes de
 reintentar; el cargador vuelve a buscar productos existentes. Un rechazo HTTP
 4xx no queda marcado como escritura incierta.
 
+Antes de aceptar la vista previa, el adaptador consulta si el SKU ya existe en
+la papelera de WooCommerce. En ese caso detiene la creación con el ID del
+producto y una indicación de restaurarlo en WordPress. El worker repite esta
+comprobación antes de escribir. No elimina ni restaura productos automáticamente.
+Las 27 funciones originales siguen sin cambios; esta comprobación es un
+adaptador adicional. Los errores de WordPress se muestran como mensajes legibles.
+
 ## Validación controlada
 
 Primero se probaron producto simple, familia, variante e imágenes; después se
@@ -74,7 +81,8 @@ rollback de lotes, acceso por usuario, respuesta perdida y reintentos.
 
 Ejecuta `python scripts/validar_local.py` tras instalar `requirements.txt` y
 `requirements-test.txt`. Los cinco grupos aislados pasaron, incluido el grupo
-WooCommerce con 23 pruebas. TypeScript, las compilaciones export/standalone y
+WooCommerce con 23 pruebas en la primera integración y 28 tras cubrir papelera
+y mensajes de error. TypeScript, las compilaciones export/standalone y
 la prueba de despertar servicios también pasaron. Chrome verificó la interfaz
 compilada con una tienda simulada. Estas pruebas no certifican una nueva
 escritura en la tienda de producción.

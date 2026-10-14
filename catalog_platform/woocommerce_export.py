@@ -1,5 +1,6 @@
 """Runtime bindings for the unchanged, accepted Colab product exporter."""
 from copy import deepcopy
+import html
 import hashlib
 import json
 import os
@@ -54,7 +55,7 @@ def connection_status():
 
 
 def safe_error(exc):
-    text = str(exc)
+    text = html.unescape(str(exc))
     for name in (*ALIASES, *ALIASES.values(), "WP_USERNAME", "WP_APP_PASSWORD"):
         value = os.getenv(name)
         if value:
@@ -89,6 +90,13 @@ class StoreSession(requests.Session):
         response = super().request(method, url, **kwargs)
         if self.after:
             self.after(operation, modifying, response)
+        if not response.ok and response.status_code != 406:
+            try:
+                detail = response.json()
+            except ValueError:
+                detail = None
+            if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+                raise ValueError(f"WooCommerce: HTTP {response.status_code}. " + html.unescape(detail["message"]))
         return response
 
 
@@ -195,6 +203,35 @@ class Exporter:
                 on_cache(deepcopy(self.ns["MEDIA_CACHE"]))
 
         self.ns["registrar"], self.ns["guardar_cache"] = record, cache
+        original_product = self.ns["buscar_producto"]
+        original_variation = self.ns["buscar_variacion"]
+
+        def reject_trash(items, sku):
+            item = next((item for item in items if item.get("sku") == sku), None)
+            if item:
+                raise ValueError(f"El SKU {sku} ya existe en la papelera de WooCommerce (ID {item['id']}). "
+                    "Restaura ese producto en WordPress y revisa otra vez. Se detuvo la creación de ese SKU.")
+
+        def find_product(sku):
+            result = original_product(sku)
+            if not result:
+                reject_trash(self.ns["wc"]("GET", "products", params={"sku": sku, "status": "trash", "per_page": 100}), sku)
+            return result
+
+        def find_variation(parent_id, sku):
+            result = original_variation(parent_id, sku)
+            if not result:
+                page = 1
+                while True:
+                    items = self.ns["wc"]("GET", f"products/{parent_id}/variations",
+                        params={"status": "trash", "per_page": 100, "page": page})
+                    reject_trash(items, sku)
+                    if len(items) < 100:
+                        break
+                    page += 1
+            return result
+
+        self.ns["buscar_producto"], self.ns["buscar_variacion"] = find_product, find_variation
 
     def close(self):
         self.ns["wc_session"].close()
@@ -274,6 +311,14 @@ class Exporter:
         self.ns["ejecutar"](KINDS[kind], sku, imagenes=options["images"], stock=options["stock"],
             tags=options["tags"], permitir_publicada=options.get("allow_published_family", False))
         return self.events
+
+    def preflight(self, kind, sku):
+        """Read the store before review; the worker repeats the lookup before writes."""
+        if connection_status()["configured"]:
+            parent, selected, _ = self.ns["resolver"](KINDS[kind], sku)
+            existing = self.ns["buscar_producto"](parent["sku"])
+            if existing and kind == "variant":
+                self.ns["buscar_variacion"](existing["id"], selected[0]["sku"])
 
 
 def fingerprint(source, selection, options):

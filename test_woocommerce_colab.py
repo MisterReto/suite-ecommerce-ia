@@ -47,16 +47,16 @@ def store(monkeypatch):
         method = method.upper()
         endpoint = url.split("/wp-json/", 1)[1]
         body = kwargs.get("json") or {}
-        calls.append({"method": method, "endpoint": endpoint, "body": deepcopy(body), "data": kwargs.get("data")})
+        calls.append({"method": method, "endpoint": endpoint, "body": deepcopy(body), "data": kwargs.get("data"), "params": deepcopy(kwargs.get("params") or {})})
         if endpoint == "wc/v3/products" and method == "GET":
             sku = (kwargs.get("params") or {}).get("sku")
-            result = [products[sku]] if sku in products else []
+            result = [products[sku]] if sku in products and ((products[sku].get("status") == "trash") == ((kwargs.get("params") or {}).get("status") == "trash")) else []
         elif endpoint == "wc/v3/products" and method == "POST":
             assert body["sku"] not in products, "No duplicate product write"
             result = {**deepcopy(body), "id": 100 + len(products)}
             products[body["sku"]] = result
         elif endpoint.endswith("/variations") and method == "GET":
-            result = list(variations.values())
+            result = [v for v in variations.values() if (v.get("status") == "trash") == ((kwargs.get("params") or {}).get("status") == "trash")]
         elif endpoint.endswith("/variations") and method == "POST":
             assert body["sku"] not in variations
             result = {**deepcopy(body), "id": 200 + len(variations)}
@@ -80,6 +80,49 @@ def store(monkeypatch):
 
 def options(images=False, stock=False, tags=False):
     return {"images": images, "stock": stock, "tags": tags, "allow_published_family": False}
+
+
+def test_trashed_sku_is_detected_before_media_or_product_writes(store):
+    calls, products, *_ = store
+    products["S1"] = {"id": 8772, "sku": "S1", "status": "trash", "type": "simple"}
+    engine = Exporter(source(), write=True)
+    try:
+        for operation in (lambda: engine.preflight("simple", "S1"),
+                          lambda: engine.execute("simple", "S1", options())):
+            with pytest.raises(ValueError, match="papelera.*8772"):
+                operation()
+        assert calls and all(c["method"] == "GET" for c in calls)
+        assert any(c["params"].get("status") == "trash" for c in calls)
+    finally:
+        engine.close()
+
+
+def test_trashed_variation_is_detected_without_recreating_it(store):
+    calls, products, variations, _ = store
+    engine = Exporter(source(), write=True)
+    try:
+        engine.execute("family", "FAMILIA", options())
+        variations["V1"]["status"] = "trash"
+        calls.clear()
+        with pytest.raises(ValueError, match="V1.*papelera"):
+            engine.preflight("variant", "V1")
+        assert all(c["method"] == "GET" for c in calls)
+    finally:
+        engine.close()
+
+
+def test_store_errors_use_the_json_message_without_encoded_response_body(store, monkeypatch):
+    response = SimpleNamespace(ok=False, status_code=400,
+        json=lambda: {"code": "test", "message": "Error &quot;SKU&quot; test-read-write-secret"})
+    monkeypatch.setattr(requests.Session, "request", lambda *a, **kw: response)
+    engine = Exporter(source(), write=True)
+    try:
+        with pytest.raises(ValueError) as error:
+            engine.ns["wc"]("POST", "products", data={"sku": "S1"})
+        assert 'HTTP 400. Error "SKU"' in str(error.value)
+        assert "test-read-write-secret" not in safe_error(error.value)
+    finally:
+        engine.close()
 
 
 def test_all_twenty_seven_colab_functions_remain_exactly_unchanged():
