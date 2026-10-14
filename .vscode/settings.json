@@ -1,0 +1,7 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv-platform/Scripts/python.exe",
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["test_catalog_platform.py", "test_catalog_controls.py", "test_functional_parity.py", "test_web_sessions.py", "test_sheet_catalog_sync.py", "-p", "no:cacheprovider"],
+  "terminal.integrated.env.windows": { "PYTHONUTF8": "1" }
+}

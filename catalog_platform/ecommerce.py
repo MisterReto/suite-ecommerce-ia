@@ -54,6 +54,8 @@ def store_order(db, tenant, data):
 
 
 def apply_snapshot(db, product, data, event_id, actor):
+    if product.status == "deleted":
+        return False
     if str(data.get("sku", "")) != product.sku:
         raise ValueError("El ID de WooCommerce ya no coincide con el SKU.")
     modified = parse_time(data.get("date_modified_gmt"))
@@ -98,6 +100,7 @@ def refresh(job, owner, value=None, drive=None):
     )
     after = (start - timedelta(days=1)).replace(tzinfo=None).isoformat()
     for page in range(1, 11):
+        queue.checkpoint(job["id"], owner, message=f"Consultando pedidos, página {page}")
         orders = woo.orders(after, page)
         with transaction() as db:
             for data in orders:
@@ -111,6 +114,7 @@ def refresh(job, owner, value=None, drive=None):
     if job["payload"].get("import_products"):
         from .imports import backup_catalog
 
+        queue.checkpoint(job["id"], owner, message="Preparando lectura del catálogo WooCommerce")
         with transaction() as db:
             backup_catalog(db, job["tenant_id"], drive)
         rows = woo.client.list_all_products()
@@ -120,9 +124,16 @@ def refresh(job, owner, value=None, drive=None):
             )
         parents = []
         for index, data in enumerate(rows):
+            queue.checkpoint(job["id"], owner)
             if not data.get("sku"):
                 continue
             with transaction() as db:
+                if db.scalar(select(Product.id).where(
+                    Product.tenant_id == job["tenant_id"], Product.status == "deleted",
+                    Product.woocommerce_product_id == int(data["id"]),
+                    Product.woocommerce_variation_id.is_(None),
+                ).limit(1)):
+                    continue  # An ordinary refresh must not resurrect a removed record.
                 existing = db.scalar(
                     select(Product).where(
                         Product.tenant_id == job["tenant_id"],
@@ -140,8 +151,12 @@ def refresh(job, owner, value=None, drive=None):
                 continue
             fields = remote_fields(full)
             with transaction() as db:
+                if known:
+                    stored = db.scalar(select(Product).where(Product.id == known["id"]).with_for_update())
+                    if stored.status == "deleted":
+                        continue
                 p = (
-                    db.get(Product, known["id"])
+                    stored
                     if known
                     else save_product(
                         db,
@@ -179,9 +194,16 @@ def refresh(job, owner, value=None, drive=None):
             )
         for parent_id, parent in parents:
             for item in woo.client.list_all_variations(int(parent["id"])):
+                queue.checkpoint(job["id"], owner)
                 if not item.get("sku"):
                     continue
                 with transaction() as db:
+                    if db.scalar(select(Product.id).where(
+                        Product.tenant_id == job["tenant_id"], Product.status == "deleted",
+                        Product.woocommerce_product_id == int(parent["id"]),
+                        Product.woocommerce_variation_id == int(item["id"]),
+                    ).limit(1)):
+                        continue
                     existing = db.scalar(
                         select(Product).where(
                             Product.tenant_id == job["tenant_id"],
@@ -248,10 +270,12 @@ def refresh(job, owner, value=None, drive=None):
         products = db.scalars(
             select(Product).where(
                 Product.tenant_id == job["tenant_id"],
+                Product.status != "deleted",
                 Product.woocommerce_product_id.is_not(None),
             )
         ).all()
     for index, p in enumerate(products):
+        queue.checkpoint(job["id"], owner)
         data = woo.resolve(p)
         event_id = (
             "pull:"

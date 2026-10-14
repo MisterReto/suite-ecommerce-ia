@@ -1,6 +1,11 @@
 """API entrypoint with optional UI hosting for the compatible deployment."""
 import os
 from starlette.routing import Mount
+from catalog_platform.render_config import configure_redirect
+from catalog_platform.initialize import initialize_empty_database
+
+configure_redirect()
+initialize_empty_database()
 
 if os.getenv("SUITE_SERVICE_ROLE", "main").lower() == "sync":
     from sync_service import app as fastapi_app
@@ -25,9 +30,10 @@ if os.getenv("SUITE_SERVICE_ROLE", "main").lower() != "sync":
 def service_health():
     return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": os.getenv("SUITE_SERVICE_ROLE", "main"),
             "remote_sync": bool(os.getenv("SYNC_SERVICE_URL")),
-            "sync_url": os.getenv("SYNC_SERVICE_URL", ""),
+            "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "local"),
             "service_id": os.getenv("RENDER_SERVICE_ID", ""),
             "version": os.getenv("RENDER_GIT_COMMIT", ""),
+            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory",
             "store_connected": os.getenv("SUITE_DRIVE_ONLY", "true").lower() == "false"}
 
 
@@ -37,6 +43,8 @@ fastapi_app.router.routes[:] = [r for r in fastapi_app.routes if r not in _mount
 from app_security import SecurityMiddleware
 import app as session_runtime
 from catalog_platform.rbac import RoleMiddleware
+from catalog_platform.web_sessions import restore as restore_browser_session
 fastapi_app.add_middleware(RoleMiddleware,sessions=lambda:session_runtime.SESSIONS)
 fastapi_app.add_middleware(SecurityMiddleware, sessions=lambda: session_runtime.SESSIONS,
-                          expire=getattr(session_runtime, "_eliminar_sesion", None))
+                          expire=getattr(session_runtime, "_eliminar_sesion", None),
+                          restore=restore_browser_session)

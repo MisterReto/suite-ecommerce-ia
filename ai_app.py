@@ -4,7 +4,18 @@ import threading
 import pandas as pd
 import app as legacy
 from catalog_capture import records_from_values, prepare_capture_updates
-from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, split_category_path
+from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, split_category_path, join_category_path
+from sheets_service import SheetsService
+
+_sheets_client = legacy._get_sheets_service
+
+
+def sheets_for_session(session):
+    client = _sheets_client(session)
+    return client if isinstance(client, SheetsService) else SheetsService(client)
+
+
+legacy._get_sheets_service = sheets_for_session
 
 
 def _clean(value):
@@ -44,7 +55,9 @@ def _canonical_row(record):
     if not category_path:
         cat = str(_clean(get("categoria", "")) or "").strip()
         sub = str(_clean(get("subcategoria", "")) or "").strip()
-        category_path = f"{cat} > {sub}" if cat and sub else (cat or sub)
+        category_path = join_category_path(cat, sub)
+    else:
+        category_path = join_category_path(*split_category_path(category_path))
 
     stock = _clean(get("Existencias", 0))
     try:
@@ -143,4 +156,3 @@ legacy._aplicar_formato_filas = _no_legacy_format
 legacy._AUTO_SYNC_AFTER_SAVE = None  # La publicación explícita se delega al servicio de sincronización.
 
 fastapi_app = legacy.fastapi_app
-

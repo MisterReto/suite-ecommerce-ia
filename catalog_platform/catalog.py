@@ -50,7 +50,7 @@ def serialize(record):
 
 
 def product_for(db, tenant, product_id, lock=False):
-    query = select(Product).where(Product.tenant_id == tenant, Product.id == product_id)
+    query = select(Product).where(Product.tenant_id == tenant, Product.id == product_id, Product.status != "deleted")
     if lock:
         query = query.with_for_update().execution_options(populate_existing=True)
     product = db.scalar(query)
@@ -152,7 +152,7 @@ def save_product(
                 GenerationJob.product_id == product.id,
                 GenerationJob.tenant_id == tenant,
                 GenerationJob.kind.in_(["publication", "stock_sync"]),
-                GenerationJob.status.in_(["queued", "processing"]),
+                GenerationJob.status.in_(["queued", "processing", "cancelling"]),
             )
         )
     ):
@@ -176,7 +176,7 @@ def save_product(
         and product.product_type == "variable"
         and data.get("product_type") != "variable"
         and db.scalar(
-            select(Product.id).where(Product.parent_id == product.id).limit(1)
+            select(Product.id).where(Product.parent_id == product.id, Product.status != "deleted").limit(1)
         )
     ):
         raise ValueError(

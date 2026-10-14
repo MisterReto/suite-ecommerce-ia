@@ -1,31 +1,50 @@
-# Estado de la auditoría de seguridad
+# Seguridad de captura y credenciales — 8 octubre 2026
 
-Este archivo registra alcance, evidencia y pendientes. No es un informe final de Codex Security ni una certificación de la aplicación.
+Auditoría de código y pruebas sintéticas; no es una prueba de penetración.
+Complementa la auditoría inicial funcional y la seguridad previa del repositorio.
 
-## Evidencia verificable
+| Control | Implementación comprobada | Evidencia / límite |
+|---|---|---|
+| Sesión y CSRF | Middleware existente; `studio_api::session` | Cookies/OAuth same origin; proxy conserva cabeceras |
+| Rol para escrituras | `editor` + `security::require_role` en POST/PUT/DELETE del estudio | Viewer no cambia borrador, notas, clave, portada ni guarda |
+| Credencial personal | `accounts::put`, `seal/unseal`, `gemini_for` | Fernet por actor/tenant; no echo ni fallback AI_API_KEY |
+| Worker correcto | Job actor/tenant → `accounts::load` vigente | Cambio/borrado no revertido por snapshot Google obsoleto |
+| Redis | Broker/RQ existente: solo ID de job | Contratos existentes verifican ausencia de secretos y payload fotográfico |
+| Fotos privadas | `asset`, `file_path`, namespace + ID opaco | Actor ajeno 404; rutas /tmp no llegan al frontend |
+| Fotos reales | `checked_image_type` + Pillow/EXIF | MIME/extensión/bytes, 12 MB y 24 MP; HEIC con decoder opcional |
+| Datos estructurados | Pydantic `Product`, límites de campos/atributos | Precios finitos/no negativos; SKU caracteres permitidos; GTIN checksum |
+| Fuente Woo por tienda | `woo_rows` asociación de root, GET | Tienda ajena no consulta credenciales globales; modo solo Drive respetado |
+| Doble guardado | Lock PG por tienda, fresh read, guardia save_phase, SyncEvent | Sheets incierto se verifica en lectura; repair solo SQL |
+| Padre/hijo | `prepare_capture_updates`, `mirror_records` | Una petición Sheets; una transacción SQL; rollback no deja padre parcial |
+| Generación/costo | Request key, cotización/límites existentes; contrato protegido | No reintento pagado automático; no llamadas reales en estas pruebas |
+| Secretos en UI/logs | `SecretStr`, errores filtrados, password vaciado | Respuestas de pruebas sin claves; no se leyeron valores de env Render |
 
-| Control | Código/prueba | Alcance de la evidencia |
-| --- | --- | --- |
-| Roles y aislamiento por tenant | `catalog_platform/security.py`, `rbac.py`, `test_catalog_platform.py` | Pruebas con sesiones/proveedores simulados. |
-| Cifrado de conexiones persistidas | `catalog_platform/accounts.py`, `security.py` | Fernet; clave servidor compartida API/worker. |
-| Firma y deduplicación de webhooks | `catalog_platform/webhooks.py`, pruebas de plataforma | WooCommerce con dobles; Loyverse permanece inactivo. |
-| Archivos privados y propiedad de carpeta | `DriveService.owns`, API de imágenes, pruebas de plataforma/studio | IDs privados y autorización servidor. |
-| Origin y Host en separación frontend/API | `app_security.py`, `test_frontend_separation.py` | Origen exacto configurado, rechazo de otro origen/Host y fallo cerrado por configuración inválida. |
-| Cookies y transporte del proxy | `test_frontend_proxy.cjs` | Next real y backend TLS local; cookies, redirects y 12 MB. |
-| Dependencias | `pip-audit`, `npm audit` en CI | Vulnerabilidades conocidas según los índices en la fecha del run. |
-| Recuperación y duplicados | Tests de cola y PostgreSQL real | Checkpoints, leases, solicitudes repetidas y resultados inciertos. |
+El catálogo y sus imágenes siguen filtrados por tenant. El borrador persistido
+usa tenant + actor y guarda referencias de Drive, no rutas del host. Cambiar
+de carpeta invalida los IDs de archivos de la sesión y recupera otro checkpoint;
+no traslada fotos al tenant nuevo. Logout conserva la configuración cifrada.
 
-## Pendientes antes de producción
+Las claves viejas que pudieran estar en snapshots cifrados Google no se usan.
+No se eliminan automáticamente esos registros históricos ni las variables
+existentes de Render. Una migración de limpieza de secretos antiguos requiere
+su backup y revisión; el flujo nuevo escribe exclusivamente el provider personal.
 
-- Comprobar valores operativos sin imprimir secretos: correos permitidos, roles, origen, callback OAuth, claves servidor y flags de escritura.
-- El guard histórico `email_allowed` admite cualquier correo Google verificado si `APP_ALLOWED_EMAILS` está vacío. No confundirlo con la lista de miembros del catálogo `APP_ROLE_MAP`.
-- Medir límites integrales de RAM/disco y retención; los límites por archivo/petición no prueban un límite integral de recursos.
-- Revisar módulos históricos, variantes de arranque, redirects externos, credenciales de tienda, logs y acciones destructivas en el alcance completo.
-- Probar OAuth, Drive, publicación, webhooks y recuperación con conexiones reales antes del cambio de entrada.
-- Completar la auditoría formal y guardar sus hallazgos y cobertura.
+No se añadió schema SQL, migración masiva ni servicio de pago. Se reutiliza
+IntegrationAccount para `gemini`, `studio_profile`, `capture_draft` y SyncEvent
+para reparación. La nueva asociación opcional `WOOCOMMERCE_TENANT_ID` solo
+restringe una fuente de lectura; no añade permiso de publicación.
 
-## Limitación del entorno de esta continuación
+## Límites prácticos
 
-La terminal y la descarga de adjuntos fallaron con `setup refresh had errors`; la comprobación previa del flujo formal de Codex Security no pudo ejecutarse. El repositorio y CI se trabajaron mediante GitHub y Render se inspeccionó con su conector. No se declara una auditoría integral completada.
+No hay commit distribuido entre Google y PostgreSQL. Un Sheet aceptado y SQL
+caído queda visible como pendiente y puede verificarse/repararse. La detección
+de coincidencias de nombre es una heurística explicada al operador; datos
+ilegibles o diferentes dimensiones requieren revisión, no invención automática.
 
-La instrucción textual adjunta tampoco pudo descargarse. Se incorporó el contexto recuperado de “Investigar apps similares”: recuperar control mediante documentación, preservar la generación, mantener Drive/Sheet y separar servicios. El texto literal requiere lectura cuando el adjunto esté disponible.
+La clave de cifrado API/worker debe ser la misma y conservarse entre deploys.
+Fernet protege el almacenamiento, no un proceso servidor ya comprometido.
+Las fotos temporales ocupan Drive y siguen su control de acceso; este cambio no
+borra originales ni backups y no incluye una política automática de retención.
+
+Faltan el pase de cuentas reales, Safari/Android físicos y uso de Gemini con
+presupuesto. No presentar CI sintético como evidencia de esos tres controles.

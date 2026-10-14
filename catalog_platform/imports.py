@@ -11,6 +11,7 @@ from .catalog import save_product, serialize, audit
 from .database import transaction
 from .security import seal
 from . import queue
+from inventory_schema import split_category_path
 
 
 def normalize(rows):
@@ -40,7 +41,7 @@ def normalize(rows):
             category = str(
                 row.get("category", row.get("categorias", row.get("categoria", "")))
             )
-            parts = category.split(" > ", 1)
+            parent_category, child_category = split_category_path(category)
             tags = row.get("tags", row.get("etiquetas", []))
             if isinstance(tags, str):
                 if tags.strip().startswith("["):
@@ -67,10 +68,10 @@ def normalize(rows):
                 name=str(row.get("name", row.get("nombre_producto", ""))),
                 brand=str(row.get("brand", row.get("Marca", row.get("marca", "")))),
                 barcode=str(row.get("barcode", row.get("codigo_barras", ""))),
-                category=parts[0],
+                category=parent_category,
                 subcategory=(
-                    parts[1]
-                    if len(parts) > 1
+                    child_category
+                    if child_category
                     else str(row.get("subcategory", row.get("subcategoria", "")))
                 ),
                 short_description=str(
@@ -183,6 +184,7 @@ def execute_import(job, value, drive, owner):
     for index, data in enumerate(
         sorted(rows, key=lambda r: 0 if r["product_type"] == "variable" else 1)
     ):
+        queue.checkpoint(job["id"], owner)
         if str(index) in payload.get("completed_keys", []):
             continue
         with transaction() as db:
@@ -192,7 +194,7 @@ def execute_import(job, value, drive, owner):
                 )
             )
             imported = payload.get("imported_products", {})
-            pid = imported.get(data["sku"])
+            pid = existing.id if existing else imported.get(data["sku"])
             if not existing:
                 fields = {
                     k: v

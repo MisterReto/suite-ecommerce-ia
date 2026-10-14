@@ -71,9 +71,12 @@ def _full_sync(session, sku: str, include_images: bool = False) -> dict:
                 f"Resultado: {product_result}"
             )
 
+        from catalog_platform.sheet_sync import sync_inventory_product
+        catalog_product_id = sync_inventory_product(session, row, inventory)
         return {
             "sku": sku,
             "backend_verified": True,
+            "catalog_product_id": catalog_product_id,
             "image_sync": image_result,
             "product_sync": product_result,
             "source": {

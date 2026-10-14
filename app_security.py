@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import bleach
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from sync_bridge_protocol import STORE_CONTEXT, STORE_KEYS
 
 
@@ -42,11 +43,18 @@ def checked_image_type(filename, data):
         raise ValueError("Nombre de imagen inválido.")
     if len(data) > 12_000_000:
         raise ValueError("La imagen supera el límite de 12 MB.")
-    if filename.rsplit(".", 1)[-1].casefold() not in {"jpg", "jpeg", "png", "webp", "gif", "avif"}:
+    extension = filename.rsplit(".", 1)[-1].casefold()
+    if extension in {"heic", "heif"}:
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except ImportError:
+            raise ValueError("Este servidor no tiene un decodificador HEIC/HEIF. Exporta la foto como JPG o toma una foto compatible desde la cámara.") from None
+    if extension not in {"jpg", "jpeg", "png", "webp", "gif", "avif", "heic", "heif"}:
         raise ValueError("Solo se permiten imágenes JPG, PNG, WebP, GIF o AVIF.")
     try:
         with Image.open(io.BytesIO(data)) as image:
-            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif"}.get(image.format)
+            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp", "GIF": "image/gif", "AVIF": "image/avif", "HEIF": "image/heic"}.get(image.format)
             if not mime or image.width * image.height > 24_000_000:
                 raise ValueError("Formato o dimensiones de imagen no permitidos.")
             image.verify()
@@ -60,10 +68,10 @@ def public_error(exc):
         return "No se pudo confirmar la operación. Revisa su estado antes de reintentar."
     message = str(exc)
     values = dict(STORE_CONTEXT.get())
-    values.update({key: os.getenv(key, "") for key in (*STORE_KEYS, "GOOGLE_CLIENT_SECRET", "SYNC_SERVICE_SHARED_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AI_API_KEY", "GOOGLE_REFRESH_TOKEN", "DATABASE_URL", "GOOGLE_SERVICE_ACCOUNT_JSON")})
+    values.update({key: os.getenv(key, "") for key in (*STORE_KEYS, "GOOGLE_CLIENT_SECRET", "SYNC_SERVICE_SHARED_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AI_API_KEY", "GOOGLE_REFRESH_TOKEN", "DATABASE_URL", "REDIS_URL", "LOYVERSE_ACCESS_TOKEN", "GOOGLE_SERVICE_ACCOUNT_JSON")})
     for key, value in values.items():
-        if any(part in key for part in ("SECRET", "KEY", "PASSWORD", "TOKEN", "DATABASE_URL", "SERVICE_ACCOUNT")) and isinstance(value, str) and len(value) >= 6:
-            message = message.replace(value, "[oculto]")
+        if any(part in key for part in ("SECRET", "KEY", "PASSWORD", "TOKEN", "DATABASE_URL", "REDIS_URL", "SERVICE_ACCOUNT")) and isinstance(value, str) and len(value) >= 6:
+            message = message.replace(value, "[REDACTED]")
     return html.escape(message[:300])
 
 
@@ -89,11 +97,12 @@ class WindowLimiter:
 
 
 class SecurityMiddleware:
-    def __init__(self, app, sessions=lambda: {}, expire=None):
+    def __init__(self, app, sessions=lambda: {}, expire=None, restore=None):
         self.app, self.sessions = app, sessions
         self.limiter = WindowLimiter()
         self.busy, self.lock = 0, Lock()
         self.expire = expire or (lambda key: self.sessions().pop(key, None))
+        self.restore = restore
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -103,7 +112,7 @@ class SecurityMiddleware:
         sid = request.cookies.get("sync_session") or request.cookies.get("session_id")
         session = self.sessions().get(sid) if sid else None
         if session and session.get("expires_at", 0) <= time.time():
-            self.expire(sid)
+            await run_in_threadpool(self.expire, sid)
             session = None
         upload = path == "/api/uploads"
         user_file = path.startswith("/api/files/")
@@ -137,7 +146,9 @@ class SecurityMiddleware:
                 return await JSONResponse({"error": "Configura APP_PUBLIC_ORIGIN como origen HTTPS."},
                                           status_code=503)(scope, receive, send)
         origin = public or external or str(request.base_url).rstrip("/")
-        internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse"}
+        internal = path in {"/internal/tools", "/sync-handoff/redeem", "/webhooks/woocommerce", "/webhooks/loyverse", "/api/webhooks/woocommerce", "/api/webhooks/loyverse"}
+        paid = path == "/api/generate" or path == "/api/platform/generation/jobs" or (
+            path.startswith(("/api/images/", "/api/platform/assets/")) and path.endswith(("/correct", "/regenerate")))
         if method not in {"GET", "HEAD", "OPTIONS"} and not internal:
             source = request.headers.get("origin")
             referer = request.headers.get("referer", "")
@@ -153,6 +164,17 @@ class SecurityMiddleware:
         ):
             return await JSONResponse({"error": "Demasiadas solicitudes. Intenta en un minuto."}, status_code=429,
                 headers={"retry-after": "60"})(scope, receive, send)
+        if sid and self.restore and path not in {"/service-health", "/login", "/auth/callback"}:
+            try:
+                session = await run_in_threadpool(self.restore, sid)
+            except Exception:
+                return await JSONResponse({"error": "No se pudo recuperar la sesión. Reintenta en unos segundos."},
+                    status_code=503, headers={"retry-after": "3", "cache-control": "no-store"})(scope, receive, send)
+        if method == "POST" and paid and session:
+            limit = int(os.getenv("GENERATION_REQUESTS_PER_MINUTE", "12"))
+            if not self.limiter.allow((sid, "generation"), limit):
+                return await JSONResponse({"error": "Demasiadas solicitudes de generación. Revisa los trabajos activos."},
+                    status_code=429, headers={"retry-after": "60"})(scope, receive, send)
         if (upload or user_file) and not session:
             return await JSONResponse({"error": "Conecta Google Drive antes de subir imágenes."}, status_code=401)(scope, receive, send)
         maximum = 12_100_000 if upload else 2_100_000 if path == "/api/platform/import/file" else 2_000_000 if internal else 512_000
