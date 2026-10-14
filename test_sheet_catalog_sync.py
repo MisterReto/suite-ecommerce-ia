@@ -60,8 +60,9 @@ class DriveDouble:
     def __init__(self, root):
         self.items = {
             "sheet": {"id": "sheet", "name": "inventario_completo", "mimeType": "application/vnd.google-apps.spreadsheet", "parents": [root]},
-            "own": {"id": "own", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": [root]},
-            "shared": {"id": "shared", "name": "cover.jpg", "mimeType": "image/jpeg", "parents": [root]},
+            "generated": {"id": "generated", "name": "imagenes_generadas", "mimeType": "application/vnd.google-apps.folder", "parents": [root]},
+            "own": {"id": "own", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["generated"]},
+            "shared": {"id": "shared", "name": "cover.jpg", "mimeType": "image/jpeg", "parents": ["generated"]},
             "foreign": {"id": "foreign", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["foreign-root"]},
             "foreign-root": {"id": "foreign-root", "parents": []},
         }
@@ -74,8 +75,13 @@ class DriveDouble:
         return response(lambda: deepcopy(self.items[fileId]))
 
     def list(self, q, **kwargs):
-        name = re.search(r"name = '([^']+)'", q)[1]
-        return response(lambda: {"files": [deepcopy(item) for item in self.items.values() if item.get("name") == name and not item.get("trashed")]})
+        parent = re.search(r"'([^']+)' in parents", q)[1]
+        name = re.search(r"name\s*=\s*'([^']+)'", q)
+        return response(lambda: {"files": [deepcopy(item) for item in self.items.values()
+            if parent in item.get("parents", []) and not item.get("trashed")
+            and (not name or item.get("name") == name[1])
+            and ("application/vnd.google-apps.folder" not in q or item.get("mimeType") == "application/vnd.google-apps.folder")
+            and ("mimeType contains 'image/'" not in q or item.get("mimeType", "").startswith("image/"))]})
 
     def copy(self, fileId, body, **kwargs):
         def backup():
@@ -100,6 +106,60 @@ def test_paths_read_any_spacing_and_write_canonical_format(path):
     assert normalize_product_row(row)["categorias"] == "Bebidas>Jugos y Sodas"
     import ai_app
     assert ai_app._canonical_row(row)[8] == "Bebidas>Jugos y Sodas"
+
+
+def test_image_names_ignore_root_backups_references_and_nested_copies():
+    sdk = DriveDouble("catalog")
+    for key, parent in (("root-copy", "catalog"), ("backup-copy", "backups"),
+                        ("reference-copy", "references"), ("nested-copy", "nested")):
+        sdk.items[key] = {"id": key, "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": [parent]}
+    sdk.items["nested"] = {"id": "nested", "name": "references", "mimeType": "application/vnd.google-apps.folder", "parents": ["generated"]}
+    drive = DriveService(sdk, "catalog")
+    assert sheet_sync.named_images(drive, {"sprite.jpg"}) == {"sprite.jpg": "own"}
+
+
+def test_real_duplicates_inside_generated_images_still_block():
+    sdk = DriveDouble("catalog")
+    sdk.items["duplicate"] = {"id": "duplicate", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["generated"]}
+    with pytest.raises(ValueError, match="imagenes_generadas: sprite.jpg"):
+        sheet_sync.named_images(DriveService(sdk, "catalog"), {"sprite.jpg"})
+
+
+def test_absent_generated_folder_does_not_fall_back_to_catalog_root():
+    sdk = DriveDouble("catalog")
+    del sdk.items["generated"]
+    sdk.items["own"]["parents"] = ["catalog"]
+    assert sheet_sync.named_images(DriveService(sdk, "catalog"), {"sprite.jpg"}) == {}
+
+
+def test_image_scan_paginates_only_the_generated_folder_and_deduplicates_ids(monkeypatch):
+    sdk = DriveDouble("catalog")
+    original = sdk.list
+    queries = []
+    def pages(q, **kwargs):
+        queries.append(q)
+        if "'generated' in parents" not in q:
+            return original(q, **kwargs)
+        assert "mimeType contains 'image/'" in q
+        image = deepcopy(sdk.items["own"])
+        if not kwargs.get("pageToken"):
+            return response(lambda: {"files": [image], "nextPageToken": "second"})
+        assert kwargs["pageToken"] == "second"
+        return response(lambda: {"files": [image, deepcopy(sdk.items["shared"])]})
+    monkeypatch.setattr(sdk, "list", pages)
+    assert sheet_sync.named_images(DriveService(sdk, "catalog"), {"sprite.jpg", "cover.jpg"}) == {"sprite.jpg": "own", "cover.jpg": "shared"}
+    assert len(queries) == 3 and all(" in parents" in q for q in queries)
+
+
+def test_table_sync_uses_generated_images_despite_same_named_root_copy(setup, monkeypatch):
+    client, value, _ = setup
+    sdk = DriveDouble(value["platform_tenant"])
+    sdk.items["root-copy"] = {"id": "root-copy", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": [value["platform_tenant"]]}
+    monkeypatch.setattr(studio.runtime, "_get_drive_service", lambda *args: sdk)
+    row = {"sku": "SPRITE", "nombre_producto": "Sprite", "imagenes": "sprite.jpg"}
+    product_id = sheet_sync.sync_inventory_product(value, row, [row])
+    with transaction() as db:
+        assert list(db.scalars(select(ProductImage.drive_file_id).where(ProductImage.product_id == product_id))) == ["own"]
 
 
 def test_drive_categories_use_headers_even_when_columns_move():

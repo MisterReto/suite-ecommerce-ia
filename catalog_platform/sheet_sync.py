@@ -19,28 +19,23 @@ from .security import require_role
 
 
 def named_images(drive, names):
-    """Resolve exact filenames inside the selected root, never by SKU prefix."""
+    """Read exact names only from direct children of imagenes_generadas."""
+    names = {name for name in names if name and "/" not in name and "\\" not in name}
+    if not names:
+        return {}
+    folder = drive.generated_images_folder()
+    if not folder:
+        return {}
     results = {}
-    for name in sorted(set(names)):
-        if not name or "/" in name or "\\" in name:
+    for item in drive.list(folder, "mimeType contains 'image/'",
+                           fields="id,name,mimeType,parents,trashed", limit=20000):
+        name = item.get("name")
+        if (name not in names or folder not in item.get("parents", []) or item.get("trashed")
+                or not item.get("mimeType", "").startswith("image/")):
             continue
-        escaped = name.replace("'", "\\'")
-        page = None
-        matches = []
-        while True:
-            response = drive.files().list(
-                q=f"name = '{escaped}' and trashed = false and mimeType contains 'image/'",
-                fields="nextPageToken,files(id,name,mimeType)", pageSize=100, pageToken=page,
-                supportsAllDrives=True, includeItemsFromAllDrives=True,
-            ).execute()
-            matches.extend(file for file in response.get("files", []) if drive.owns(file["id"]))
-            page = response.get("nextPageToken")
-            if not page:
-                break
-        if len(matches) > 1:
-            raise ValueError("Hay imágenes duplicadas con el mismo nombre. Revisa los archivos antes de continuar.")
-        if matches:
-            results[name] = matches[0]["id"]
+        if name in results and results[name] != item["id"]:
+            raise ValueError(f"Hay imágenes duplicadas con el mismo nombre en imagenes_generadas: {name}. Revisa esa carpeta antes de continuar.")
+        results[name] = item["id"]
     return results
 
 

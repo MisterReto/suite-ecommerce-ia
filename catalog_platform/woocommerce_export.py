@@ -134,32 +134,17 @@ def google_clients(value):
 def index_images(client, root):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", root):
         raise ValueError("Carpeta de imágenes inválida.")
-    pending, seen, files = [root], set(), []
-    while pending:
-        folder = pending.pop()
-        if folder in seen:
-            continue
-        seen.add(folder)
-        if len(seen) > 1000:
-            raise ValueError("La carpeta contiene demasiadas subcarpetas.")
-        token = None
-        while True:
-            result = client.files().list(q=f"'{folder}' in parents and trashed = false",
-                fields="nextPageToken,files(id,name,mimeType,size)", pageSize=1000,
-                pageToken=token, supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
-            for item in result.get("files", []):
-                if item["mimeType"] == "application/vnd.google-apps.folder":
-                    pending.append(item["id"])
-                elif item.get("mimeType", "").startswith("image/"):
-                    if any(char in item["name"] for char in ('\r', '\n', '"')):
-                        continue
-                    files.append(item)
-            if len(files) > 20000:
-                raise ValueError("La carpeta supera el límite de imágenes.")
-            token = result.get("nextPageToken")
-            if not token:
-                break
-    return files
+    folder = client.files().get(fileId=root, supportsAllDrives=True,
+        fields="id,name,mimeType,trashed").execute()
+    if (folder.get("name") != "imagenes_generadas" or folder.get("trashed")
+            or folder.get("mimeType") != "application/vnd.google-apps.folder"):
+        raise ValueError("La carpeta de imágenes configurada debe ser imagenes_generadas.")
+    from drive_service import DriveService
+    return [item for item in DriveService(client, root).list(root,
+        "mimeType contains 'image/'", fields="id,name,mimeType,size,parents,trashed", limit=20000)
+        if root in item.get("parents", []) and not item.get("trashed")
+        and item.get("mimeType", "").startswith("image/")
+        and not any(char in item["name"] for char in ('\r', '\n', '"'))]
 
 
 class Exporter:

@@ -78,6 +78,18 @@ class DriveService:
             .execute()["id"]
         )
 
+    def generated_images_folder(self):
+        """Resolve the existing catalog-image folder without creating or falling back."""
+        rows = self.list(self.root_id,
+            "name='imagenes_generadas' and mimeType='application/vnd.google-apps.folder'",
+            fields="id,name,mimeType,parents")
+        rows = [row for row in rows if row.get("name") == "imagenes_generadas"
+                and row.get("mimeType") == "application/vnd.google-apps.folder"
+                and self.root_id in row.get("parents", [])]
+        if len(rows) > 1:
+            raise ValueError("Hay más de una carpeta imagenes_generadas en el catálogo. Selecciona la correcta por ID.")
+        return rows[0]["id"] if rows else None
+
     def working_folder(self, *parts):
         parent = self.folder("Rincon_de_Asia_App")
         for part in parts:

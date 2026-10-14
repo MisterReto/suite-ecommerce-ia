@@ -24,7 +24,7 @@ Los encabezados HTTP originales se conservan, incluido
 `User-Agent: RinconDeAsia-CatalogExporter/1.0`.
 
 Se leen las cinco pestañas del Sheet original, con rangos acotados por su
-metadata. Las imágenes se buscan recursivamente en la carpeta original y se
+metadata. Las imágenes se buscan sólo directamente en `imagenes_generadas` y se
 relacionan por el SKU real. La caché de medios se verifica contra WordPress
 antes de reutilizar cada ID; se conserva cifrada en SQL. No se escribe en las
 hojas ni se modifica la generación de imágenes con IA.
@@ -39,6 +39,15 @@ API y worker requieren `WOOCOMMERCE_URL`, `WOOCOMMERCE_CONSUMER_KEY` y
 El Blueprint obtiene estos valores del servicio existente `suite-ecommerce-ia`;
 no contiene secretos. Las credenciales Google y Neon existentes se conservan.
 El frontend nunca recibe claves WooCommerce o WordPress.
+
+La sincronización del inventario resuelve la carpeta existente `imagenes_generadas`
+dentro de la raíz autorizada y consulta sólo sus imágenes directas. No busca
+copias en la raíz, referencias, respaldos ni subcarpetas. Si la carpeta falta,
+no adjunta imágenes de otra ubicación ni crea una carpeta nueva. La detección
+de nombres duplicados se limita a los archivos solicitados dentro de esa carpeta.
+WooCommerce verifica también que su carpeta configurada se llame
+`imagenes_generadas` y no recorre subcarpetas. Esta política no mueve ni elimina
+archivos y conserva el flujo de generación y guardado con IA.
 
 Los IDs del Sheet y de Drive tienen los valores originales como predeterminados.
 Puede configurarse `WOOCOMMERCE_SHEET_ID` o `WOOCOMMERCE_IMAGES_FOLDER_ID`.

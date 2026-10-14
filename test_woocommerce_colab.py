@@ -12,6 +12,18 @@ import requests
 from catalog_platform.woocommerce_export import Exporter, CORE, StoreSession, safe_error
 
 
+def test_woocommerce_image_index_only_reads_direct_generated_images():
+    from catalog_platform.woocommerce_export import index_images
+    from test_sheet_catalog_sync import DriveDouble
+    sdk = DriveDouble("catalog")
+    sdk.items["root-copy"] = {"id": "root-copy", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["catalog"]}
+    sdk.items["subfolder"] = {"id": "subfolder", "name": "backup", "mimeType": "application/vnd.google-apps.folder", "parents": ["generated"]}
+    sdk.items["nested-copy"] = {"id": "nested-copy", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["subfolder"]}
+    assert {item["id"] for item in index_images(sdk, "generated")} == {"own", "shared"}
+    with pytest.raises(ValueError, match="debe ser imagenes_generadas"):
+        index_images(sdk, "subfolder")
+
+
 def source():
     simple = {"sku": "S1", "tipo": "simple", "nombre_producto": "Ramen", "Marca": "Marca original",
         "precio": "$35.00", "Precio descuento": "$30.00", "Existencias": "4",
