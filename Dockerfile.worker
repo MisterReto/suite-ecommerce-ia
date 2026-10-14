@@ -8,5 +8,6 @@ COPY catalog_platform/ ./catalog_platform/
 COPY static/ ./static/
 RUN useradd --create-home --uid 10001 suite
 USER suite
+ENV GENERATION_QUEUE_BACKEND=rq STUDIO_IMAGE_JOBS=worker INITIALIZE_EMPTY_DATABASE=false MAX_IMAGES_PER_BATCH=30
 ENV MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONUNBUFFERED=1
 CMD ["python", "-m", "catalog_platform.worker"]

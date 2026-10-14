@@ -4,6 +4,16 @@ Auditoría de código y Blueprint: 2026-10-12. **No es un volcado del entorno re
 
 A = secreto necesario; B = configuración no sensible; C = obsoleta para runtime limpio; D = credencial archivada que debe conservarse. Que una variable sea eliminable aquí significa una decisión sobre el **código limpio**, no que ya se haya borrado de Render. No se eliminó, archivó físicamente ni rotó ninguna variable real.
 
+## Opciones trasladadas al repositorio, 2026-10-14
+
+`Dockerfile.api` y `Dockerfile.worker` incluyen los valores predeterminados `GENERATION_QUEUE_BACKEND=rq`, `STUDIO_IMAGE_JOBS=worker`, `INITIALIZE_EMPTY_DATABASE=false` y `MAX_IMAGES_PER_BATCH=30`. Una imagen construida con este cambio conserva la cola RQ, el worker separado, el esquema existente y el límite de imágenes aunque se eliminen esas cuatro entradas del panel de Render. Un valor explícito del entorno todavía puede sobrescribir el predeterminado de la imagen.
+
+El Blueprint deja de declarar estas cuatro opciones para que una sincronización no vuelva a crearlas en el panel. `SUITE_SERVICE_ROLE`, `WC_WRITE_ENABLED` y `WP_MEDIA_WRITE_ENABLED` tampoco son necesarios en el API actual: no controlan su comportamiento. La configuración de servicios históricos se revisa por separado.
+
+Estos ajustes viven en los Dockerfiles versionados en GitHub. Las variables de GitHub Actions no se transfieren automáticamente al entorno de Render. Antes de retirar las entradas del panel, se debe construir y desplegar la nueva imagen, o guardar la eliminación con la opción de reconstruir y desplegar el commit nuevo.
+
+Las credenciales de conexión y cifrado siguen configuradas en Render. No se trasladan valores secretos a archivos del repositorio.
+
 ## Inventario de lectores y nombres auditados
 
 | Nombre | Categoría | Servicio que la utiliza | Para qué sirve | Secreta | Sigue necesaria | Se puede eliminar | Debe permanecer configurable | Impacto de eliminarla |
@@ -27,7 +37,7 @@ A = secreto necesario; B = configuración no sensible; C = obsoleta para runtime
 | `GEMINI_IMAGE_ATTEMPTS` | B | API + worker | Intentos de imagen 1–3, default 1 | No | Default seguro | Sí si default sirve | Sí | Usa 1; afecta reintentos/coste |
 | `GEMINI_IMAGE_MODEL` | B | API + worker | Modelo imagen actual; default gemini-3.1-flash-image | No | Default o override actual | Solo si override coincide con default | Sí; mantener igualdad | Rechaza jobs que confirmaron otro modelo |
 | `GEMINI_TEXT_MODEL` | B | API + worker | Modelo texto actual; default gemini-2.5-flash | No | Default o override actual | Solo si override coincide con default | Sí; mantener igualdad | Quitar override puede cambiar prompts/resultado |
-| `GENERATION_QUEUE_BACKEND` | B | API + worker | rq para servicios separados | No | Sí | No en topología actual | Sí; rq en Render | Puede seleccionar transporte distinto y romper cola |
+| `GENERATION_QUEUE_BACKEND` | B | API + worker | rq predeterminado en Dockerfiles | No | Sí en runtime; incluida en imagen | Sí del panel después de construir la imagen nueva | Override opcional | La imagen nueva conserva RQ; imágenes anteriores requieren la variable |
 | `GENERATION_REQUESTS_PER_MINUTE` | B | API | Límite de solicitudes de generación, default 12 | No | Default seguro | Sí si 12 sirve | Sí | Usa el default, protege peticiones repetidas |
 | `GOOGLE_CLIENT_ID` | B | API + worker | Cliente OAuth; app exige su presencia | No | Sí | No | Sí | No inicia runtime Google |
 | `GOOGLE_CLIENT_SECRET` | A | API + worker | OAuth y refresco de tokens del usuario | Sí | Sí | No | Sí | Rompe OAuth y trabajo autónomo del worker |
@@ -48,7 +58,7 @@ A = secreto necesario; B = configuración no sensible; C = obsoleta para runtime
 | `MAIN_SERVICE_URL` | B | Solo retirados históricos | Destino redirect de servicio retirado | No | Solo si histórico lo usa | No de histórico sin comprobar | Sí por histórico | Puede romper redirect histórico |
 | `MAX_BATCH_IMAGES` | B | API | Alias legado fallback de MAX_IMAGES_PER_BATCH | No | Solo si no hay nombre canónico | Sí si MAX_IMAGES_PER_BATCH configurado | Usar nombre canónico | Sin ambos usa default 300 |
 | `MAX_ESTIMATED_BATCH_COST` | B | API | Tope opcional de coste estimado USD | No | Si se aplica política de coste | Solo con decisión operativa | Sí | Deja de bloquear lotes por importe |
-| `MAX_IMAGES_PER_BATCH` | B | API | Límite de imágenes; Blueprint 30 | No | Sí como límite operativo | No sin revisar fallback | Sí | Fallback 300 puede aumentar consumo |
+| `MAX_IMAGES_PER_BATCH` | B | API | Límite de 30 imágenes incluido en Dockerfiles | No | Sí como límite operativo | Sí del panel después de construir la imagen nueva | Override opcional | La imagen nueva conserva 30; fuera de Docker puede usar el fallback legado |
 | `MEDIA_ALLOWED_HOSTS` | C | Módulo retirado / verificar históricos | Parámetro exclusivo de ecommerce/puente retirado | No | No en tres procesos limpios | Sí actuales después de corte; históricos pendiente | No en runtime activo | Sin efecto en flujo limpio; histórico puede depender |
 | `NEXT_PUBLIC_SUITE_API_ORIGIN` | B | Frontend derivada | Origen público para despertar API; generado por next.config | No | Derivada; no duplicar en Render | Sí como entrada duplicada | Derivar de SUITE_API_ORIGIN | No necesita variable manual ni admite secretos |
 | `OAUTHLIB_IGNORE_SCOPE_CHANGE` | B | Runtime Google | Compatibilidad de scopes; app establece 1 | No | Default existente conservado | Sí como variable duplicada | Conservar comportamiento actual | Sin override sigue default actual |
@@ -59,7 +69,7 @@ A = secreto necesario; B = configuración no sensible; C = obsoleta para runtime
 | `RENDER_GIT_COMMIT` | B | API + worker + histórico | Identificar build y heartbeat | No | Inyectada por Render | No editar | Por plataforma | Pierde trazabilidad, afecta verificación de versión |
 | `RENDER_SERVICE_ID` | B | API | Identificar servicio en health | No | Inyectada por Render | No editar | Por plataforma | Pierde trazabilidad del health |
 | `STOCK_AUTHORITY` | C | Módulo retirado / verificar históricos | Parámetro exclusivo de ecommerce/puente retirado | No | No en tres procesos limpios | Sí actuales después de corte; históricos pendiente | No en runtime activo | Sin efecto en flujo limpio; histórico puede depender |
-| `STUDIO_IMAGE_JOBS` | B | API + worker | worker; API lo establece por defecto | No | Sí; explícito por entorno recomendado | API puede omitirlo; worker conservar | Sí | Puede activar ejecución local incompatible en otro entrypoint |
+| `STUDIO_IMAGE_JOBS` | B | API + worker | worker predeterminado en Dockerfiles y entrypoint API | No | Sí en runtime; incluida en imagen | Sí del panel después de construir la imagen nueva | Override opcional | API y worker de la imagen nueva conservan generación separada |
 | `SUITE_API_ORIGIN` | B | Frontend build | Origen HTTPS de FastAPI | No | Sí con standalone | No | Sí | Build/proxy falla; nunca añadir credenciales |
 | `SUITE_DRIVE_ONLY` | C | Módulo retirado / verificar históricos | Parámetro exclusivo de ecommerce/puente retirado | No | No en tres procesos limpios | Sí actuales después de corte; históricos pendiente | No en runtime activo | Sin efecto en flujo limpio; histórico puede depender |
 | `SUITE_FRONTEND_MODE` | B | Frontend build | standalone o export | No | Sí para Next separado | No en arquitectura actual | Sí | Default export no conserva proxy standalone |

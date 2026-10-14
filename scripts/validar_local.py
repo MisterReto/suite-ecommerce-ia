@@ -30,7 +30,7 @@ def main():
         "WORDPRESS_URL", "WP_URL", "WP_USERNAME", "WP_APP_PASSWORD", "LOYVERSE_ACCESS_TOKEN",
     ):
         environment.pop(key, None)
-    environment.update(INITIALIZE_EMPTY_DATABASE="false", GRADIO_ANALYTICS_ENABLED="False", WC_WRITE_ENABLED="false", WP_MEDIA_WRITE_ENABLED="false", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+    environment.update(INITIALIZE_EMPTY_DATABASE="false", GRADIO_ANALYTICS_ENABLED="False", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     failed = []
     for name, arguments in GROUPS:
         print(f"Ejecutando {name}...", flush=True)

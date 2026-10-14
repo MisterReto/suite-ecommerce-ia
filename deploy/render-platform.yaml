@@ -53,8 +53,6 @@ services:
       envVarKey: RENDER_EXTERNAL_URL
   - key: DATABASE_URL
     sync: false
-  - key: INITIALIZE_EMPTY_DATABASE
-    value: 'false'
   - key: IMAGE_WORKER_ORIGIN
     fromService:
       type: web
@@ -65,14 +63,8 @@ services:
       name: rincon-generation-queue
       type: keyvalue
       property: connectionString
-  - key: GENERATION_QUEUE_BACKEND
-    value: rq
-  - key: STUDIO_IMAGE_JOBS
-    value: worker
   - key: APP_REQUIRE_ALLOWLIST
     value: 'true'
-  - key: MAX_IMAGES_PER_BATCH
-    value: '30'
   - key: MAX_ESTIMATED_BATCH_COST
     sync: false
   - key: CREDENTIAL_ENCRYPTION_KEY
@@ -117,19 +109,13 @@ services:
   envVars:
   - key: DATABASE_URL
     sync: false
-  - key: INITIALIZE_EMPTY_DATABASE
-    value: 'false'
   - key: REDIS_URL
     fromService:
       name: rincon-generation-queue
       type: keyvalue
       property: connectionString
-  - key: GENERATION_QUEUE_BACKEND
-    value: rq
   - key: IMAGE_WORKER_CONCURRENCY
     value: '1'
-  - key: STUDIO_IMAGE_JOBS
-    value: worker
   - key: CREDENTIAL_ENCRYPTION_KEY
     fromService:
       type: web

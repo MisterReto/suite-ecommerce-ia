@@ -7,6 +7,7 @@ COPY catalog_platform/ ./catalog_platform/
 COPY static/ ./static/
 RUN useradd --create-home --uid 10001 suite
 USER suite
+ENV GENERATION_QUEUE_BACKEND=rq STUDIO_IMAGE_JOBS=worker INITIALIZE_EMPTY_DATABASE=false MAX_IMAGES_PER_BATCH=30
 ENV SUITE_SERVE_FRONTEND=false PORT=7860 MALLOC_ARENA_MAX=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONUNBUFFERED=1
 EXPOSE 7860
 CMD ["sh", "-c", "exec uvicorn service_entrypoint:fastapi_app --host 0.0.0.0 --port ${PORT:-7860} --proxy-headers --no-access-log --workers 1"]
