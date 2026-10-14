@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { recoverSession } from "@/lib/session-recovery";
+import { ensureApiReady, wakeServices } from "@/lib/service-readiness";
 import DriveClassification from "@/components/DriveClassification";
 import InventoryTools from "@/components/InventoryTools";
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
@@ -283,6 +284,8 @@ async function api<T>(
   body?: unknown,
   timeout = 90000,
 ): Promise<T> {
+  if (method !== "GET") await ensureApiReady();
+  if (path === "/api/platform/generation/jobs" || path.endsWith("/retry")) wakeServices(true);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
@@ -555,13 +558,15 @@ export default function Platform() {
     if (!ready || !online) return;
     let stopped = false;
     // Callback de polling que actualiza trabajos y trata un 401 como sesión no autenticada.
-    const run = () =>
-      reloadOperations().then(() => { if (!stopped) return loadProducts(); }).catch((e) => {
+    const run = () => {
+      if (jobs.some(active)) wakeServices(true);
+      return reloadOperations().then(() => { if (!stopped) return loadProducts(); }).catch((e) => {
         if (!stopped) {
           setError(e.message);
           if (e.status === 401) setSession({ authenticated: false });
         }
       });
+    };
     run();
     const timer = setInterval(run, jobs.some(active) ? 4000 : 30000);
     return () => {

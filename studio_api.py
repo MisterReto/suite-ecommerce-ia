@@ -480,7 +480,10 @@ def update_product(data: Product, value=Depends(editor)):
     if current.get("saved") and product != current["product"]:
         raise HTTPException(409, "Este producto ya se guardó. Inicia una captura nueva o edítalo desde Inventario.")
     if current.get("save_phase") == "saving" and product != current["product"]:
-        raise HTTPException(409, "Verifica el guardado anterior antes de cambiar esta ficha. No se repetirá una escritura incierta.")
+        from catalog_platform.capture_bridge import recover_saved, sheet_write_guard
+        with sheet_write_guard(value):
+            if recover_saved(value, current):
+                raise HTTPException(409, "Este producto ya se guardó. Inicia una captura nueva o edítalo desde Inventario.")
     current["product"] = product
     current.pop("identity_review", None)  # An edited identity must be checked again.
     # A corrected SKU reuses the same authenticated image files, with new names on save.
@@ -816,8 +819,8 @@ def save(data: Save, request: Request, value=Depends(editor)):
         p = current["product"]
         from catalog_platform import capture_bridge
         if current.get("save_phase") == "saving":
-            capture_bridge.recover_saved(value, current)
-            return
+            if capture_bridge.recover_saved(value, current):
+                return
         result = capture_bridge.check(value, p)
         current["identity_review"] = result
         if result["status"] == "duplicate":

@@ -230,21 +230,26 @@ def clear(value):
 # Recupera el resultado de un guardado ya confirmado para resolver una respuesta HTTP
 # perdida.
 def recover_saved(value, current):
-    """A previously started write is verified in Sheets, never repeated blindly."""
+    """Recover an accepted write, or clear its marker after a fresh missing-SKU read."""
     from studio_api import runtime
     value.pop("capture_snapshot", None)
     _, sheet, rows = runtime.captura.snapshot(value)
     wanted = candidate(current["product"])
     row = next((r for r in rows if text(r.get("sku")) == wanted["sku"]), None)
     fields = ("nombre_producto", "Marca", "sku_padre", "codigo_barras", "atributo_nombre", "atributo_valor")
-    if not row or any(text(row.get(k)) != text(wanted.get(k)) for k in fields if text(wanted.get(k))):
-        raise ValueError("El guardado anterior quedó incierto y no se pudo verificar en Sheets. Revisa el inventario antes de iniciar otra captura; no se repitió la escritura.")
+    if not row:
+        current.pop("save_phase", None)
+        checkpoint(value, current)
+        return False
+    if any(text(row.get(k)) != text(wanted.get(k)) for k in fields if text(wanted.get(k))):
+        raise ValueError("El SKU ya existe en Sheets con otros datos. Revisa ese registro antes de guardar.")
     current["saved"] = f"💾 {wanted['sku']} verificado en el inventario después de una interrupción.\nhttps://docs.google.com/spreadsheets/d/{sheet}/edit"
     current["save_phase"] = "saved"
     try:
         mirror(value, current)
     except Exception:
         pending(value, current)
+    return True
 
 
 # Deriva una identidad estable del evento de guardado para deduplicarlo.

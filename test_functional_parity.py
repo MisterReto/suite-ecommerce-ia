@@ -262,6 +262,63 @@ def test_rejected_fields_can_be_corrected_before_any_sheet_write(capture_store):
     assert saved["job"]["status"] == "completed" and len(writes) == 1
 
 
+def test_missing_sheet_write_clears_stale_saving_marker_and_saves_once(capture_store):
+    client, value, _, _, _, writes = capture_store
+    start(client)
+    value["studio_draft"]["save_phase"] = "saving"
+    capture_bridge.checkpoint(value, value["studio_draft"])
+    saved = wait(client, client.post("/api/save", json={"confirm": True}, headers=ORIGIN))
+    assert saved["job"]["status"] == "completed", saved
+    assert value["studio_draft"]["save_phase"] == "saved"
+    assert len(writes) == 1
+    client.post("/api/save", json={"confirm": True}, headers=ORIGIN)
+    assert len(writes) == 1
+
+
+def test_missing_sheet_write_can_be_corrected_and_marker_stays_cleared(capture_store):
+    client, value, *_ = capture_store
+    product = start(client)
+    value["studio_draft"]["save_phase"] = "saving"
+    product["price"] = 40
+    updated = client.put("/api/draft", json=product, headers=ORIGIN)
+    assert updated.status_code == 200, updated.text
+    assert "save_phase" not in value["studio_draft"]
+    value.pop("studio_draft")
+    capture_bridge.restore(value)
+    assert "save_phase" not in value["studio_draft"]
+
+
+def test_accepted_sheet_write_is_recovered_without_repeating_it(capture_store):
+    client, value, _, _, _, writes = capture_store
+    start(client)
+    wait(client, client.post("/api/save", json={"confirm": True}, headers=ORIGIN))
+    value["studio_draft"].pop("saved")
+    value["studio_draft"]["save_phase"] = "saving"
+    recovered = wait(client, client.post("/api/save", json={"confirm": True}, headers=ORIGIN))
+    assert recovered["job"]["status"] == "completed", recovered
+    assert len(writes) == 1
+
+
+def test_sheet_read_failure_preserves_saving_marker(capture_store, monkeypatch):
+    client, value, *_ = capture_store
+    start(client)
+    value["studio_draft"]["save_phase"] = "saving"
+    monkeypatch.setattr(studio.runtime.captura, "snapshot", Mock(side_effect=RuntimeError("Sheets offline")))
+    with pytest.raises(RuntimeError):
+        capture_bridge.recover_saved(value, value["studio_draft"])
+    assert value["studio_draft"]["save_phase"] == "saving"
+
+
+def test_conflicting_sheet_sku_never_repeats_write(capture_store):
+    client, value, _, values, _, writes = capture_store
+    product = start(client)
+    sheet_row(values, sku=product["sku"], name="Otro producto")
+    value["studio_draft"]["save_phase"] = "saving"
+    result = wait(client, client.post("/api/save", json={"confirm": True}, headers=ORIGIN))
+    assert result["job"]["status"] == "failed" and not writes
+    assert "otros datos" in result["job"]["message"]
+
+
 def test_existing_master_parent_is_reused_when_sheet_is_missing_it(capture_store):
     client, value, _, values, _, writes = capture_store
     with transaction() as db:

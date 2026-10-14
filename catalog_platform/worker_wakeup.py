@@ -65,11 +65,19 @@ def notify():
 def _wake():
     global _pending
     try:
-        # Public health carries no credentials, job payload, cookies or API keys.
-        # Render starts the service before routing the HTTP request to it.
-        with requests.get(health_url(), timeout=(5, 90), allow_redirects=False) as response:
-            if response.status_code != 200:
-                log.warning("Worker pendiente de arranque; el trabajo permanece en SQL.")
+        # Retry public GETs during a cold start, never the queued operation itself.
+        for attempt in range(3):
+            try:
+                with requests.get(health_url(), timeout=(5, 90), allow_redirects=False) as response:
+                    if response.status_code == 200:
+                        return
+                    if response.status_code not in {502, 503, 504}:
+                        break
+            except requests.RequestException:
+                pass
+            if attempt < 2:
+                time.sleep(3)
+        log.warning("Worker pendiente de arranque; el trabajo permanece en SQL.")
     except (requests.RequestException, ValueError, RuntimeError):
         log.warning("No se pudo despertar el worker; el trabajo permanece en SQL.")
     finally:

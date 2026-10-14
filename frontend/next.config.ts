@@ -4,6 +4,7 @@ import type { NextConfig } from "next";
 
 const separate = process.env.SUITE_FRONTEND_MODE === "standalone";
 let upstream = "";
+let workerOrigin = "";
 if (separate) {
   const url = new URL(process.env.SUITE_API_ORIGIN || "");
   if (url.protocol !== "https:" || url.username || url.password ||
@@ -11,6 +12,15 @@ if (separate) {
     throw new Error("SUITE_API_ORIGIN must be the HTTPS API origin without credentials or a path.");
   }
   upstream = url.origin;
+  if (process.env.SUITE_WORKER_ORIGIN) {
+    const worker = new URL(process.env.SUITE_WORKER_ORIGIN);
+    if (worker.protocol !== "https:" || worker.username || worker.password ||
+        worker.search || worker.hash || worker.pathname !== "/" ||
+        !/^[a-z0-9][a-z0-9-]*\.onrender\.com$/.test(worker.hostname)) {
+      throw new Error("SUITE_WORKER_ORIGIN must be the HTTPS onrender.com worker origin.");
+    }
+    workerOrigin = worker.origin;
+  }
 }
 
 const config: NextConfig = {
@@ -21,7 +31,7 @@ const config: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   // Public, validated origin used only to wake the free API without proxy headers.
-  env: { NEXT_PUBLIC_SUITE_API_ORIGIN: upstream },
+  env: { NEXT_PUBLIC_SUITE_API_ORIGIN: upstream, NEXT_PUBLIC_SUITE_WORKER_ORIGIN: workerOrigin },
   ...(separate ? {
     // Match the API upload allowance plus multipart overhead.
     experimental: { proxyClientMaxBodySize: 13_000_000 },
@@ -60,7 +70,7 @@ const config: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "Permissions-Policy", value: "camera=(self), microphone=(), geolocation=()" },
-          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' " + upstream + "; worker-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" },
+          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' " + [upstream, workerOrigin].filter(Boolean).join(" ") + "; worker-src 'self' blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'" },
         ],
       }, ...["/login", "/connect-google"].map(source => ({
         source,

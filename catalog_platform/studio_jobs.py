@@ -253,6 +253,9 @@ def get_job(value, job_id):
         if not job:
             raise HTTPException(404, "Trabajo no disponible.")
         public, payload = public_job(job), deepcopy(job.payload)
+        if job.status == "queued":
+            from .worker_wakeup import notify
+            notify()
     if payload.get("results") or public["status"] in {"completed", "failed", "cancelled"}:
         restore(value, payload, job_id)
     return {"job": public, "draft": view(value)}

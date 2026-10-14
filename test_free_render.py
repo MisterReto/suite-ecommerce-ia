@@ -116,10 +116,29 @@ def test_worker_wakeup_is_async_and_coalesces_cold_starts(monkeypatch):
 def test_failed_wakeup_is_safe_and_can_be_retried(monkeypatch, caplog):
     monkeypatch.setenv("IMAGE_WORKER_ORIGIN", "https://rincon-worker.onrender.com")
     monkeypatch.setattr(worker_wakeup.requests, "get", Mock(side_effect=requests.Timeout("secret-response")))
+    monkeypatch.setattr(worker_wakeup.time, "sleep", Mock())
     monkeypatch.setattr(worker_wakeup, "_pending", True)
     worker_wakeup._wake()
     assert not worker_wakeup._pending
     assert "permanece en SQL" in caplog.text and "secret-response" not in caplog.text
+
+
+def test_worker_wakeup_retries_readiness_until_cold_start_finishes(monkeypatch):
+    monkeypatch.setenv("IMAGE_WORKER_ORIGIN", "https://rincon-worker.onrender.com")
+    responses = []
+    for status in (503, 200):
+        response = Mock(status_code=status)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=None)
+        responses.append(response)
+    get = Mock(side_effect=[requests.Timeout(), *responses])
+    monkeypatch.setattr(worker_wakeup.requests, "get", get)
+    monkeypatch.setattr(worker_wakeup.time, "sleep", Mock())
+    worker_wakeup._wake()
+    assert get.call_count == 3
+    assert all(call.kwargs == {"timeout": (5, 90), "allow_redirects": False}
+               for call in get.call_args_list)
+    assert not worker_wakeup._pending
 
 
 def test_thread_start_failure_does_not_fail_an_accepted_sql_job(monkeypatch):

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GenerationSounds } from "@/lib/generation-sounds";
 import DriveClassification from "@/components/DriveClassification";
 import { recoverSession } from "@/lib/session-recovery";
+import { ensureApiReady, wakeServices } from "@/lib/service-readiness";
 import {
   Camera,
   Check,
@@ -208,6 +209,8 @@ async function api<T>(
   method = "GET",
   body?: unknown,
 ): Promise<T> {
+  if (method !== "GET") await ensureApiReady();
+  if (path === "/api/generate" || path.endsWith("/correct")) wakeServices(true);
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
@@ -450,8 +453,12 @@ export default function CaptureStudio({
   useEffect(() => {
     if (!activeJob(job)) return;
     let stopped = false;
+    let polling = false;
     const timer = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
+        wakeServices(job?.label === "Generando imágenes");
         const data = await api<{ job: Job; draft: Draft }>(
           "/api/jobs/" + job!.id,
         );
@@ -471,6 +478,8 @@ export default function CaptureStudio({
           setSession({ authenticated: false });
         }
         if (!stopped) setError((e as Error).message);
+      } finally {
+        polling = false;
       }
     }, 1800);
     return () => {

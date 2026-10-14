@@ -11,28 +11,31 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
   const MAX_WAIT_MS = 180_000;
 
   // Render returned "no-deploy" through the rewrite without waking the API.
-  // One direct, credential-free GET triggers startup. Its opaque response is
+  // Direct credential-free GETs trigger startup. Their opaque response is
   // never trusted as readiness: health and session still use the UI proxy.
   const wakeOrigin = process.env.NEXT_PUBLIC_SUITE_API_ORIGIN;
-  const wake = new AbortController();
-  // Aborta el aviso de arranque directo cuando vence su plazo o se cancela la recuperación.
-  const cancelWake = () => wake.abort();
-  signal?.addEventListener("abort", cancelWake, { once: true });
-  const wakeTimer = setTimeout(cancelWake, REQUEST_TIMEOUT_MS);
-  if (wakeOrigin && !signal?.aborted) {
+  let wakePending = false;
+  let lastWake = -Infinity;
+  function startWake() {
+    if (!wakeOrigin || signal?.aborted || wakePending || Date.now() - lastWake < 30_000) return;
+    lastWake = Date.now();
+    wakePending = true;
+    const wake = new AbortController();
+    const cancelWake = () => wake.abort();
+    signal?.addEventListener("abort", cancelWake, { once: true });
+    const wakeTimer = setTimeout(cancelWake, 90_000);
     void fetch(wakeOrigin + "/service-health", {
       mode: "no-cors", credentials: "omit", cache: "no-store",
       // Browsers require redirect="follow" for no-cors. The page's CSP limits
       // connection targets to the configured API; credentials remain omitted.
       redirect: "follow", signal: wake.signal,
     }).catch(() => {}).finally(() => {
+      wakePending = false;
       clearTimeout(wakeTimer);
       signal?.removeEventListener("abort", cancelWake);
     });
-  } else {
-    clearTimeout(wakeTimer);
-    signal?.removeEventListener("abort", cancelWake);
   }
+  startWake();
 
   // Crea el error AbortError usado al abandonar/cambiar un intento.
   function aborted() { return new DOMException("Recovery cancelled", "AbortError"); }
@@ -79,6 +82,7 @@ export async function recoverSession<T extends { authenticated: boolean }>(signa
       if (typeof session?.authenticated === "boolean") return session as T;
     }
     if (Date.now() >= deadline) break;
+    startWake();
     await pause(Math.min(RETRY_DELAY_MS, deadline - Date.now()), signal);
   }
   throw new Error("El servidor aún no está disponible. Puedes reintentar la conexión.");
