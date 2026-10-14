@@ -337,7 +337,7 @@ def publication(job, value, drive):
     )
     row = {
         "categorias": product.category
-        + (" > " + product.subcategory if product.subcategory else ""),
+        + (">" + product.subcategory if product.subcategory else ""),
         "etiquetas": ", ".join(product.tags),
         "Marca": product.brand,
     }

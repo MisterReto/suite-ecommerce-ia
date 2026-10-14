@@ -162,6 +162,8 @@ def _process_one(session, batch_id: str) -> dict:
                 if not result.get("backend_verified"):
                     raise RuntimeError("La verificación posterior no coincide; revisar antes de reintentar.")
                 publish_created(wc, entity, created)
+                from catalog_platform.sheet_sync import sync_inventory_product
+                sync_inventory_product(session, row, inventory)
                 permalink = str(result.get("permalink") or entity.get("permalink") or "")
                 update_batch_item(local_sheets, spreadsheet_id, sheet_row=sheet_row, status="success",
                     message="Creado y verificado." if created else "Actualizado y verificado.",

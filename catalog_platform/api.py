@@ -190,6 +190,7 @@ class ConfirmInput(BaseModel):
 
 class DeleteProductInput(ConfirmInput):
     version: int = Field(ge=1)
+    delete_from_drive: bool = False
 
 
 class CancelJobsInput(ConfirmInput):
@@ -377,13 +378,20 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
     if not data.confirm:
         raise HTTPException(422, "Confirma que quieres eliminar este producto del catálogo de la app.")
     with transaction() as db:
+        if data.delete_from_drive:
+            request_lock(db, tenant(value), "capture-sheet-writer")
         product = db.scalar(select(Product).where(
             Product.tenant_id == tenant(value), Product.id == product_id,
         ).with_for_update())
         if not product:
             raise HTTPException(404, "Producto no disponible.")
         if product.status == "deleted":
-            return {"ok": True, "product_id": product.id, "replayed": True}
+            deletion = db.scalar(select(AuditLog).where(
+                AuditLog.tenant_id == tenant(value), AuditLog.product_id == product.id,
+                AuditLog.action == "product.deleted",
+            ))
+            return {"ok": True, "product_id": product.id, "replayed": True,
+                    "drive": (deletion.after or {}).get("drive") if deletion else None}
         if product.version != data.version:
             raise HTTPException(409, "El producto cambió. Recarga antes de eliminarlo.")
         if db.scalar(select(Product.id).where(
@@ -398,6 +406,13 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
         if any(job.status != "queued" for job in pending):
             raise HTTPException(409, "Detén el proceso del producto y espera a que aparezca como Cancelado antes de eliminarlo.")
         before = serialize(product)
+        drive_result = None
+        if data.delete_from_drive:
+            from .sheet_sync import delete_from_drive
+            try:
+                drive_result = delete_from_drive(db, value, product)
+            except Exception:
+                raise HTTPException(503, "No se completó la eliminación en Drive. El producto permanece en la app; reintenta para terminar la operación.") from None
         for job in pending:
             request_cancel(job)
             audit(db, tenant(value), actor(value), "job.cancelled", product.id,
@@ -409,8 +424,10 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
         product.sku = "deleted_" + product.id.replace("-", "")
         product.version += 1
         audit(db, tenant(value), actor(value), "product.deleted", product.id, before,
-              {"scope": "app", "cancelled_job_ids": [job.id for job in pending]})
-        return {"ok": True, "product_id": product.id}
+              {"scope": "app_and_drive" if data.delete_from_drive else "app", "drive": drive_result,
+               "cancelled_job_ids": [job.id for job in pending]})
+        value.pop("capture_snapshot", None)
+        return {"ok": True, "product_id": product.id, "drive": drive_result}
 
 
 @router.post("/products/{product_id}/stock")

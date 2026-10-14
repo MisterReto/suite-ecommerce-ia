@@ -146,7 +146,7 @@ def idle(value):
 
 def asset(value, path):
     root = Path(path).resolve()
-    if root.parent != Path("/tmp") or not root.name.startswith(value["file_namespace"] + "_") or not root.is_file():
+    if root.parent != Path("/tmp").resolve() or not root.name.startswith(value["file_namespace"] + "_") or not root.is_file():
         raise ValueError("La imagen no pertenece a esta sesión.")
     files = value.setdefault("studio_files", {})
     for key, info in files.items():
@@ -163,7 +163,7 @@ def file_path(value, key):
     path = value.get("studio_files", {}).get(key)
     if not path or not Path(path).is_file():
         raise HTTPException(404, "La imagen no está disponible en esta sesión.")
-    if Path(path).parent != Path("/tmp") or not Path(path).name.startswith(value["file_namespace"] + "_"):
+    if Path(path).resolve().parent != Path("/tmp").resolve() or not Path(path).name.startswith(value["file_namespace"] + "_"):
         raise HTTPException(403, "Imagen no autorizada.")
     return path
 

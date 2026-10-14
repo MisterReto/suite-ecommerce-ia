@@ -84,7 +84,7 @@ class DriveService:
             parent = self.folder(part, parent)
         return parent
 
-    def owns(self, file_id):
+    def owns(self, file_id, include_trashed=False):
         pending, seen = [file_id], set()
         for _ in range(10):
             if self.root_id in pending:
@@ -101,7 +101,7 @@ class DriveService:
                     )
                     .execute()
                 )
-                if not info.get("trashed"):
+                if not info.get("trashed") or include_trashed:
                     next_ids.extend(info.get("parents", []))
             pending = next_ids
             if not pending:
@@ -128,7 +128,7 @@ class DriveService:
     def download_to(self, file_id, destination):
         """Stream to this process's /tmp; never materialize a batch in RAM."""
         path = Path(destination).resolve()
-        if path.parent != Path("/tmp") or not self.owns(file_id):
+        if path.parent != Path("/tmp").resolve() or not self.owns(file_id):
             raise ValueError("Archivo o destino temporal no autorizado.")
         try:
             with path.open("wb") as stream:
@@ -211,6 +211,23 @@ class DriveService:
             )
             .execute()
         )
+
+    def trash_image(self, file_id):
+        """Trash only an image inside this root, then verify the resulting state."""
+        if not self.owns(file_id, include_trashed=True):
+            raise ValueError("La imagen no pertenece a la carpeta autorizada.")
+        info = self.files().get(fileId=file_id, supportsAllDrives=True,
+                                fields="id,mimeType,trashed").execute()
+        if not str(info.get("mimeType", "")).startswith("image/"):
+            raise ValueError("Solo se pueden enviar imágenes a la papelera.")
+        if not info.get("trashed"):
+            self.files().update(fileId=file_id, supportsAllDrives=True,
+                                body={"trashed": True}, fields="id,trashed").execute()
+        result = self.files().get(fileId=file_id, supportsAllDrives=True,
+                                  fields="id,trashed").execute()
+        if not result.get("trashed"):
+            raise ValueError("No se confirmó la imagen en la papelera.")
+        return {"id": file_id, "trashed": True}
 
     def upload_bytes(self, data, filename, folder, mime_type):
         if not self.owns(folder):

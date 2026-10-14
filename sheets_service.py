@@ -97,3 +97,22 @@ class SheetsService:
         if not result or not result[0] or str(result[0][0]) != str(value):
             raise ValueError("No se pudo confirmar la celda. Revisa antes de reintentar.")
         return {"range": self._tab() + "!" + cell, "before": previous, "after": result[0][0]}
+
+    def delete_sku(self, sku):
+        """Remove exactly one verified SKU row; missing rows are safe retries."""
+        columns = self.columns()
+        row = self.find_sku(sku)
+        if row is None:
+            return {"deleted": False, "already_absent": True}
+        cell = self.read_range(column_name(columns["sku"]) + str(row))
+        if not cell or str(cell[0][0]).strip().casefold() != sku.strip().casefold():
+            raise ValueError("La fila cambió; no se eliminó ningún producto.")
+        properties = next(item["properties"] for item in self.metadata()["sheets"]
+                          if item["properties"]["title"] == self.tab)
+        self.spreadsheets().batchUpdate(spreadsheetId=self._id(), body={"requests": [{
+            "deleteDimension": {"range": {"sheetId": properties["sheetId"], "dimension": "ROWS",
+                                           "startIndex": row - 1, "endIndex": row}}
+        }]}).execute()
+        if self.find_sku(sku) is not None:
+            raise ValueError("No se pudo confirmar la eliminación de la fila.")
+        return {"deleted": True, "row": row}

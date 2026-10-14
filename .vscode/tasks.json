@@ -1,0 +1,87 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Rincon: pruebas locales sin servicios reales",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv-platform/Scripts/python.exe",
+      "args": ["scripts/validar_local.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: comprobar dependencias Python",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv-platform/Scripts/python.exe",
+      "args": ["-m", "pip", "check"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: compilar frontend export",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": { "SUITE_FRONTEND_MODE": "export", "NEXT_TELEMETRY_DISABLED": "1" }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: comprobar TypeScript",
+      "type": "shell",
+      "command": "npm run typecheck",
+      "options": { "cwd": "${workspaceFolder}/frontend" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: compilar frontend separado",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend",
+        "env": {
+          "SUITE_FRONTEND_MODE": "standalone",
+          "SUITE_API_ORIGIN": "https://api.example.test",
+          "NEXT_TELEMETRY_DISABLED": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: iniciar API local sin servicios reales",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv-platform/Scripts/python.exe",
+      "args": ["-m", "uvicorn", "service_entrypoint:fastapi_app", "--host", "127.0.0.1", "--port", "7860", "--workers", "1", "--no-access-log"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "GOOGLE_CLIENT_ID": "local-test",
+          "GOOGLE_CLIENT_SECRET": "local-test",
+          "GOOGLE_REDIRECT_URI": "https://suite.example/auth/callback",
+          "APP_PUBLIC_ORIGIN": "https://suite.example",
+          "SUITE_SERVICE_ROLE": "main",
+          "SUITE_SERVE_FRONTEND": "true",
+          "SUITE_DRIVE_ONLY": "true",
+          "STUDIO_IMAGE_JOBS": "local",
+          "INITIALIZE_EMPTY_DATABASE": "false",
+          "DATABASE_URL": "",
+          "REDIS_URL": "",
+          "WC_WRITE_ENABLED": "false",
+          "WP_MEDIA_WRITE_ENABLED": "false",
+          "PYTHONUTF8": "1"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Rincon: comprobar Neon en solo lectura",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv-platform/Scripts/python.exe",
+      "args": ["scripts/comprobar_neon.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -23,7 +23,7 @@ services:
   name: rincon-frontend
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: agent/stabilize-architecture-20261006
   dockerfilePath: ./Dockerfile.frontend
   dockerContext: .
   plan: free
@@ -40,7 +40,7 @@ services:
   name: rincon-catalog-api
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: agent/stabilize-architecture-20261006
   dockerfilePath: ./Dockerfile.api
   dockerContext: .
   plan: free
@@ -59,7 +59,7 @@ services:
     # Neon connection is managed in the Render Dashboard; never commit credentials.
     sync: false
   - key: INITIALIZE_EMPTY_DATABASE
-    value: 'true'
+    value: 'false'
   - key: IMAGE_WORKER_ORIGIN
     fromService:
       type: web
@@ -129,7 +129,7 @@ services:
   name: rincon-catalog-worker
   runtime: docker
   repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
+  branch: agent/stabilize-architecture-20261006
   dockerfilePath: ./Dockerfile.worker
   dockerCommand: python -m catalog_platform.worker_web
   dockerContext: .
@@ -142,7 +142,7 @@ services:
     # Neon connection is managed in the Render Dashboard; never commit credentials.
     sync: false
   - key: INITIALIZE_EMPTY_DATABASE
-    value: 'true'
+    value: 'false'
   - key: REDIS_URL
     fromService:
       name: rincon-generation-queue

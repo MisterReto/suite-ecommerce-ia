@@ -534,7 +534,7 @@ export default function Platform() {
     if (!ready || !online) return;
     let stopped = false;
     const run = () =>
-      reloadOperations().catch((e) => {
+      reloadOperations().then(() => { if (!stopped) return loadProducts(); }).catch((e) => {
         if (!stopped) {
           setError(e.message);
           if (e.status === 401) setSession({ authenticated: false });
@@ -546,7 +546,7 @@ export default function Platform() {
       stopped = true;
       clearInterval(timer);
     };
-  }, [ready, online, jobs.some(active), reloadOperations]);
+  }, [ready, online, jobs.some(active), reloadOperations, loadProducts]);
   useEffect(() => {
     setQuote(null);
   }, [selected, selectionMode, category, slots, quantity, automaticReview]);
@@ -611,10 +611,11 @@ export default function Platform() {
   };
   const deleteProduct = (product: Product) => ask({
     title: "Eliminar producto",
-    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario, la tienda y el historial. Sus procesos en cola también se cancelarán.`,
+    text: `¿Eliminar «${product.name}» (${product.sku}) de la app y de inventario_completo? Se respaldará la hoja y sus imágenes propias irán a la papelera de Drive. Las imágenes compartidas, la tienda y el historial se conservan. Sus procesos en cola también se cancelarán.`,
     label: "Eliminar producto",
     action: async () => {
-      await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
+      const result = await api<{ drive?: unknown }>(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version, delete_from_drive: true });
+      if (!result.drive) throw new Error("La API no confirmó la eliminación en Drive. Revisa el inventario y usa la misma versión de API y frontend.");
       setDetail(null);
       setEditing(false);
       setProducts(previous => previous.filter(item => item.id !== product.id));
@@ -622,7 +623,7 @@ export default function Platform() {
       setQuote(null);
       if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
       await Promise.all([loadProducts(), reloadOperations()]);
-      setNotice("Producto eliminado del catálogo de la app.");
+      setNotice("Producto eliminado de la app y Sheets. Sus imágenes propias se enviaron a la papelera de Drive.");
     },
   });
   const stopJobs = (targets: Job[]) => ask({

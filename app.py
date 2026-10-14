@@ -1859,7 +1859,7 @@ def _rehacer_generico(slot, prompt, ruta_base, sku, errores, feedback, historial
     nombre_archivo = f"{sku}_{slot}.jpg"
     token_sesion = re.sub(r'[^a-zA-Z0-9_-]', '', sesion.setdefault("file_namespace", secrets.token_urlsafe(24)))[:64]
     rutas = _rutas_referencia(ruta_base)
-    if not rutas or any(not Path(r).name.startswith(token_sesion + "_") or Path(r).parent != Path("/tmp") for r in rutas):
+    if not rutas or any(not Path(r).name.startswith(token_sesion + "_") or Path(r).resolve().parent != Path("/tmp").resolve() for r in rutas):
         return field_update(), historial_nuevo, "❌ Referencia de imagen inválida para esta sesión."
     ruta_local = f"/tmp/{token_sesion}_{sku}_{slot}_{secrets.token_urlsafe(12)}.jpg"
 
