@@ -4015,3 +4015,15 @@ details p {
   .p-native-tools .p-card { min-width: 0; }
   .p-native-tools td { max-width: 220px; overflow-wrap: anywhere; }
 }
+
+.wc-publisher { display: grid; gap: 20px; min-width: 0; }
+.wc-publisher .p-card { min-width: 0; }
+.wc-publisher p, .wc-publisher code { overflow-wrap: anywhere; }
+.wc-results { display: grid; gap: 8px; margin: 16px 0; }
+.wc-row { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; min-width: 0; }
+.wc-row > input { flex-shrink: 0; margin-top: 4px; }
+.wc-row > span { min-width: 0; }
+.wc-options { display: flex; gap: 18px; flex-wrap: wrap; margin: 18px 0; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.wc-preview { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
+.wc-preview progress { width: 100%; max-width: 500px; }
+.wc-publisher .button { margin-top: 10px; }

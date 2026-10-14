@@ -18,6 +18,8 @@ if os.getenv("SUITE_SERVE_FRONTEND", "false").lower() == "true":
     register_frontend(fastapi_app)
 from catalog_platform.api import router as catalog_router
 fastapi_app.include_router(catalog_router)
+from catalog_platform.woocommerce_api import router as woocommerce_router
+fastapi_app.include_router(woocommerce_router)
 
 # Informa rol, versión y almacén de sesión sin consultar Drive ni ejecutar generación; no
 # sustituye el heartbeat del worker.

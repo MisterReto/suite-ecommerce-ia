@@ -17,6 +17,7 @@ from .models import GenerationJob
 
 log = logging.getLogger("rincon.queue")
 QUEUE_NAME = "rincon-image-jobs"
+PUBLICATION_QUEUE_NAME = "rincon-woocommerce-jobs"
 
 
 # Construye/reutiliza la conexión Redis correspondiente a la URL configurada.
@@ -45,8 +46,9 @@ def reachable():
 
 
 # Construye la cola RQ con serialización JSON.
-def rq_queue():
-    return Queue(QUEUE_NAME, connection=connection(), serializer=JSONSerializer)
+def rq_queue(kind=None):
+    name = PUBLICATION_QUEUE_NAME if kind == "woocommerce_export" else QUEUE_NAME
+    return Queue(name, connection=connection(), serializer=JSONSerializer)
 
 
 # Entrega solo el UUID SQL, con deduplicación de despacho; no serializa fotos o credenciales.
@@ -55,7 +57,9 @@ def publish_one(job_id):
     # Concurrent API/reconciler deliveries cannot enqueue the same ID together.
     with client.lock("rincon:dispatch:" + job_id, timeout=15, blocking_timeout=3):
         with transaction() as db:
-            if db.scalar(select(GenerationJob.status).where(GenerationJob.id == job_id)) != "queued":
+            job = db.execute(select(GenerationJob.status, GenerationJob.kind)
+                             .where(GenerationJob.id == job_id)).first()
+            if not job or job.status != "queued":
                 return False
         rq_id = "rincon-" + job_id
         try:
@@ -69,7 +73,8 @@ def publish_one(job_id):
             # Interrupted paid operations are failed by recover_expired instead.
             previous.delete()
         try:
-            rq_queue().enqueue(
+            target = rq_queue(job.kind) if job.kind == "woocommerce_export" else rq_queue()
+            target.enqueue(
                 "catalog_platform.worker.execute_job", job_id,
                 job_id=rq_id, unique=True,
                 job_timeout=int(os.getenv("IMAGE_JOB_TIMEOUT_SECONDS", "1800")),

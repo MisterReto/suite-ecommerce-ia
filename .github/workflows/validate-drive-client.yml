@@ -82,6 +82,7 @@ jobs:
         run: |
           pip install --upgrade 'pip>=26.2' 'setuptools>=83' pip-audit pytest pyyaml jsonschema
           pip install -r requirements.txt
+          pip install -r requirements-test.txt
       - name: Revisar dependencias vulnerables
         run: pip-audit --progress-spinner off
       - name: Compilar Python
@@ -125,6 +126,8 @@ jobs:
           TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
           TEST_REDIS_URL: redis://localhost:6379/0
         run: python -m pytest test_catalog_platform.py test_catalog_controls.py test_stabilization.py test_free_render.py test_functional_parity.py test_web_sessions.py test_integration_removal.py test_sheet_catalog_sync.py -q
+      - name: Publicación Colab individual, lotes y prioridad de imágenes
+        run: python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_generation_contract.py -q
       - name: Evidencia visual de navegación y fallos del navegador
         if: always()
         uses: actions/upload-artifact@v4

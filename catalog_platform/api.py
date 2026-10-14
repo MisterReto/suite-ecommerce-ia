@@ -1213,6 +1213,7 @@ def enqueue_operation(
             request_key=request_key,
             product_id=product_id,
             model=model,
+            provider="woocommerce" if kind == "woocommerce_export" else "gemini",
             estimated_cost=estimated_cost,
             payload=payload,
         )

@@ -94,6 +94,31 @@ services:
       type: web
       name: rincon-frontend
       envVarKey: RENDER_EXTERNAL_URL
+  - key: WOOCOMMERCE_URL
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_URL
+  - key: WOOCOMMERCE_CONSUMER_KEY
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_KEY
+  - key: WOOCOMMERCE_CONSUMER_SECRET
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_SECRET
+  - key: WP_USERNAME
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_USERNAME
+  - key: WP_APP_PASSWORD
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_APP_PASSWORD
 - type: web
   name: rincon-catalog-worker
   runtime: docker
@@ -153,3 +178,28 @@ services:
       type: web
       name: rincon-frontend
       envVarKey: RENDER_EXTERNAL_URL
+  - key: WOOCOMMERCE_URL
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_URL
+  - key: WOOCOMMERCE_CONSUMER_KEY
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_KEY
+  - key: WOOCOMMERCE_CONSUMER_SECRET
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WC_CONSUMER_SECRET
+  - key: WP_USERNAME
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_USERNAME
+  - key: WP_APP_PASSWORD
+    fromService:
+      type: web
+      name: suite-ecommerce-ia
+      envVarKey: WP_APP_PASSWORD

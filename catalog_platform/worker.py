@@ -306,6 +306,9 @@ def save_asset(job, value, drive):
 def process(job):
     if job["kind"] not in SUPPORTED_JOB_KINDS:
         raise ValueError("Este tipo de trabajo fue retirado. Se conservó su historial y no se ejecutó.")
+    if job["kind"] == "woocommerce_export":
+        from .woocommerce_jobs import process as export_woocommerce
+        return export_woocommerce(job, OWNER)
     import studio_api
     from drive_service import DriveService
 
@@ -390,7 +393,9 @@ def execute_job(job_id):
     try:
         queue.checkpoint(job_id, OWNER)
         if process(job):
-            queue.finish(job_id, OWNER, True, "Completado. Revisa el resultado antes de guardar.")
+            message = ("Carga terminada. Productos nuevos en borrador." if job["kind"] == "woocommerce_export"
+                       else "Completado. Revisa el resultado antes de guardar.")
+            queue.finish(job_id, OWNER, True, message)
         return {"executed": True}
     except queue.JobCancelled:
         return {"executed": True, "cancelled": True}

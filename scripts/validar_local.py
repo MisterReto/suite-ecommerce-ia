@@ -12,6 +12,7 @@ GROUPS = [
     ("plataforma", ["pytest", "test_studio_api.py", "test_creative_pipeline.py", "test_generation_contract.py", "test_catalog_platform.py", "test_catalog_controls.py", "test_frontend_separation.py", "test_functional_parity.py", "test_web_sessions.py", "test_native_tools.py", "test_integration_removal.py", "-q", "-p", "no:cacheprovider"]),
     ("recuperacion", ["pytest", "test_catalog_platform.py", "test_catalog_controls.py", "test_stabilization.py", "test_free_render.py", "test_functional_parity.py", "test_web_sessions.py", "-q", "-p", "no:cacheprovider"]),
     ("sheets-drive", ["pytest", "test_sheet_catalog_sync.py", "-q", "-p", "no:cacheprovider"]),
+    ("woocommerce", ["pytest", "test_woocommerce_colab.py", "test_woocommerce_api.py", "test_woocommerce_queue.py", "test_generation_contract.py", "-q", "-p", "no:cacheprovider"]),
 ]
 
 
@@ -28,6 +29,7 @@ def main():
         "AI_API_KEY", "WC_ALLOWED_EMAILS", "WC_URL", "WC_CONSUMER_KEY", "WC_CONSUMER_SECRET",
         "WOOCOMMERCE_URL", "WOOCOMMERCE_CONSUMER_KEY", "WOOCOMMERCE_CONSUMER_SECRET",
         "WORDPRESS_URL", "WP_URL", "WP_USERNAME", "WP_APP_PASSWORD", "LOYVERSE_ACCESS_TOKEN",
+        "WOOCOMMERCE_SHEET_ID", "WOOCOMMERCE_IMAGES_FOLDER_ID", "WOOCOMMERCE_ALLOWED_HOSTS",
     ):
         environment.pop(key, None)
     environment.update(INITIALIZE_EMPTY_DATABASE="false", GRADIO_ANALYTICS_ENABLED="False", PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
