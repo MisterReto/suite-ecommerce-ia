@@ -74,7 +74,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
       if (pathname === "/api/platform/products/"+product.id && request.method() === "DELETE") {
         controls.push({method:request.method(),path:pathname,body:request.postDataJSON()});
         catalogRemoved = true;
-        return route.fulfill({json:{ok:true,product_id:product.id}});
+        return route.fulfill({json:{ok:true,product_id:product.id,drive:{sheet:{deleted:true},trashed_image_ids:["test-image"],backup_id:"test-backup"}}});
       }
       if (pathname.endsWith("/cancel") && request.method() === "POST") {
         const body = request.postDataJSON();
@@ -121,7 +121,8 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     assert.ok((await removeButton.boundingBox()).height >= 44, "Delete has a mobile touch target");
     await removeButton.click();
     const removeDialog = page.getByRole("dialog");
-    await removeDialog.getByText(/Se conservan los archivos de Drive/).waitFor();
+    await removeDialog.getByText(/sus imágenes propias irán a la papelera de Drive/).waitFor();
+    await removeDialog.getByText(/Las imágenes compartidas y el historial se conservan/).waitFor();
     assert.equal(controls.length,0,"Opening confirmation performs no deletion");
     await removeDialog.getByRole("button", {name:"Cancelar",exact:true}).click();
     await page.getByRole("button",{name:"Abrir producto "+product.name,exact:true}).click();
@@ -170,7 +171,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("dialog").getByRole("button", {name:"Eliminar producto",exact:true}).click();
     await page.getByRole("heading", {name:"Tu catálogo empieza aquí",exact:true}).waitFor();
     assert.equal(controls[2].method,"DELETE");
-    assert.deepEqual(controls[2].body,{confirm:true,version:product.version});
+    assert.deepEqual(controls[2].body,{confirm:true,version:product.version,delete_from_drive:true});
     await page.evaluate(() => dispatchEvent(new Event("offline")));
     await page.getByText("Sin conexión", { exact: true }).waitFor();
     await page.evaluate(() => dispatchEvent(new Event("online")));
@@ -203,6 +204,12 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("dialog").getByRole("button",{name:"Guardar conteos",exact:true}).click();
     await page.getByText("Guardado en prueba",{exact:true}).waitFor();
     assert.deepEqual(nativeWrites[0],{operation:"counts",body:{confirm:true,counts:[{sku:product.sku,stock:7}]}});
+    await page.getByRole("button",{name:"Sincronizar catálogo de la app (2)",exact:true}).click();
+    assert.equal(nativeWrites.length,1,"Catalog sync opens confirmation before writing");
+    await page.getByRole("dialog").getByRole("button",{name:"Sincronizar catálogo",exact:true}).click();
+    await page.getByText("Guardado en prueba",{exact:true}).waitFor();
+    assert.equal(nativeWrites[1].operation,"sync");
+    assert.deepEqual(nativeWrites[1].body,{confirm:true,skus:[product.sku,"123456xxxxxxx"]});
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native inventory fits phone width");
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-mobile.png"),fullPage:true});
     await nav.getByRole("link",{name:"Más",exact:true}).click();
