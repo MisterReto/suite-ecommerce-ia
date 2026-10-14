@@ -81,6 +81,13 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
             <p><strong>{inventory.pending}</strong> pendientes de conteo</p><p><strong>{money(inventory.summary.retail_value)}</strong> valor de venta</p>
           </div>
           <p className="p-muted">{inventory.rows.length} de {inventory.total} registros. Filtra para localizar otros productos.</p>
+          <button className="button secondary" disabled={!canEdit || disabled || !inventory.rows.length} onClick={() => {
+            const skus = selected.length ? selected : inventory.rows.map(row => row.sku);
+            confirm("Sincronizar catálogo", `${skus.length} SKU. Se leerán sus datos actuales de Drive y se actualizarán productos, categorías, imágenes y existencias en la app.`, "Sincronizar catálogo", async () => {
+              const data = await request<{ message: string }>("sync", "POST", { confirm: true, skus });
+              await loadInventory(); setNotice(data.message);
+            });
+          }}>Sincronizar catálogo de la app ({selected.length || inventory.rows.length})</button>
           <div className="p-table-wrap"><table><thead><tr><th>Seleccionar</th><th>SKU / historial</th><th>Producto</th><th>Stock</th><th>Precio</th><th>Conteo físico final</th><th>Estado</th></tr></thead>
             <tbody>{inventory.rows.map((row, i) => <tr key={row.sku + ":" + i}>
               <td><input type="checkbox" aria-label={"Seleccionar conteo " + row.sku} disabled={!canEdit || disabled || row.variable_parent}

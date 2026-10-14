@@ -23,6 +23,7 @@ from .accounts import account, put
 from .security import member, unseal
 from .catalog import save_product, audit
 from .queue import request_lock
+from inventory_schema import join_category_path
 
 
 # Resuelve la carpeta seleccionada que limita el puente captura/SQL.
@@ -68,7 +69,7 @@ def master_rows(value):
         return [dict(sku=p.sku, tipo=p.product_type, sku_padre=skus.get(p.parent_id, ""),
                      nombre_producto=p.name, Marca=p.brand, gramaje=str(p.attributes.get("Tamaño", "")),
                      codigo_barras=p.barcode, precio=p.price, Existencias=p.stock,
-                     categorias=p.category + (" > " + p.subcategory if p.subcategory else ""),
+                     categorias=join_category_path(p.category, p.subcategory),
                      descripcion_corta=p.short_description, descripcion_larga=p.long_description,
                      etiquetas=", ".join(p.tags), atributo_nombre=next(iter(p.attributes), ""),
                      atributo_valor=next(iter(p.attributes.values()), ""), attributes=p.attributes,

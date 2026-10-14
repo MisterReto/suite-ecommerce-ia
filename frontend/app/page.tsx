@@ -556,7 +556,7 @@ export default function Platform() {
     let stopped = false;
     // Callback de polling que actualiza trabajos y trata un 401 como sesión no autenticada.
     const run = () =>
-      reloadOperations().catch((e) => {
+      reloadOperations().then(() => { if (!stopped) return loadProducts(); }).catch((e) => {
         if (!stopped) {
           setError(e.message);
           if (e.status === 401) setSession({ authenticated: false });
@@ -568,7 +568,7 @@ export default function Platform() {
       stopped = true;
       clearInterval(timer);
     };
-  }, [ready, online, jobs.some(active), reloadOperations]);
+  }, [ready, online, jobs.some(active), reloadOperations, loadProducts]);
   useEffect(() => {
     setQuote(null);
   }, [selected, selectionMode, category, slots, quantity, automaticReview]);
@@ -634,14 +634,14 @@ export default function Platform() {
     setUncertainChecked(false);
     setConfirm(value);
   };
-  // Confirma retirada de la app y envía UUID/version; no borra archivos Drive, hojas ni
-  // historial.
+  // Confirma retirada con respaldo de la hoja y papelera de imágenes propias de Drive.
   const deleteProduct = (product: Product) => ask({
     title: "Eliminar producto",
-    text: `¿Eliminar «${product.name}» (${product.sku}) del catálogo de la app? Se conservan los archivos de Drive, las hojas de inventario y el historial. Sus procesos en cola también se cancelarán.`,
+    text: `¿Eliminar «${product.name}» (${product.sku}) de la app y de inventario_completo? Se respaldará la hoja y sus imágenes propias irán a la papelera de Drive. Las imágenes compartidas y el historial se conservan. Sus procesos en cola también se cancelarán.`,
     label: "Eliminar producto",
     action: async () => {
-      await api(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version });
+      const result = await api<{ drive?: unknown }>(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version, delete_from_drive: true });
+      if (!result.drive) throw new Error("La API no confirmó la eliminación en Drive. Revisa el inventario y usa la misma versión de API y frontend.");
       setDetail(null);
       setEditing(false);
       setProducts(previous => previous.filter(item => item.id !== product.id));
@@ -649,7 +649,7 @@ export default function Platform() {
       setQuote(null);
       if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
       await Promise.all([loadProducts(), reloadOperations()]);
-      setNotice("Producto eliminado del catálogo de la app.");
+      setNotice("Producto eliminado de la app y Sheets. Sus imágenes propias se enviaron a la papelera de Drive.");
     },
   });
   // Confirma los IDs visibles: uno o lote; trabajos creados después no quedan incluidos.

@@ -174,7 +174,7 @@ class ProductCapture:
     def _references(self, session, reference):
         prefix = self._namespace(session) + "_"
         paths = self.backend["_rutas_referencia"](reference)
-        if not paths or any(Path(path).parent != Path("/tmp") or not Path(path).name.startswith(prefix) for path in paths):
+        if not paths or any(Path(path).resolve().parent != Path("/tmp").resolve() or not Path(path).name.startswith(prefix) for path in paths):
             raise ValueError("Analiza primero la foto del producto para preparar su portada.")
         return paths
 
@@ -183,8 +183,8 @@ class ProductCapture:
             raise ValueError("La foto base cambió. Genera las imágenes del producto actual.")
         if slot not in {"1_hd", "2_uso", "3_comercial"} or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sku):
             raise ValueError("Imagen de producto inválida.")
-        picture = Path(path)
-        if picture.parent != Path("/tmp") or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
+        picture = Path(path).resolve()
+        if picture.parent != Path("/tmp").resolve() or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
             raise ValueError("La imagen no pertenece a esta sesión.")
         draft = session.get("product_images")
         if not draft or draft["sku"] != sku or draft["revision"] != revision:
@@ -200,8 +200,8 @@ class ProductCapture:
         for slot in ("1_hd", "2_uso", "3_comercial"):
             path = draft.get("files", {}).get(slot)
             if path:
-                picture = Path(path)
-                if picture.parent != Path("/tmp") or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
+                picture = Path(path).resolve()
+                if picture.parent != Path("/tmp").resolve() or not picture.name.startswith(self._namespace(session) + "_") or not picture.is_file():
                     raise ValueError("Una vista previa ya no está disponible. Vuelve a generarla.")
                 images.append((f"{sku}_{slot}.jpg", path))
         return images

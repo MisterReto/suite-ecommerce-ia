@@ -35,7 +35,7 @@ def join_category_path(parent: Any, child: Any) -> str:
     parent = str(parent or "").strip()
     child = str(child or "").strip()
     if parent and child:
-        return f"{parent} > {child}"
+        return f"{parent}>{child}"
     return parent or child
 
 
@@ -67,7 +67,9 @@ def normalize_product_row(row: Mapping[str, Any]) -> dict[str, Any]:
     if kind != "variation":
         out["sku_padre"] = ""
 
-    if not out["categorias"]:
+    if out["categorias"]:
+        out["categorias"] = join_category_path(*split_category_path(out["categorias"]))
+    else:
         out["categorias"] = join_category_path(row.get("categoria"), row.get("subcategoria"))
 
     try:

@@ -14,7 +14,7 @@ from inventory_schema import is_variable_parent
 
 
 # Explicit method and role contracts; a read never starts a publication wave.
-OPERATIONS = {"inventory": "GET", "history": "GET", "counts": "POST", "movement": "POST"}
+OPERATIONS = {"inventory": "GET", "history": "GET", "counts": "POST", "movement": "POST", "sync": "POST"}
 
 
 def movements(sheets, sheet, sku="", limit=10000):
@@ -48,6 +48,11 @@ def inventory(value, query):
 
 
 async def execute(request, operation, value):
+    if operation == "sync":
+        from catalog_platform.sheet_sync import sync_inventory
+        payload = await request.json()
+        result = await asyncio.to_thread(sync_inventory, value, payload.get("skus"))
+        return {"ok": True, "result": result, "message": f"Se sincronizaron {result['updated']} productos con el catálogo de la app."}
     if operation == "inventory":
         return await asyncio.to_thread(inventory, value, request.query_params.get("q", "")[:500])
     if operation == "history":

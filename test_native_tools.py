@@ -59,6 +59,53 @@ def test_read_viewer_and_session_contract(client, monkeypatch):
     assert client.get("/api/tools/inventory").status_code == 401
 
 
+def test_catalog_sync_requires_confirmation_and_editor_and_returns_verified_total(client, monkeypatch):
+    from catalog_platform import sheet_sync
+    sync = Mock(return_value={"updated": 2, "product_ids": ["parent", "child"]})
+    monkeypatch.setattr(sheet_sync, "sync_inventory", sync)
+    assert client.post("/api/tools/sync", json={"skus": ["CHILD"]}).status_code == 422
+    native_tools.runtime.SESSIONS["native-test"]["role"] = "viewer"
+    assert client.post("/api/tools/sync", json={"confirm": True, "skus": ["CHILD"]}).status_code == 403
+    sync.assert_not_called()
+    native_tools.runtime.SESSIONS["native-test"]["role"] = "editor"
+    result = client.post("/api/tools/sync", json={"confirm": True, "skus": ["CHILD"]})
+    assert result.status_code == 200 and result.json()["result"]["updated"] == 2
+    assert sync.call_args.args[1] == ["CHILD"]
+
+
+def test_sheet_mirror_failure_reports_saved_source_without_repeating_movement(monkeypatch):
+    from catalog_platform import sheet_sync
+    import sheet_inventory
+    monkeypatch.setattr("catalog_platform.database.configured", lambda: True)
+    sync = Mock(side_effect=RuntimeError("private-token"))
+    monkeypatch.setattr(sheet_sync, "sync_inventory", sync)
+    result = sheet_inventory.mirror_saved({"email": "test@example.test"}, ["A"])
+    assert result["catalog_synced"] is False
+    assert "No repitas el movimiento" in result["catalog_message"]
+    assert "private-token" not in str(result)
+    sync.assert_called_once()
+
+
+def test_native_sheet_write_uses_shared_capture_guard(monkeypatch):
+    from contextlib import contextmanager
+    import sheet_inventory
+    events = []
+    session = {"email": "test@example.test"}
+    @contextmanager
+    def guard(value):
+        assert value is session
+        events.append("lock")
+        yield
+        events.append("unlock")
+    monkeypatch.setattr("catalog_platform.capture_bridge.sheet_write_guard", guard)
+    def save(sheets, sheet, **kwargs):
+        assert events == ["lock"] and kwargs == {"sku": "A"}
+        events.append("write")
+        return {"sku": "A"}
+    assert sheet_inventory.write_inventory(session, save, object(), "sheet", sku="A") == {"sku": "A"}
+    assert events == ["lock", "write", "unlock"]
+
+
 def test_existing_history_is_read_without_creating_a_sheet(monkeypatch):
     sheets = Mock()
     sheets.spreadsheets().get().execute.return_value = {"sheets": []}

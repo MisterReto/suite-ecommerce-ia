@@ -6,7 +6,7 @@ from os.path import commonprefix
 import re
 import unicodedata
 
-from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, is_variable_parent, normalize_product_row
+from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, is_variable_parent, normalize_product_row, join_category_path
 
 BARCODE_COLUMN = 20  # U; A:N and S:T retain their current meaning.
 
@@ -210,12 +210,21 @@ def next_parent_sku(name, brand, rows, code=""):
 
 # Interpreta filas existentes respetando encabezados y columnas canónicas.
 def records_from_values(values):
+    if not values:
+        return []
+    headers = [text(value) for value in values[0]]
+    named = [header for header in headers if header]
+    if len(named) != len(set(named)) or "sku" not in headers:
+        raise ValueError("Revisa los encabezados del inventario: SKU requerido y nombres únicos.")
     rows = []
     for number, raw in enumerate(values[1:], 2):
-        padded = list(raw[:21]) + [""] * max(0, 21 - len(raw))
-        if any(text(v) for v in padded[:14]):
-            record = dict(zip(MASTER_COLUMNS, padded[:14]))
-            record.update(atributo_nombre=padded[18], atributo_valor=padded[19], codigo_barras=padded[20], _row=number)
+        mapped = dict(zip(headers, raw))
+        if any(text(mapped.get(key)) for key in MASTER_COLUMNS):
+            record = {key: mapped.get(key, "") for key in MASTER_COLUMNS}
+            if not text(record["categorias"]):
+                record["categorias"] = join_category_path(mapped.get("categoria"), mapped.get("subcategoria"))
+            record.update({key: mapped.get(key, "") for key in ("atributo_nombre", "atributo_valor", "codigo_barras")})
+            record["_row"] = number
             rows.append(record)
     return rows
 
@@ -223,6 +232,8 @@ def records_from_values(values):
 # Planifica la escritura de padre/variante y relaciones antes del guardado explícito.
 def prepare_capture_updates(values, record):
     """Plan one values.batchUpdate: parent and child succeed in the same request."""
+    if values and [text(header) for header in values[0][:14]] != list(MASTER_COLUMNS):
+        raise ValueError("El orden de las columnas cambió. Revisa el esquema antes de guardar; no se reescribieron encabezados.")
     rows = records_from_values(values)
     record = dict(record)
     record["codigo_barras"] = barcode(record.get("codigo_barras"))
