@@ -1,14 +1,7 @@
 # Existing native inventory services; preserve manually configured Neon connections.
 previews:
   generation: 'off'
-databases:
-- name: rincon-catalog-db
-  databaseName: rincon_catalog
-  user: rincon_app
-  plan: free
-  region: oregon
-  postgresMajorVersion: '17'
-  ipAllowList: []
+databases: []
 services:
 - type: keyvalue
   name: rincon-generation-queue
