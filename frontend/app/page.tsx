@@ -58,6 +58,7 @@ type Product = {
   attributes: Record<string, string | string[]>;
   product_type: string;
   parent_id: string | null;
+  parent_sku?: string;
   price: number | null;
   cost: number | null;
   stock: number | null;
@@ -262,6 +263,7 @@ const blank = (): Product => ({
   attributes: {},
   product_type: "simple",
   parent_id: null,
+  parent_sku: "",
   price: 0,
   cost: null,
   stock: 0,
@@ -693,14 +695,16 @@ export default function Platform() {
     } catch {
       throw new Error("Los atributos deben ser un objeto JSON válido.");
     }
-    const data = await api<{ product: Product }>(
+    const {parent_id, ...fields} = form;
+    const data = await api<{ product: Product; drive_saved?: boolean; message?: string }>(
       form.id ? "/api/platform/products/" + form.id : "/api/platform/products",
       form.id ? "PUT" : "POST",
-      { ...form, attributes: attrs },
+      { ...fields, parent_sku: form.product_type === "variation" ? form.parent_sku || "" : "", attributes: attrs, sync_drive: true },
     );
     await openProduct(data.product.id);
     await loadProducts();
-    setNotice("Producto guardado en el catálogo maestro.");
+    setNotice(data.message || "Producto guardado en el catálogo maestro.");
+    if (data.drive_saved === false) setError(data.message || "Drive quedó pendiente; vuelve a guardar.");
   };
   // Sube y asocia una referencia al producto autorizado.
   const uploadReference = async (file: File) => {
@@ -1417,12 +1421,16 @@ export default function Platform() {
                         </label>
                         {form.product_type === "variation" && (
                           <label>
-                            ID interno del padre
+                            SKU del padre
                             <input
-                              value={form.parent_id || ""}
+                              value={form.parent_sku || ""}
                               required
+                              maxLength={80}
+                              autoCapitalize="off"
+                              autoCorrect="off"
+                              placeholder="Ej. RAMENFULL"
                               onChange={(e) =>
-                                setForm({ ...form, parent_id: e.target.value })
+                                setForm({ ...form, parent_sku: e.target.value.trim() })
                               }
                             />
                           </label>
@@ -1535,7 +1543,7 @@ export default function Platform() {
                                     </span>
                                     <Badge value={i.status} />
                                   </div>
-                                  {canEdit && i.role === "reference" && <button className="p-link" disabled={busy} onClick={() => ask({ title: "Aprobar foto original", text: "Usar esta fotografía también en la galería del producto. La referencia original se conserva. ", label: "Aprobar original", action: async () => { await api(`/api/platform/products/${form.id}/images/${i.id}/approve-original`, "POST", { confirm: true, request_key: crypto.randomUUID() }); await openProduct(form.id); } })}>Aprobar original para galería</button>}
+                                  {i.role === "reference" && <small>Referencia privada para IA. No se envía a WooCommerce.</small>}
                               {canEdit && i.role !== "reference" && (
                                     <button
                                       className="p-link"
@@ -1605,12 +1613,7 @@ export default function Platform() {
                             </div>
 
 
-                            <div>
-                              <dt>ID interno</dt>
-                              <dd>
-                                <code>{detail.product.id}</code>
-                              </dd>
-                            </div>
+                            {detail.product.parent_sku && <div><dt>SKU del padre</dt><dd>{detail.product.parent_sku}</dd></div>}
                           </dl>
                           <div className="p-button-row">
                             {canEdit && (

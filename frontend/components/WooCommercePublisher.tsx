@@ -240,7 +240,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
         <progress value={job.progress} max={100} aria-label={"Progreso " + job.selection?.sku} />
         <p>{job.message}</p>
         <details><summary>Ver resultados</summary>{job.events.map((event, index) => <p key={index}>
-          {event.action} {event.sku} {event.id ? "· ID " + event.id : ""} {event.mensaje}</p>)}</details>
+          {event.action} {event.sku} {event.mensaje}</p>)}</details>
         {job.status === "failed" && isAdmin && <>
           {job.uncertain && <label><input type="checkbox" checked={!!checkedUncertainty[job.id]}
             onChange={e => setCheckedUncertainty(previous => ({ ...previous, [job.id]: e.target.checked }))} />

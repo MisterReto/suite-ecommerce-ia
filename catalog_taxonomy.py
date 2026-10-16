@@ -5,6 +5,7 @@ from catalog_capture import text
 from inventory_schema import split_category_path
 import os
 import re
+import unicodedata
 from googleapiclient.errors import HttpError
 
 
@@ -80,3 +81,31 @@ def choices_from_rows(rows, default_categories=(), default_subcategories=()):
             "categories": sorted(categories, key=str.casefold),
             "subcategories": {key: sorted(values, key=str.casefold) for key, values in subcategories.items()},
             "tags": sorted(tags, key=str.casefold)}
+
+
+def tag_key(value):
+    """Compare suggestions without losing the exact spelling used in Drive."""
+    value = unicodedata.normalize("NFKD", text(value).casefold())
+    return " ".join(re.findall(r"[^\W_]+", "".join(c for c in value if not unicodedata.combining(c))))
+
+
+def suggested_tags(proposals, vocabulary, evidence):
+    """Use existing labels; fall back only to labels literally supported by the product."""
+    existing = {tag_key(tag): tag for tag in reversed(vocabulary)}
+    selected = []
+    for proposal in proposals if isinstance(proposals, list) else []:
+        if not isinstance(proposal, str):
+            continue
+        key = tag_key(proposal)
+        tag = proposal if proposal in vocabulary else existing.get(key) if vocabulary else proposal.strip()
+        if tag and len(tag) <= 80 and key not in {tag_key(item) for item in selected}:
+            selected.append(tag)
+    if not selected and vocabulary:
+        words = set(tag_key(evidence).split())
+        for key, tag in sorted(existing.items(), key=lambda item: -len(item[0].split())):
+            tokens = set(key.split())
+            if tokens and tokens <= words and any(len(word) >= 3 and not word.isdigit() for word in tokens):
+                selected.append(tag)
+                if len(selected) == 5:
+                    break
+    return selected[:5]

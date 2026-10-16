@@ -16,6 +16,8 @@ def test_woocommerce_image_index_only_reads_direct_generated_images():
     from catalog_platform.woocommerce_export import index_images
     from test_sheet_catalog_sync import DriveDouble
     sdk = DriveDouble("catalog")
+    sdk.items["own"]["name"] = "S1_1_hd.jpg"
+    sdk.items["shared"]["name"] = "S1_2_uso.jpg"
     sdk.items["root-copy"] = {"id": "root-copy", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["catalog"]}
     sdk.items["subfolder"] = {"id": "subfolder", "name": "backup", "mimeType": "application/vnd.google-apps.folder", "parents": ["generated"]}
     sdk.items["nested-copy"] = {"id": "nested-copy", "name": "sprite.jpg", "mimeType": "image/jpeg", "parents": ["subfolder"]}
@@ -103,6 +105,19 @@ def options(images=False, stock=False, tags=False):
     return {"images": images, "stock": stock, "tags": tags, "allow_published_family": False}
 
 
+def test_originals_and_raw_images_are_excluded_from_old_job_snapshots(store):
+    data = source()
+    data["ARCHIVOS"] += [{"id": str(i), "name": name, "mimeType": "image/jpeg"} for i, name in enumerate([
+        "S1_2_uso_raw.jpg", "S1_3_original.jpg", "S1_referencia_frente.jpg", "S1_4_raw.jpg", "S1_1_hd_backup.jpg"])]
+    engine = Exporter(source=data)
+    try:
+        preview = engine.preview("simple", "S1", options(images=True))
+        assert preview["items"][0]["images"] == [{"id": "real", "name": "S1_1_hd.jpg"}]
+        assert {item["id"] for item in engine.snapshot("simple", "S1")["ARCHIVOS"]} == {"real"}
+    finally:
+        engine.close()
+
+
 def test_trashed_sku_is_detected_before_media_or_product_writes(store):
     calls, products, *_ = store
     products["S1"] = {"id": 8772, "sku": "S1", "status": "trash", "type": "simple"}
@@ -110,8 +125,9 @@ def test_trashed_sku_is_detected_before_media_or_product_writes(store):
     try:
         for operation in (lambda: engine.preflight("simple", "S1"),
                           lambda: engine.execute("simple", "S1", options())):
-            with pytest.raises(ValueError, match="papelera.*8772"):
+            with pytest.raises(ValueError, match="SKU S1.*papelera") as caught:
                 operation()
+            assert "8772" not in str(caught.value)
         assert calls and all(c["method"] == "GET" for c in calls)
         assert any(c["params"].get("status") == "trash" for c in calls)
     finally:

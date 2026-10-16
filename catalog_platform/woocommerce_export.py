@@ -144,7 +144,12 @@ def index_images(client, root):
         "mimeType contains 'image/'", fields="id,name,mimeType,size,parents,trashed", limit=20000)
         if root in item.get("parents", []) and not item.get("trashed")
         and item.get("mimeType", "").startswith("image/")
-        and not any(char in item["name"] for char in ('\r', '\n', '"'))]
+        and publishable_image(item["name"])]
+
+
+def publishable_image(name):
+    """Only final numbered gallery files; references, raw files and backups stay private."""
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+_\d+(?:_(?:hd|uso|comercial))?\.(?:jpg|jpeg|png|webp)", name, re.I))
 
 
 class Exporter:
@@ -168,6 +173,9 @@ class Exporter:
             SIMPLES={}, PADRES={}, VARIANTES={}, COMPLETA={}, CSV_VARIANTES={}, ARCHIVOS=[])
         if source:
             self.ns.update(deepcopy(source))
+        # Filter persisted job snapshots too, before the unchanged Colab selector
+        # applies its slot priority. Old queued sources can contain raw originals.
+        self.ns["ARCHIVOS"] = [file for file in self.ns["ARCHIVOS"] if publishable_image(file.get("name", ""))]
         self.ns["MEDIA_CACHE"] = deepcopy(media_cache or {})
         self.events = []
         original_event = self.ns["registrar"]
@@ -194,7 +202,7 @@ class Exporter:
         def reject_trash(items, sku):
             item = next((item for item in items if item.get("sku") == sku), None)
             if item:
-                raise ValueError(f"El SKU {sku} ya existe en la papelera de WooCommerce (ID {item['id']}). "
+                raise ValueError(f"El SKU {sku} ya existe en la papelera de WooCommerce. "
                     "Restaura ese producto en WordPress y revisa otra vez. Se detuvo la creación de ese SKU.")
 
         def find_product(sku):

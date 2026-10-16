@@ -81,7 +81,7 @@ export default function WooCommerceInventory({ online, api, openPublisher }: Pro
           {row.parent_sku && <small>Familia: {row.parent_sku}</small>}</div>
         <div><strong>{labels[row.publication]}</strong>{row.woocommerce && ["other", "missing_app"].includes(row.publication) &&
           <small>Estado en tienda: {row.woocommerce.status === "publish" ? "Publicado" : row.woocommerce.status === "draft" ? "Borrador" : row.woocommerce.status}{row.woocommerce.visibility === "hidden" && " · Oculto"}</small>}
-          {row.matches.length > 0 && <small>Coincidencias: {row.matches.map(item => "ID " + item.id).join(", ")}</small>}</div>
+          {row.matches.length > 0 && <small>{row.matches.length} coincidencias para este SKU; revisa la familia en la tienda.</small>}</div>
         {row.kind !== "family" && <p>Stock app: <strong>{amount(row.stock)}</strong> · WooCommerce: <strong>{amount(row.woocommerce?.stock ?? null)}</strong>
           {row.difference != null && <> · Diferencia: <strong>{row.difference > 0 ? "+" : ""}{amount(row.difference)}</strong></>}
           {row.woocommerce?.stock_inherited && <small>Stock compartido con la familia; requiere revisión conjunta.</small>}

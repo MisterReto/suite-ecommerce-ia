@@ -37,6 +37,7 @@ async function exercise(browser, engine, width) {
   let draft = null, configured = true, count = 0, writes = 0, saves = 0, rejectUpload = true, warming = true, failedSessionReads = 0, taxonomyAvailable = false;
   const generations = [], corrections = [];
   let imageJob = null, polls = 0, failImage = false;
+  let holdDraft = false, releaseDraft;
   async function touchTarget(locator, label) {
     // Bring the control to the usable center, as a phone swipe would. WebKit's
     // nearest-edge scroll can leave an otherwise reachable target under the fixed nav.
@@ -97,6 +98,10 @@ async function exercise(browser, engine, width) {
       draft = {...body(), revision:"capture-"+count, product:blank(), images:{}};
       json = {draft};
     } else if (p === "/api/draft" && method === "PUT") {
+      if (holdDraft) {
+        holdDraft = false;
+        await new Promise(resolve => { releaseDraft = resolve; });
+      }
       draft.product = {...blank(),...body()};
       draft.product.barcode = draft.product.barcode.replace(/[\s-]/g,"");
       draft.product.sku = draft.product.barcode || (draft.product.name ? "GLIPOC40GX" : "");
@@ -182,6 +187,20 @@ async function exercise(browser, engine, width) {
     taxonomyAvailable = true;
     await capture.getByRole("button",{name:"Reintentar carga",exact:true}).tap();
     await capture.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
+    // A slow background save must not disable typing or replace newer input.
+    holdDraft = true;
+    const productName = capture.getByLabel("Nombre del producto", {exact:true});
+    await productName.fill("Pocky Chocolate 40 g editado");
+    for (let attempt=0; !releaseDraft && attempt<60; attempt++) await page.waitForTimeout(50);
+    assert.ok(releaseDraft, "A delayed autosave started");
+    try {
+      assert.ok(await productName.isEnabled(), "Typing stays enabled during autosave");
+      await productName.fill("Pocky Chocolate 40 g edición más reciente");
+      assert.equal(await productName.inputValue(), "Pocky Chocolate 40 g edición más reciente");
+    } finally { releaseDraft(); }
+    for (let attempt=0; draft.product.name !== "Pocky Chocolate 40 g edición más reciente" && attempt<100; attempt++) await page.waitForTimeout(50);
+    assert.equal(draft.product.name, "Pocky Chocolate 40 g edición más reciente", "Newer edits survive the delayed response and are saved next");
+    assert.equal(await productName.inputValue(), draft.product.name);
     const categoryChoice = capture.getByLabel("Categoría",{exact:true});
     const subcategoryChoice = capture.getByLabel("Subcategoría",{exact:true});
     await touchTarget(categoryChoice,"Drive category selector");

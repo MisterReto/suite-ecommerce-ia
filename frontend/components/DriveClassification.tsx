@@ -2,7 +2,7 @@
 // Selectores de categoría/subcategoría y etiquetas tomadas de Drive, con búsqueda y reintento visible.
 // Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 // Vocabulario leído: categorías, subcategorías por categoría y etiquetas, con origen
 // drive/defaults.
@@ -17,7 +17,7 @@ type Value = { category: string; subcategory: string; tags: string[] };
 
 // Lee opciones con timeout/reintento, limpia subcategorías incompatibles y muestra las
 // etiquetas en fila desplazable.
-export default function DriveClassification({ value, onChange, enabled, folderKey, disabled = false }: {
+export default memo(function DriveClassification({ value, onChange, enabled, folderKey, disabled = false }: {
   value: Value;
   onChange: (value: Value) => void;
   enabled: boolean;
@@ -112,4 +112,4 @@ export default function DriveClassification({ value, onChange, enabled, folderKe
         onClick={() => setRefresh(previous => previous + 1)}>{error ? "Reintentar carga" : "Actualizar opciones"}</button>}
     </div>
   </>;
-}
+});

@@ -487,6 +487,28 @@ def test_analysis_uses_drive_subcategories_and_rejects_a_wrong_parent(capture_st
     assert '"Dulces": ["Galletas"]' in prompt and '"Bebidas": ["Té"]' in prompt
 
 
+def test_analysis_assigns_existing_tags_beyond_the_first_eighty(capture_store, monkeypatch):
+    client, _, drive, *_ = capture_store
+    start(client)
+    rows = [{"categorias": "Ramen", "etiquetas": ", ".join([f"Etiqueta {i:04d}" for i in range(1460)] + ["Ramen instantáneo"])}]
+    monkeypatch.setattr(studio.runtime.captura, "snapshot", lambda *a: (drive, "test-sheet", rows))
+    model = Mock()
+    model.models.generate_content.return_value = SimpleNamespace(text=json.dumps({
+        "nombre": "Ramen instantáneo", "categoria": "Ramen", "etiquetas": ["ramen instantaneo", "Inventada"]}))
+    monkeypatch.setattr(studio, "GeminiClient", Mock(return_value=model))
+    monkeypatch.setattr(studio, "read_barcodes", lambda *a: [])
+    result = wait(client, client.post("/api/analyze", headers=ORIGIN))
+    assert result["job"]["status"] == "completed", result
+    assert result["draft"]["product"]["tags"] == "Ramen instantáneo"
+    assert "Ramen instantáneo" in model.models.generate_content.call_args.kwargs["contents"][-1]
+
+
+def test_empty_tag_suggestion_uses_only_existing_labels_supported_by_identity():
+    from catalog_taxonomy import suggested_tags
+    assert suggested_tags([], ["Ramen.", "Sin azúcar", "Corea"], "Maruchan ramen camarón") == ["Ramen."]
+    assert suggested_tags(["ramen", "Ramen."], ["Ramen."], "ramen") == ["Ramen."]
+
+
 @pytest.mark.parametrize("scanned,seen,expected", [
     (["036000291452"], "4006381333931", "036000291452"),
     (["00036000291452"], "", "00036000291452"),

@@ -2,7 +2,7 @@
 // Captura de producto: fotos, borrador, análisis, familia, generación, revisión y guardado compatible.
 // Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenerationSounds } from "@/lib/generation-sounds";
 import DriveClassification from "@/components/DriveClassification";
 import { recoverSession } from "@/lib/session-recovery";
@@ -399,6 +399,11 @@ export default function CaptureStudio({
   const [query, setQuery] = useState("");
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [parents, setParents] = useState<[string, string][]>([]);
+  const draftWrite = useRef<Promise<void> | null>(null);
+  const classificationValue = useMemo(() => ({ category: product.category, subcategory: product.subcategory,
+    tags: product.tags.split(",").map(tag => tag.trim()).filter(Boolean) }), [product.category, product.subcategory, product.tags]);
+  const changeClassification = useCallback((value: { category: string; subcategory: string; tags: string[] }) =>
+    setProduct(previous => ({ ...previous, ...value, tags: value.tags.join(", ") })), []);
   const busy = posting || activeJob(job);
   const signedIn = session.authenticated;
   const imageCount = Object.keys(draft?.images || {}).length;
@@ -502,6 +507,7 @@ export default function CaptureStudio({
     setError("");
     setMessage("");
     try {
+      await draftWrite.current;
       await action();
     } catch (e) {
       setError((e as Error).message);
@@ -645,7 +651,22 @@ export default function CaptureStudio({
     if (!signedIn || busy || !draft || draft.saved || !front || draft.front_id !== front || (draft.back_id || undefined) !== back) return;
     if (sameProduct(product, draft.product) && context === draft.context) return;
     const timer = setTimeout(() => {
-      attempt(async () => { await persist(); });
+      if (submitting.current || draftWrite.current) return;
+      // Save in the background: typing must remain enabled during a slow Drive
+      // checkpoint. Explicit actions wait for this write before mutating the draft.
+      const revision = draft.revision;
+      draftWrite.current = (async () => {
+        try {
+          await ensureCapture();
+          const result = await api<{ draft: Draft }>("/api/draft", "PUT", product);
+          setDraft(latest => latest?.revision === revision ? result.draft : latest);
+          setProduct(latest => sameProduct(latest, product) ? result.draft.product : latest);
+        } catch (e) {
+          setError("No se pudo guardar el borrador. " + (e as Error).message);
+        } finally {
+          draftWrite.current = null;
+        }
+      })();
     }, 800);
     return () => clearTimeout(timer);
   }, [product, context, draft, signedIn, busy, front, back]);
@@ -978,8 +999,8 @@ export default function CaptureStudio({
                       />
                     </Field>
                     <DriveClassification
-                      value={{ category: product.category, subcategory: product.subcategory, tags: product.tags.split(",").map(tag => tag.trim()).filter(Boolean) }}
-                      onChange={value => setProduct(previous => ({ ...previous, ...value, tags: value.tags.join(", ") }))}
+                      value={classificationValue}
+                      onChange={changeClassification}
                       enabled={signedIn}
                       folderKey={(session.email || "") + ":" + (session.folder_id || session.folder || "")}
                       disabled={busy}

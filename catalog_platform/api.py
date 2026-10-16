@@ -112,6 +112,8 @@ class ProductInput(BaseModel):
         default="simple", pattern=r"^(simple|variable|variation)$"
     )
     parent_id: str | None = None
+    parent_sku: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_-]*$")
+    sync_drive: bool = False
     price: float | None = Field(default=0, ge=0, le=1000000, allow_inf_nan=False)
     cost: float | None = Field(default=None, ge=0, le=1000000, allow_inf_nan=False)
     stock: float | None = Field(default=0, ge=0, le=1000000, allow_inf_nan=False)
@@ -305,23 +307,18 @@ def products(
         return {"items": items, "total": count}
 
 
-# Crea una ficha validada en SQL y registra su auditoría; no publica automáticamente en
-# Drive.
+# Crea la ficha y guarda en Drive cuando lo solicita el formulario del catálogo.
 @router.post("/products", status_code=201)
 def create_product(data: ProductInput, value=Depends(context)):
     edit(value)
     try:
         with transaction() as db:
-            return {
-                "product": serialize(
-                    save_product(
-                        db,
-                        tenant(value),
-                        actor(value),
-                        data.model_dump(exclude={"version"}),
-                    )
-                )
-            }
+            from .product_edit import parent_fields, product_view, drive_result
+            if data.sync_drive:
+                request_lock(db, tenant(value), "capture-sheet-writer")
+            product = save_product(db, tenant(value), actor(value), parent_fields(db, tenant(value), data))
+            result = drive_result(db, value, data, product, product.sku)
+            return {"product": product_view(db, product), **result}
     except IntegrityError:
         raise HTTPException(409, "El SKU ya existe en el catálogo.") from None
     except ValueError as exc:
@@ -348,8 +345,9 @@ def get_product(product_id: str, value=Depends(context)):
                 )
             ]
 
+        from .product_edit import product_view
         return {
-            "product": {**serialize(product), "internal_product_id": product.id},
+            "product": product_view(db, product),
             "images": related(ProductImage),
             "assets": related(GeneratedAsset),
             "jobs": related(GenerationJob),
@@ -374,15 +372,20 @@ def update_product(product_id: str, data: ProductInput, value=Depends(context)):
     edit(value)
     try:
         with transaction() as db:
+            from .product_edit import parent_fields, product_view, drive_result
+            if data.sync_drive:
+                request_lock(db, tenant(value), "capture-sheet-writer")
+            previous_sku = product_for(db, tenant(value), product_id, True).sku
             result = save_product(
                 db,
                 tenant(value),
                 actor(value),
-                data.model_dump(exclude={"version"}),
+                parent_fields(db, tenant(value), data),
                 product_id,
                 data.version,
             )
-            return {"product": serialize(result)}
+            saved = drive_result(db, value, data, result, previous_sku)
+            return {"product": product_view(db, result), **saved}
     except IntegrityError:
         raise HTTPException(409, "Ese SKU ya pertenece a otro producto.") from None
     except ValueError as exc:
