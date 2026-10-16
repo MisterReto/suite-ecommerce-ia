@@ -1,37 +1,19 @@
-# Respaldo autónomo de generación en Colab
+# Colab de generación masiva: ajuste de prompts
 
-El notebook del usuario incorpora el motor del commit `4e04b738a5f228ed3a56c50c4d891625f76c9e48`. Se genera con `tools/build_colab_generation.py`; `colab/generation_backup.py` adapta únicamente archivos, CSV, checkpoints y revisión al entorno de Colab.
+El notebook conserva sus **cinco celdas originales**. Solo se edita la celda de generación, con ID `-vY-eouWVDOt`. Las otras cuatro celdas, incluido el código de compresión de los 134 PNG, se conservan completas.
 
-## Qué se conserva
+Se mantienen el montaje y las rutas de Drive, `inventario_completo.csv`, `faltantes.csv`, `imagenes_generadas`, la descarga de referencias, los nombres de archivo, el estampado del logo, la auditoría de faltantes y el procesamiento por hilos. Las imágenes se guardan directamente como antes; las existentes se omiten.
 
-- Copias íntegras de `creative_pipeline.py`, `gemini_gateway.py` y `product_generation.py`, con SHA-256.
-- `PROMPT_HD`, `ERRORES_IA`, el inspector de fidelidad y sus auxiliares extraídos del mismo commit sin reescribir sus funciones.
-- Una copia de referencia de `studio_api.creative_plan` y `make_image`, el contrato de regresión y el logo oficial.
-- Modelos `gemini-2.5-flash` y `gemini-3.1-flash-image`; referencia inline, un brief por producto y hasta dos ejemplos comerciales.
-- Tres slots: `1_hd`, `2_uso`, `3_comercial`; imágenes cuadradas de al menos 1024 px; JPEG raw a calidad 95 y con marca a calidad 94.
-- Correcciones sobre el raw anterior y hasta ocho indicaciones acumuladas. QA opcional sin regeneración automática.
+## Ajustes dentro de la celda existente
 
-La salida concreta de un modelo generativo puede variar. La preservación garantiza el código, los prompts y las reglas del flujo, no igualdad de píxeles entre ejecuciones.
+- `investigar_lifestyle` y `investigar_comercial` usan el brief y las reglas de la app: personas adultas usando o consumiendo el producto, y una composición comercial artística sin cambiar su identidad.
+- El brief se comparte entre las dos escenas del mismo producto. Se usan hasta dos ejemplos comerciales de la misma carpeta como referencias de estilo.
+- El producto limpio usa `PROMPT_HD` de la app.
+- `generar_imagen` adjunta la foto original inline, emplea la configuración cuadrada 1:1 y valida una imagen no vacía de al menos 1024 px con los mismos métodos de `creative_pipeline.py`.
+- El modelo sigue siendo `gemini-3.1-flash-image`; texto usa `gemini-2.5-flash`. Una llamada fallida no bloquea las demás imágenes.
 
-## Uso del notebook
+Las funciones auxiliares y prompts se copian como Python legible dentro de la misma celda. No se agrega otra aplicación, motor empaquetado, interfaz de revisión ni paso de aprobación.
 
-1. Montar Drive e instalar las dependencias fijadas; restaurar el motor y verificar el manifiesto.
-2. Indicar la carpeta que contiene `inventario_completo.csv`. La auditoría conserva SKU como texto y no usa IA.
-3. Seleccionar SKU, slots, límite de productos y concurrencia de 1 a 4; confirmar la generación.
-4. Revisar candidatos y, si hace falta, corregirlos o regenerarlos explícitamente.
-5. Indicar los SKU y slots aprobados y confirmar el guardado en `imagenes_generadas`.
+`colab/generation_backup.py` contiene el código de esa celda. `tools/build_colab_generation.py` aplica el ajuste a una copia del notebook original; no necesita sus salidas ni datos privados en el repositorio. El código fuente usado para la comparación de prompts es `4e04b73`.
 
-Los candidatos, versiones y checkpoints viven en `colab_respaldo_generacion`. Antes de sustituir un archivo canónico se respalda el anterior. Un resultado incierto no se repite sin autorización explícita en el formulario. Un SKU o referencia incorrectos no detienen los demás productos.
-
-El adaptador lee el CSV y guarda imágenes; el sincronizado del catálogo y la publicación a WooCommerce siguen perteneciendo a la app. El notebook conserva la herramienta anterior de compresión de PNG, desactivada por defecto, y se mantiene una copia de Drive anterior a la actualización.
-
-## Actualizar este respaldo deliberadamente
-
-Cambiar `SOURCE_COMMIT` solo después de revisar el nuevo contrato creativo. Generar el notebook desde una copia del original del usuario:
-
-```sh
-python tools/build_colab_generation.py original.ipynb respaldo.ipynb
-python -m pytest -q test_colab_generation.py test_generation_contract.py
-```
-
-No subir notebooks del usuario con outputs, secretos o datos privados al repositorio público. El builder elimina salidas y widgets guardados. La app no importa el adaptador de Colab y estos archivos no alteran su runtime.
+Las pruebas comprueban que los 18 métodos ajenos al ajuste permanecen idénticos, que los métodos de imagen coinciden con la app y que la generación masiva conserva su guardado y auditoría originales. El notebook previo a cualquier edición permanece respaldado en Drive.

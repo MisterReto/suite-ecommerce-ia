@@ -1,181 +1,146 @@
-"""Self-contained Colab and real prompt adapter regressions; synthetic Gemini only."""
-import base64
+"""Original bulk Colab behavior, with only app prompts/image methods adapted."""
+import ast
+import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path
-import sys
-from types import ModuleType, SimpleNamespace
-import zlib
+import shutil
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 import pytest
 
-from colab.generation_backup import ColabGenerator
-import creative_pipeline
-from tools.build_colab_generation import build, extract, source_at
+from tools.build_colab_generation import source_at
+
+
+UNCHANGED = {
+    "obtener_api_key": "91899f1d8402ba653061f1d2296fb084a0d798220c60f779538b6a9c80c8e9cc",
+    "validar_dependencias_generacion": "2a5930a69a6c99ab891ec2469272d0a64f49a233d6fc5a3312ff3b4773628cde",
+    "ruta_absoluta": "670dc7513d85b821a55d2f9ef63a5e7ca96ee2b31e7786c083166b059cf92ed5",
+    "carpeta_predeterminada": "1d2b049cd37ade191fa79500ac4017b3791187d159ea53e8c9fe5ad16e9c3a85",
+    "crear_argumentos": "7a41630905b866ee6a19b40382fee3e7690d1d92ce7490a7a14d612bdf9ee92c",
+    "configurar_rutas": "1ee4ef10251f8ac01f5ad9f626d672fd8e7ff5bd6a81b91a2841e7f259387eac",
+    "clave_encabezado": "d4f2ea70aaf8ff74823234a536de1f0d727e958d05d5bb697459cc4b816be739",
+    "limpiar_columnas": "73c5465b09b7dcd8a839bfce192e64d53d7494cc0bbecbe865991e3b8fc03b45",
+    "leer_inventario": "7068fa90e3a2936b6c9af93c9ba01ccb7e8670e6a2e4314431f57297e5eea312",
+    "estampar_logo": "72367f6c91a7e0b4cd800be14f3f2ad819446d087b905616769087811f9172db",
+    "texto_celda": "562ba8929c18e3638ca0357e698905ce809a5cf2595d67b6892447c5bf0f9ff8",
+    "extraer_url_imagen": "3c465f406e2323e0d0876ea1191c9f77f05fd65cf6324e8903d52430202a63f2",
+    "extension_imagen": "e537c75f5b265d7542a2c3d10d17079bc7f04781efb542125efd3de1db39f658",
+    "descargar_imagen_referencia": "7e48943961d07b9e6fc2ce407fc1bc139856a5be1b0a832ab9c53797cac9f3a5",
+    "rutas_imagenes_producto": "e96a5f4f0ba2d91b98ab26104461b1881e1ce4d974921b0e783bb47784ccd5c9",
+    "imagen_ya_existe": "c346295e93c8505c178c7c4fbc00872232a9b63db80166ddfe9c6729c3617f34",
+    "auditar_imagenes": "92010d916d0034b411336c0579d62dac09c164a70d98819a3f55497d4838e327",
+    "main": "d95891a9e6cbd81c91033995a9a736128cd80211e3abda1a3b3b5d5972bddb3f",
+}
+
+
+def test_original_csv_drive_logo_audit_and_bulk_methods_are_unchanged():
+    tree = ast.parse(Path("colab/generation_backup.py").read_text())
+    nodes = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for name, expected in UNCHANGED.items():
+        assert hashlib.sha256(ast.dump(nodes[name], include_attributes=False).encode()).hexdigest() == expected, name
+
+
+def test_inline_prompts_and_pure_image_functions_match_the_app():
+    tree = ast.parse(Path("colab/generation_backup.py").read_text())
+    nodes = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for filename, names in {
+        "creative_pipeline.py": ["brief", "fallback_brief", "interaction_for", "image_contents", "generate", "image_config", "extract_image"],
+        "gemini_gateway.py": ["image_part", "text_config", "parse_json"],
+    }.items():
+        source = {n.name: n for n in ast.parse(source_at(filename)).body if isinstance(n, ast.FunctionDef)}
+        for name in names:
+            assert ast.dump(nodes[name], include_attributes=False) == ast.dump(source[name], include_attributes=False), name
 
 
 class FakeGemini:
     def __init__(self):
         self.models = self
         self.calls = []
-        self.fail_image = False
+        self.fail_once = False
 
     def generate_content(self, **kwargs):
         self.calls.append(kwargs)
         if kwargs["model"] == "gemini-2.5-flash":
-            if "quality inspector" in str(kwargs["contents"]):
-                return SimpleNamespace(text=json.dumps({"aprobada": False, "puntuacion": 60,
-                    "errores": ["Fix package geometry"], "resumen": "Revisa la geometría"}), candidates=[])
-            return SimpleNamespace(text=json.dumps({"lifestyle": "An adult naturally tasting the exact food, original package visible nearby in warm daylight.",
-                "comercial": "An artistic vibrant advertising hero with expressive color and dimensional illustration around the original package.",
-                "interaction": "eat", "ads_found": False, "note": "Escena original"}), candidates=[])
-        if self.fail_image:
-            self.fail_image = False
-            raise TimeoutError("secret-provider-token")
+            return SimpleNamespace(text=json.dumps({"lifestyle": "An adult naturally tasting the exact food with the real package beside the person.",
+                "comercial": "An artistic advertising hero shot with bold expressive illustration around the unchanged original package.",
+                "ads_found": False, "note": "Original"}), candidates=[])
+        if self.fail_once:
+            self.fail_once = False
+            raise TimeoutError("private-key")
         picture = Image.new("RGB", (1024, 1024), "purple")
-        ImageDraw.Draw(picture).rectangle((300, 200, 700, 800), fill="orange")
-        buffer = io.BytesIO()
-        picture.save(buffer, "PNG")
-        part = SimpleNamespace(thought=False, inline_data=SimpleNamespace(mime_type="image/png", data=buffer.getvalue()))
+        ImageDraw.Draw(picture).rectangle((250, 200, 750, 850), fill="orange")
+        stream = io.BytesIO()
+        picture.save(stream, "PNG")
+        part = SimpleNamespace(thought=False, inline_data=SimpleNamespace(mime_type="image/png", data=stream.getvalue()))
         return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
 
 
 @pytest.fixture
-def motor(tmp_path, monkeypatch):
-    import google.genai.types as types
-    contract = ModuleType("app_generation_contract")
-    contract.__file__ = str(tmp_path / "app_generation_contract.py")
-    exec("import os,re,json\nfrom google.genai import types\n" + extract(source_at("app.py").decode(), {
-        "PROMPT_HD", "PUNTUACION_MINIMA_QA", "MODELO_TEXTO", "ERRORES_IA", "_imagen_para_ia", "_extraer_json", "_validar_con_vision"}), contract.__dict__)
-    monkeypatch.setitem(sys.modules, "app_generation_contract", contract)
-    Image.new("RGBA", (100, 100), (255, 0, 0, 180)).save(tmp_path / "logo_rincon_asia.png")
-    Image.new("RGB", (200, 300), "blue").save(tmp_path / "reference.jpg")
-    (tmp_path / "inventario_completo.csv").write_text("sku,nombre_producto,Marca,categorias,referencias_locales\n00123,Pocky,Glico,Dulces>Galletas,reference.jpg\n")
+def bulk(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("original_bulk_colab", Path("colab/generation_backup.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     fake = FakeGemini()
-    instance = ColabGenerator(tmp_path, client=fake)
-    return instance, fake
+    module.client = fake
+    monkeypatch.setattr(module.time, "sleep", lambda *args: None)
+    Image.new("RGBA", (100, 80), (255, 0, 0, 160)).save(tmp_path / "logo_rincon_asia.png")
+    reference = tmp_path / "reference.png"
+    Image.new("RGB", (300, 400), "blue").save(reference)
+    (tmp_path / "inventario_completo.csv").write_text("sku,nombre_producto,Marca,Web link imagen\nPOCK,Pocky,Glico,https://example.test/reference.png\n")
+    def download(url, sku):
+        target = tmp_path / "download.png"
+        shutil.copy2(reference, target)
+        return str(target)
+    monkeypatch.setattr(module, "descargar_imagen_referencia", download)
+    return module, fake, tmp_path
 
 
-def test_audit_preserves_leading_zero_sku_and_never_calls_provider(motor):
-    instance, fake = motor
-    report = instance.audit()
-    assert report.iloc[0]["sku"] == "00123"
-    assert report.iloc[0]["imagenes_faltantes"] == "1_hd,2_uso,3_comercial"
-    assert fake.calls == []
-    with pytest.raises(ValueError, match="confirma"):
-        instance.batch()
-    assert fake.calls == []
+def test_original_audit_does_not_call_gemini(bulk):
+    module, fake, folder = bulk
+    assert module.main(["--base-dir", str(folder), "--solo-auditoria"]) == 0
+    assert fake.calls == [] and (folder / "faltantes.csv").is_file()
 
 
-def test_uses_one_shared_brief_and_exact_app_slots_then_saves_only_on_approval(motor):
-    instance, fake = motor
-    result = instance.batch(confirm=True, workers=1)
-    assert list(result.status) == ["candidate"] * 3
-    assert len([call for call in fake.calls if call["model"] == "gemini-2.5-flash"]) == 1
-    images = [call for call in fake.calls if call["model"] == "gemini-3.1-flash-image"]
-    assert len(images) == 3
-    assert instance.contract.PROMPT_HD in images[0]["contents"][-1]
-    assert all(creative_pipeline.FIDELITY in call["contents"][-1] for call in images)
-    assert all(call["config"].image_config.aspect_ratio == "1:1" for call in images)
-    assert not instance.output.exists()
-    assert instance.audit().iloc[0]["por_revisar"] == "1_hd,2_uso,3_comercial"
-    instance.batch(confirm=True)
-    assert len(fake.calls) == 4, "Re-running does not charge for staged images"
-    with pytest.raises(ValueError):
-        instance.approve(skus=["00123"])
-    saved = instance.approve(skus=["00123"], slots=["1_hd"], confirm=True)
-    assert Path(saved[0]).name == "00123_1_hd.jpg"
-    assert (instance.output / "00123_1_hd_raw.jpg").is_file()
-    assert not (instance.output / "00123_2_uso.jpg").exists()
+def test_original_batch_generates_directly_into_drive_and_skips_existing_files(bulk):
+    module, fake, folder = bulk
+    assert module.main(["--base-dir", str(folder), "--workers", "4"]) == 0
+    files = sorted((folder / "imagenes_generadas").glob("*.jpg"))
+    assert {p.name for p in files} == {"POCK_1_hd.jpg", "POCK_2_uso.jpg", "POCK_3_comercial.jpg"}
+    assert len(fake.calls) == 4  # One shared creative brief, three image requests.
+    image_calls = [call for call in fake.calls if call["model"] == "gemini-3.1-flash-image"]
+    assert module.PROMPT_HD in image_calls[0]["contents"][-1]
+    assert all(module.FIDELITY in call["contents"][-1] for call in image_calls)
+    assert all(call["config"].image_config.aspect_ratio == "1:1" for call in image_calls)
+    before = {p.name: p.read_bytes() for p in files}
+    assert module.main(["--base-dir", str(folder)]) == 0
+    assert len(fake.calls) == 4 and before == {p.name: p.read_bytes() for p in files}
+    assert not (folder / "colab_respaldo_generacion").exists()
 
 
-def test_corrections_use_raw_original_references_and_history_without_overwriting(motor):
-    instance, fake = motor
-    instance.batch(slots=["1_hd"], confirm=True)
-    previous = dict(instance._record("00123", "1_hd"))
-    instance.correct("00123", "1_hd", "Conserva la geometría", confirm=True)
-    last = fake.calls[-1]
-    assert "PREVIOUS GENERATED IMAGE TO EDIT" in str(last["contents"])
-    assert "Conserva la geometría" in last["contents"][-1]
-    # The second attached image is the previous unbranded raw, compressed by the app helper.
-    from gemini_gateway import image_part
-    attachments = [part for part in last["contents"] if hasattr(part, "inline_data")]
-    assert attachments[-1].inline_data.data == image_part(previous["raw"]).inline_data.data
-    assert Path(previous["raw"]).exists() and Path(previous["image"]).exists()
-    assert instance._record("00123", "1_hd")["history"] == ["Conserva la geometría"]
-    assert not instance.output.exists()
+def test_failed_image_does_not_block_the_other_original_slots(bulk):
+    module, fake, folder = bulk
+    fake.fail_once = True
+    assert module.main(["--base-dir", str(folder)]) == 2
+    output = folder / "imagenes_generadas"
+    assert not (output / "POCK_1_hd.jpg").exists()
+    assert (output / "POCK_2_uso.jpg").is_file() and (output / "POCK_3_comercial.jpg").is_file()
+    assert len([call for call in fake.calls if call["model"] == "gemini-3.1-flash-image"]) == 3
 
 
-def test_uncertain_result_does_not_retry_and_other_slots_continue(motor):
-    instance, fake = motor
-    fake.fail_image = True
-    result = instance.batch(confirm=True, workers=1)
-    assert list(result.status) == ["warning", "candidate", "candidate"]
-    assert "secret-provider-token" not in str(result.to_dict())
-    assert instance.audit().iloc[0]["resultado_incierto"] == "1_hd"
-    before = len(fake.calls)
-    instance.batch(confirm=True)
-    assert len(fake.calls) == before
-    instance.allow_retry("00123", "1_hd", confirm=True)
-    instance.batch(slots=["1_hd"], confirm=True)
-    assert len(fake.calls) == before + 1
-
-
-def test_regeneration_preserves_canonical_until_explicit_approval_and_creates_backup(motor):
-    instance, fake = motor
-    instance.batch(slots=["1_hd"], confirm=True)
-    instance.approve(skus=["00123"], confirm=True)
-    canonical = instance.output / "00123_1_hd.jpg"
-    old = canonical.read_bytes()
-    instance.regenerate("00123", "1_hd", confirm=True)
-    assert canonical.read_bytes() == old
-    assert "PREVIOUS GENERATED IMAGE TO EDIT" not in str(fake.calls[-1]["contents"])
-    instance.approve(skus=["00123"], confirm=True)
-    assert any(p.read_bytes() == old for p in (instance.work / "backups").glob("*/00123_1_hd.jpg"))
-
-
-def test_optional_qa_uses_exact_inspector_and_never_regenerates_automatically(motor):
-    instance, fake = motor
-    instance.batch(slots=["1_hd"], automatic_review=True, confirm=True)
-    entry = instance._record("00123", "1_hd")
-    assert entry["qa"]["aprobada"] is False and entry["qa"]["puntuacion"] == 60
-    assert entry["status"] == "candidate"
-    assert len(fake.calls) == 2
-
-
-def test_style_selection_uses_two_direct_commercial_examples_with_original_png_priority(motor):
-    instance, fake = motor
-    instance.output.mkdir()
-    for name in ("old_3.png", "recent_3_comercial.jpg", "catalog_1_hd.jpg"):
-        Image.new("RGB", (1200, 1200), "orange").save(instance.output / name)
-    nested = instance.output / "backups"
-    nested.mkdir()
-    Image.new("RGB", (1200, 1200), "blue").save(nested / "foreign_3.png")
-    instance.batch(slots=["3_comercial"], confirm=True)
-    assert len(instance.styles) == 2
-    assert len([p for p in fake.calls[-1]["contents"] if isinstance(p, str) and p.startswith("STYLE ONLY")]) == 2
-
-
-def test_notebook_embeds_unchanged_modules_and_compression_without_outputs(tmp_path):
-    original = tmp_path / "original.ipynb"
-    original.write_text(json.dumps({"cells": [{}, {"source": ["print('legacy compression')"]}], "metadata": {}}))
-    target = tmp_path / "backup.ipynb"
-    build(original, target)
-    notebook = json.loads(target.read_text())
-    bootstrap = next(c for c in notebook["cells"] if c["metadata"]["id"] == "rda-frozen-engine")
-    import ast, hashlib
-    tree = ast.parse("".join(bootstrap["source"]))
-    values = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body
-              if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in {"BUNDLE", "MANIFEST"}}
-    decoded = json.loads(zlib.decompress(base64.b64decode(values["BUNDLE"])))
-    for name in ("creative_pipeline.py", "gemini_gateway.py", "product_generation.py"):
-        raw = base64.b64decode(decoded[name])
-        assert raw == source_at(name)
-        assert hashlib.sha256(raw).hexdigest() == values["MANIFEST"][name]
-    for cell in notebook["cells"]:
-        if cell["cell_type"] == "code":
-            assert cell["outputs"] == []
-            ast.parse("".join(cell["source"]))
-    legacy = next(c for c in notebook["cells"] if c["metadata"]["id"] == "2TLApgi7qMS4")
-    assert "EJECUTAR_COMPRESION_HISTORICA = False" in "".join(legacy["source"])
+def test_shared_creative_plan_uses_two_style_examples_from_the_original_folder(bulk):
+    module, fake, folder = bulk
+    output = folder / "imagenes_generadas"
+    output.mkdir()
+    temporary = folder / "imagenes_temporales"
+    temporary.mkdir()
+    for name in ("original_3.png", "new_3_comercial.jpg"):
+        Image.new("RGB", (1200, 1200), "orange").save(output / name)
+    module.OUTPUT_DIR, module.TEMP_DIR = str(output), str(temporary)
+    module.investigar_lifestyle("Pocky", "Galleta", marca="Glico")
+    module.investigar_comercial("Pocky", "Glico", "Galleta")
+    assert len(fake.calls) == 1
+    assert len(module._estilos_comerciales()) == 2
+    assert len([part for part in fake.calls[0]["contents"] if isinstance(part, str) and part.startswith("STYLE EXAMPLE")]) == 2
