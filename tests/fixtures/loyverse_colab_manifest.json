@@ -1,0 +1,29 @@
+{
+  "source_sha256": "d3eac3b43a17abd46c7a5ff1d6a01b4b12b48b5eec68e86d7d2cbc5a34dbc801",
+  "functions": {
+    "api": "7518d6eb16fb469fb8a1e0e0ca5cbaef8e6331c70523d6ae1206870adb7517ba",
+    "listar": "bae7fb43a98667a8df21863310a4790a0b05da25ad7078fa6b88abda769fb3c7",
+    "leer": "ee3bcd6869eb603abc2436db52c28275f103c13bd254a50c6513669fb3945ed1",
+    "parent_sku": "50aed8e5b0464d65994dcc685044304940e168e1789054f90a454e153eee4146",
+    "hijos": "5a0f71d560bcc24fa65dfc3fb2324ae7cccfd3a2202584a729ad0d3325aea802",
+    "indexar_item": "8fc4f8d6881d09744a9d5d6c07d9779f67803875707c5af697c35827749dcbd8",
+    "variante_existente": "291adcd345da9824fb29e5664c37ffa077d7ae4b4f3b20d92f5c4e720fa8ee61",
+    "padre_existente": "d9d951ed4828a066a90f6b09d07d5716ae63c4a7adecd628b96724c1253c27c2",
+    "precio": "defc720fd7ddb562cee8581020813b9b196c0f27fa5a41c64a58f91a86028ca8",
+    "descripcion": "65eb865c36e7f93d7ccb94a2cf17e0a575ec88be25ddb3f43aba32a425a616d2",
+    "categoria_id": "7613f922f034dc5e0d5188659b1654e83cd6c26ed1a9210d2707dce602f15ffd",
+    "barcode": "5d128f506b8317c26f9e2a08e7648e728b42b9e37379624d4cdc5784a36d28be",
+    "datos_variante": "51f60e8def58ef0de68ffa8c675166c4e55e745c11edfb5c340c2dfd214e4183",
+    "atributo": "e4af0c10ad28cffd4789cf46d7f02589d39a61504d2968d53c7d98a32d7ad450",
+    "cargar_indice_imagenes": "6a74122f9db3766c47b1acfc77831d02194615def4836a9a6ac733a095d92a34",
+    "imagen_principal": "5f80793f08b60180f3ee34604aadd20c7bd6c8a844947e95491c9b074b9f0ef8",
+    "subir_imagen": "60a3b08ce1373cadf52d9b0ed6411fe2d3b12531c03fbff4d4f456dbaa696b06",
+    "validar_nombre": "bd9ed47011fc3a13b23c74b59050566bca375d5fa5b1205ef67a6b53a5b74e02",
+    "construir_simple": "959df414d4c73c0e2dad5a5967fad7b81ae685d0d38ca48601a0ce1f7697d0c7",
+    "construir_familia": "409db9f9e9f8e0691e56a37089cb09aadb3f12fd3bf85711599b5a2eea417710",
+    "resolver": "64943c046c55e1aba76face64cb8aafeb68704561718b45127cd32198f520e83",
+    "crear_seleccion": "135dde08bfde4a9555873dcacbc439dc05caebb582b16f77ca9276152741e429",
+    "subir_imagen_si_existe": "9a6ff85ae92eae39e61e8db1425930adcd041a9d198126a776514fd26d3690fa"
+  },
+  "fingerprint": "source-sha256"
+}

@@ -1381,6 +1381,8 @@ def retry(job_id: str, data: RetryInput, value=Depends(context)):
             raise HTTPException(422, "Solo se reintentan trabajos fallidos.")
         if old.kind not in SUPPORTED_JOB_KINDS:
             raise HTTPException(410, "Este tipo de trabajo fue retirado; se conservó su historial.")
+        if old.kind == "loyverse_export":
+            raise HTTPException(409, "Reintenta desde Loyverse para conservar la cuenta, sucursal y comprobación de SKU.")
         if old.kind not in {"generation", "enrichment"}:
             admin(value)
         if (

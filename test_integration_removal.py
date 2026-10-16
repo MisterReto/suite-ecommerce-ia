@@ -82,11 +82,16 @@ def test_drive_legacy_naming_keeps_exact_and_canonical_matches():
     assert [row["resolved_filename"] for row in refs] == ["SKU_1_hd.jpg", "SKU_2_uso.jpg", "SKU_3_comercial.jpg"]
     assert all(row["resolution"] == "fallback" for row in refs)
 
-def test_frontend_has_no_external_store_controls_and_keeps_capture_flow():
+def test_legacy_controls_stay_retired_and_new_loyverse_is_separate_from_capture():
     for name in ("frontend/app/page.tsx", "frontend/components/CaptureStudio.tsx",
                  "frontend/components/InventoryTools.tsx", "frontend/next.config.ts"):
         content = (ROOT / name).read_text(encoding="utf8").lower()
-        assert "loyverse" not in content and "wordpress" not in content
+        assert "wordpress" not in content
+        if name != "frontend/app/page.tsx":
+            assert "loyverse" not in content
+        else:
+            assert 'import("../components/loyversepublisher")' in content
+            assert "/loyverse/connect" not in content
         assert "/api/platform/ecommerce/" not in content
     capture = (ROOT / "frontend/components/CaptureStudio.tsx").read_text(encoding="utf8")
     for endpoint in ("/api/analyze", "/api/find-variants", "/api/family-cover",

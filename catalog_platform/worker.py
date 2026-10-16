@@ -306,6 +306,9 @@ def save_asset(job, value, drive):
 def process(job):
     if job["kind"] not in SUPPORTED_JOB_KINDS:
         raise ValueError("Este tipo de trabajo fue retirado. Se conservó su historial y no se ejecutó.")
+    if job["kind"] == "loyverse_export":
+        from .loyverse_jobs import process as export_loyverse
+        return export_loyverse(job, OWNER)
     if job["kind"] == "woocommerce_export":
         from .woocommerce_jobs import process as export_woocommerce
         return export_woocommerce(job, OWNER)
@@ -396,6 +399,8 @@ def execute_job(job_id):
             message = (("Carga terminada. Productos publicados en WooCommerce." if job["payload"].get("options", {}).get("status") == "publish"
                         else "Carga terminada. Productos nuevos en borrador.") if job["kind"] == "woocommerce_export"
                        else "Completado. Revisa el resultado antes de guardar.")
+            if job["kind"] == "loyverse_export":
+                message = "Carga Loyverse terminada. Inventario y precios existentes conservados."
             queue.finish(job_id, OWNER, True, message)
         return {"executed": True}
     except queue.JobCancelled:

@@ -2,7 +2,11 @@
 
 Aplicación Next.js/React, FastAPI y Image Worker para capturar productos, analizarlos con Gemini, detectar coincidencias, crear familias, generar imágenes, revisarlas y guardarlas en Google Drive y el catálogo.
 
-La rama `cleanup/remove-store-integrations-20261012` retira las integraciones activas WooCommerce/WordPress y Loyverse. Conserva PostgreSQL, Redis/RQ, OAuth Google, Drive, `inventario_completo`, los prompts/modelos y la generación masiva. No se ha desplegado esta limpieza ni se han modificado servicios históricos.
+La versión actual usa Next.js, FastAPI y el worker existente. Los cargadores
+aceptados de WooCommerce y [Loyverse POS](docs/LOYVERSE.md) funcionan de forma
+independiente sobre Sheets y Drive. Loyverse permite conexiones personales
+cifradas, selección de sucursal y publicación confirmada mediante trabajos.
+La sincronización automática de inventario permanece desactivada.
 
 ## Entender el proyecto
 

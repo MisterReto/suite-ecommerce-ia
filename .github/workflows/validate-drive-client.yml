@@ -10,6 +10,7 @@ on:
       - agent/stabilize-architecture-20261006
       - agent/restore-functional-parity-20261008
       - feature/woocommerce-and-product-removal-20261009
+      - feature/loyverse-colab-multiconnection
       - cleanup/remove-store-integrations-20261012
   pull_request:
     branches:
@@ -125,9 +126,13 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
           TEST_REDIS_URL: redis://localhost:6379/0
-        run: python -m pytest test_catalog_platform.py test_catalog_controls.py test_stabilization.py test_free_render.py test_functional_parity.py test_web_sessions.py test_integration_removal.py test_sheet_catalog_sync.py test_product_edit.py -q
+        run: |
+          python -m pytest test_catalog_platform.py test_catalog_controls.py test_stabilization.py test_free_render.py test_functional_parity.py test_web_sessions.py test_integration_removal.py test_sheet_catalog_sync.py test_product_edit.py -q
+          python -m pytest test_loyverse_colab.py -q
       - name: Publicación Colab individual, lotes y prioridad de imágenes
-        run: python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_woocommerce_compare.py test_generation_contract.py -q
+        run: |
+          python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_woocommerce_compare.py test_generation_contract.py -q
+          python -m pytest test_loyverse_colab.py -q
       - name: Evidencia visual de navegación y fallos del navegador
         if: always()
         uses: actions/upload-artifact@v4

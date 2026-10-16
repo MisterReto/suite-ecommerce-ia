@@ -13,6 +13,7 @@ GROUPS = [
     ("recuperacion", ["pytest", "test_catalog_platform.py", "test_catalog_controls.py", "test_stabilization.py", "test_free_render.py", "test_functional_parity.py", "test_web_sessions.py", "-q", "-p", "no:cacheprovider"]),
     ("sheets-drive", ["pytest", "test_sheet_catalog_sync.py", "-q", "-p", "no:cacheprovider"]),
     ("woocommerce", ["pytest", "test_woocommerce_colab.py", "test_woocommerce_api.py", "test_woocommerce_queue.py", "test_generation_contract.py", "-q", "-p", "no:cacheprovider"]),
+    ("loyverse", ["pytest", "test_loyverse_colab.py", "-q", "-p", "no:cacheprovider"]),
 ]
 
 

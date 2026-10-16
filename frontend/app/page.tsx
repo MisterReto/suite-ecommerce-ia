@@ -39,6 +39,7 @@ import { ensureApiReady, wakeServices } from "@/lib/service-readiness";
 import DriveClassification from "@/components/DriveClassification";
 import InventoryTools from "@/components/InventoryTools";
 const WooCommercePublisher = dynamic(() => import("../components/WooCommercePublisher"), { ssr: false, loading: () => <p>Cargando publicación…</p> });
+const LoyversePublisher = dynamic(() => import("../components/LoyversePublisher"), { ssr: false, loading: () => <p>Cargando Loyverse…</p> });
 const CaptureStudio = dynamic(() => import("../components/CaptureStudio"), { ssr: false, loading: () => <p>Cargando captura…</p> });
 
 // Nombres de las cinco secciones de navegación; no son permisos del servidor.
@@ -510,7 +511,7 @@ export default function Platform() {
         if (tool !== "capture") setGenerationTab(tool);
       }
       if (hash === "inventory" && ["catalog", "count"].includes(tool)) setInventoryTab(tool);
-      if (hash === "more" && ["connections", "jobs", "exchange", "settings", "help", "woocommerce"].includes(tool)) setMoreTab(tool);
+      if (hash === "more" && ["connections", "jobs", "exchange", "settings", "help", "woocommerce", "loyverse"].includes(tool)) setMoreTab(tool);
       if (hash === "more" && tool === "tools") { setSection("inventory"); setInventoryTab("count"); }
     };
     // Refleja falta de conexión del navegador en la interfaz.
@@ -805,6 +806,7 @@ export default function Platform() {
     ["inventory/catalog", "Catálogo y stock"], ["inventory/count", "Conteo y movimientos"],
   ] : section === "more" ? [
     ["more/woocommerce", "Publicar en WooCommerce"],
+    ["more/loyverse", "Loyverse POS"],
     ["more/connections", "Conexiones"], ["more/jobs", "Trabajos y logs"],
     ["more/exchange", "Importar / Exportar"], ["more/settings", "Ajustes"],
     ["inventory/count", "Conteo y movimientos"],
@@ -2234,6 +2236,11 @@ export default function Platform() {
             namespace={(session.email || "") + ":" + (session.folder_id || "")}
             canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask}
             openPublisher={() => { location.hash = "more/woocommerce"; setSection("more"); setMoreTab("woocommerce"); }} />
+        )}
+
+        {section === "more" && moreTab === "loyverse" && session.authenticated && (
+          <LoyversePublisher key={(session.email || "") + ":" + (session.folder_id || "")}
+            isAdmin={isAdmin} online={online} api={api} />
         )}
 
         {section === "more" && moreTab === "woocommerce" && session.authenticated && (
