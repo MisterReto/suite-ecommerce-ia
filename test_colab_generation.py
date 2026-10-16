@@ -1,11 +1,13 @@
 """Original bulk Colab behavior, with only app prompts/image methods adapted."""
 import ast
+from copy import deepcopy
 import hashlib
 import importlib.util
 import io
 import json
 from pathlib import Path
 import shutil
+import sys
 from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
@@ -36,11 +38,37 @@ UNCHANGED = {
 }
 
 
+def original_method_dump(node):
+    """Keep the accepted Python 3.12 fingerprints portable without replacing them."""
+    node = deepcopy(node)
+    for item in ast.walk(node):
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and "type_params" not in item._fields:
+            # Python 3.11 predates PEP 695. The accepted methods are not generic;
+            # represent their absent type parameters exactly as Python 3.12 does.
+            item._fields = (*item._fields, "type_params")
+            item.type_params = []
+    # Python 3.13 added omission of empty fields to ast.dump's default output.
+    options = {"show_empty": True} if sys.version_info >= (3, 13) else {}
+    return ast.dump(node, include_attributes=False, **options)
+
+
 def test_original_csv_drive_logo_audit_and_bulk_methods_are_unchanged():
     tree = ast.parse(Path("colab/generation_backup.py").read_text())
     nodes = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     for name, expected in UNCHANGED.items():
-        assert hashlib.sha256(ast.dump(nodes[name], include_attributes=False).encode()).hexdigest() == expected, name
+        assert hashlib.sha256(original_method_dump(nodes[name]).encode()).hexdigest() == expected, name
+
+
+def test_original_method_fingerprints_ignore_only_interpreter_representation():
+    tree = ast.parse(Path("colab/generation_backup.py").read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "obtener_api_key")
+    before = original_method_dump(node)
+    for item in ast.walk(node):
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            item._fields = tuple(field for field in item._fields if field != "type_params")
+    assert original_method_dump(node) == before
+    node.body.append(ast.Raise(exc=ast.Constant(value="Changed behavior"), cause=None))
+    assert original_method_dump(node) != before
 
 
 def test_inline_prompts_and_pure_image_functions_match_the_app():
