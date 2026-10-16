@@ -524,6 +524,24 @@ def test_drive_log_failure_keeps_sql_results_and_download(loyverse, monkeypatch)
     assert download.status_code == 200 and download.json()["events"]
 
 
+def test_job_history_paginates_without_losing_account_scope_or_global_counts(loyverse):
+    env = loyverse
+    a = connect(env)
+    reviewed = preview(env, a)
+    ids = {submit(env, reviewed).json()["jobs"][0]["id"] for _ in range(3)}
+    rows = []
+    for offset in range(3):
+        page = env.client.get("/api/loyverse/jobs", params={"offset": offset, "limit": 1}).json()
+        assert page["total"] == 3 and page["summary"] == {"queued": 3}
+        assert len(page["jobs"]) == 1
+        rows.append(page["jobs"][0]["id"])
+    assert set(rows) == ids and len(set(rows)) == 3
+    assert env.client.get("/api/loyverse/jobs", params={"offset": 3, "limit": 1}).json()["jobs"] == []
+    env.value["email"] = "editor@example.test"
+    empty = env.client.get("/api/loyverse/jobs").json()
+    assert empty == {"jobs": [], "total": 0, "summary": {}}
+
+
 def test_ambiguous_reference_and_second_remote_attribute_are_blocked(loyverse):
     env = loyverse
     a = connect(env)

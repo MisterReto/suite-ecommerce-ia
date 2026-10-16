@@ -54,6 +54,9 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
   const [review, setReview] = useState<Review>();
   const [confirmation, setConfirmation] = useState("");
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobsPage, setJobsPage] = useState(0);
+  const [jobsTotal, setJobsTotal] = useState(0);
+  const [jobsSummary, setJobsSummary] = useState<Record<string, number>>({});
   const [pendingControl, setPendingControl] = useState<{ job: Job; action: "resume" | "retry" }>();
   const [deleting, setDeleting] = useState<Connection>();
   const [busy, setBusy] = useState(false);
@@ -62,6 +65,7 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
   const [notice, setNotice] = useState("");
   const guard = useRef(false);
   const revision = useRef(0);
+  const jobsRevision = useRef(0);
   const requestKeys = useRef(new Map<string, string>());
   const destination = connections.find(c => c.id === connectionId);
   const disabled = busy || !online;
@@ -77,13 +81,20 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
     const result = await api<{ connections: Connection[] }>("/api/loyverse/connections");
     setConnections(result.connections);
   }, [api]);
-  const loadJobs = useCallback(async () => {
-    const result = await api<{ jobs: Job[] }>("/api/loyverse/jobs"); setJobs(result.jobs);
-  }, [api]);
+  const loadJobs = useCallback(async (page = jobsPage) => {
+    const version = ++jobsRevision.current;
+    const result = await api<{ jobs: Job[]; total: number; summary: Record<string, number> }>(
+      "/api/loyverse/jobs?offset=" + page * 50 + "&limit=50");
+    if (version === jobsRevision.current) {
+      setJobs(result.jobs); setJobsTotal(result.total); setJobsSummary(result.summary);
+    }
+  }, [api, jobsPage]);
   useEffect(() => {
     void loadConnections().catch(e => setError(e.message));
+  }, [loadConnections]);
+  useEffect(() => {
     void loadJobs().catch(e => setError(e.message));
-  }, [loadConnections, loadJobs]);
+  }, [loadJobs]);
   useEffect(() => {
     if (!connections.some(c => c.id === connectionId)) {
       setConnectionId(connections[0]?.id || ""); setStoreId(connections[0]?.default_store_id || "");
@@ -112,7 +123,7 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
     const timer = setTimeout(() => void loadCatalog().catch(e => setError(e.message)), 350);
     return () => clearTimeout(timer);
   }, [loadCatalog, online]);
-  const hasActive = jobs.some(active);
+  const hasActive = jobs.some(active) || ["queued", "processing", "cancelling"].some(s => (jobsSummary[s] || 0) > 0);
   useEffect(() => {
     if (!hasActive || !online) return;
     let fetching = false;
@@ -143,7 +154,7 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
     let key = requestKeys.current.get(review.preview_token);
     if (!key) { key = crypto.randomUUID(); requestKeys.current.set(review.preview_token, key); }
     await api("/api/loyverse/jobs", "POST", { preview_token: review.preview_token, request_key: key, confirmation });
-    clearReview(); setSelected([]); await loadJobs(); setTab("jobs"); setNotice("Lote guardado en cola para la cuenta y sucursal revisadas.");
+    clearReview(); setSelected([]); setJobsPage(0); await loadJobs(0); setTab("jobs"); setNotice("Lote guardado en cola para la cuenta y sucursal revisadas.");
   });
 
   return <div className="ly-publisher" aria-label="Loyverse POS">
@@ -266,7 +277,13 @@ export default function LoyversePublisher({ api, isAdmin, online }: { api: Api; 
     </section>}
 
     {tab === "jobs" && <section className="p-card"><h3>Progreso y resultados</h3>
-      <button type="button" className="button secondary" disabled={disabled} onClick={() => void attempt(loadJobs)}>Actualizar trabajos</button>
+      <button type="button" className="button secondary" disabled={disabled} onClick={() => void attempt(() => loadJobs())}>Actualizar trabajos</button>
+      <p>{jobsTotal} trabajos · {jobsSummary.completed || 0} completados · {jobsSummary.failed || 0} fallidos · {(jobsSummary.queued || 0) + (jobsSummary.processing || 0)} pendientes</p>
+      <div className="p-toolbar" aria-label="Páginas de resultados Loyverse">
+        <button type="button" className="button secondary" disabled={disabled || jobsPage === 0} onClick={() => setJobsPage(p => p - 1)}>Trabajos anteriores</button>
+        <span>Página {jobsPage + 1} de {Math.max(1, Math.ceil(jobsTotal / 50))}</span>
+        <button type="button" className="button secondary" disabled={disabled || (jobsPage + 1) * 50 >= jobsTotal} onClick={() => setJobsPage(p => p + 1)}>Más resultados</button>
+      </div>
       {!jobs.length && <p>Aún no hay publicaciones de Loyverse.</p>}
       {pendingControl && <div className="p-alert"><p>{pendingControl.action === "retry" ? "Reintentar" : "Reanudar"} {pendingControl.job.selection.sku} en {pendingControl.job.connection_name} / {pendingControl.job.store_name}.</p>
         <p>Se comprobarán de nuevo los SKU antes de crear artículos o variantes faltantes.</p>

@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, SecretStr
-from sqlalchemy import select
+from sqlalchemy import select, func
 from .api import context, admin
 from .database import transaction
 from .models import GenerationJob
@@ -235,15 +235,18 @@ def submit(data: Confirm, value=Depends(context)):
 
 
 @router.get("/jobs")
-def jobs(value=Depends(context)):
+def jobs(offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=200), value=Depends(context)):
     with transaction() as db:
-        rows = db.scalars(select(GenerationJob).where(GenerationJob.tenant_id == value["platform_tenant"],
-            GenerationJob.actor == value["email"], GenerationJob.kind == KIND)
-            .order_by(GenerationJob.created_at.desc()).limit(200)).all()
-        if any(r.status == "queued" for r in rows):
+        rules = (GenerationJob.tenant_id == value["platform_tenant"],
+                 GenerationJob.actor == value["email"], GenerationJob.kind == KIND)
+        rows = db.scalars(select(GenerationJob).where(*rules)
+            .order_by(GenerationJob.created_at.desc(), GenerationJob.id.desc()).offset(offset).limit(limit)).all()
+        summary = dict(db.execute(select(GenerationJob.status, func.count())
+            .where(*rules).group_by(GenerationJob.status)).all())
+        if summary.get("queued"):
             from .worker_wakeup import notify
             notify()
-        return {"jobs": [public_job(r) for r in rows]}
+        return {"jobs": [public_job(r) for r in rows], "total": sum(summary.values()), "summary": summary}
 
 
 class Control(BaseModel):

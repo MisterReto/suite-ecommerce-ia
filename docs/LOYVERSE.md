@@ -27,6 +27,8 @@ No se importan ni se reactivan los módulos históricos retirados.
 7. Sigue cada trabajo en **Progreso y resultados**. Puedes pausar, reanudar,
    cancelar pendientes y reintentar fallidos. Reanudar/reintentar vuelve a
    exigir **PUBLICAR**. Una llamada ya iniciada termina antes de detenerse.
+   El historial usa páginas de 50 trabajos y muestra los totales de todos los
+   estados, incluidos los trabajos que estén en otras páginas.
 
 ## Datos y límites
 
