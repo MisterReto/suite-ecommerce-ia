@@ -183,7 +183,9 @@ def test_published_family_still_requires_specific_permission_to_add_variations(p
     products["FAMILIA"] = {"id": 1, "sku": "FAMILIA", "type": "variable", "status": "publish"}
     response = client.post("/api/woocommerce/preview", json={"selection": {"kind": "family", "sku": "FAMILIA"},
         "options": {"images": False}}, headers=ORIGIN)
-    assert response.status_code == 422 and "Autoriza" in response.json()["detail"]
+    assert response.status_code == 200 and "Autoriza" in response.json()["preview"]["warnings"][0]
+    from test_woocommerce_api import submit
+    assert submit(client, response.json()).status_code == 422
 
 
 def test_simple_sku_cannot_publish_an_existing_variable_product(store):

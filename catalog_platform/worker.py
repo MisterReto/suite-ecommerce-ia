@@ -85,7 +85,7 @@ def generation(job, value, drive):
         "subcategory": product["subcategory"],
         "short_description": product["short_description"],
         "description": product["long_description"],
-        "size": product.get("attributes", {}).get("Tamaño", ""),
+        "size": product.get("size", product.get("attributes", {}).get("Tamaño", "")),
     }
     references = []
     for index, file_id in enumerate(payload["references"]):

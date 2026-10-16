@@ -1006,7 +1006,15 @@ export default function CaptureStudio({
                     <Field label="Sabor, color o variante">
                       <input value={product.variant || ""} maxLength={120} onChange={e => edit("variant", e.target.value)} placeholder="Por confirmar" />
                     </Field>
-                    {Object.entries(product.attributes || {}).map(([name, value]) => <Field key={name} label={name}><input value={value} maxLength={160} onChange={e => edit("attributes", {...product.attributes, [name]: e.target.value})} /></Field>)}
+                    <Field label="Atributo de variación">
+                      <input value={product.attribute} maxLength={80} placeholder="Ej. Sabor"
+                        onChange={e => edit("attribute", e.target.value)} />
+                    </Field>
+                    <Field label="Valor del atributo">
+                      <input value={product.attribute_value} maxLength={120} placeholder="Ej. Camarón, limón y habanero"
+                        onChange={e => edit("attribute_value", e.target.value)} />
+                      <p className="micro-copy left">Un solo atributo por producto. El tamaño y el tipo reconocido se conservan como información descriptiva.</p>
+                    </Field>
                     <Field label="Precio de venta · MXN">
                       <div className="input-affix">
                         <span>$</span>
@@ -1213,23 +1221,6 @@ export default function CaptureStudio({
                             onChange={(e) =>
                               edit("parent_name", e.target.value)
                             }
-                          />
-                        </Field>
-                        <Field label="Atributo">
-                          <input
-                            disabled={busy}
-                            value={product.attribute}
-                            onChange={(e) => edit("attribute", e.target.value)}
-                          />
-                        </Field>
-                        <Field label="Valor de esta variación">
-                          <input
-                            disabled={busy}
-                            value={product.attribute_value}
-                            onChange={(e) =>
-                              edit("attribute_value", e.target.value)
-                            }
-                            placeholder={product.size}
                           />
                         </Field>
                       </div>

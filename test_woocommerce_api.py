@@ -109,7 +109,79 @@ def test_individual_variant_creates_parent_with_all_attributes(publication):
     assert accepted.status_code == 202, accepted.text
     worker.execute_job(accepted.json()["job"]["id"])
     assert products["FAMILIA"]["attributes"][0]["options"] == ["Chocolate", "Fresa"]
+    assert len(products["FAMILIA"]["attributes"]) == 1
+    assert {"key":"_rincon_marca", "value":"Marca original"} in products["FAMILIA"]["meta_data"]
     assert set(variations) == {"V1"}
+
+
+def test_published_family_preview_is_visible_but_requires_explicit_permission(publication):
+    client, _, (calls, products, variations, _) = publication
+    products['FAMILIA'] = {'id': 881, 'sku': 'FAMILIA', 'type': 'variable', 'status': 'publish'}
+    reviewed = preview(client, 'variant', 'V1')
+    assert reviewed['preview']['items'][0]['attribute'] == ['Sabor', 'Chocolate']
+    assert 'ya está publicada' in reviewed['preview']['warnings'][0]
+    assert submit(client, reviewed).status_code == 422
+    assert not variations and all(call['method'] == 'GET' for call in calls)
+    response = client.post('/api/woocommerce/preview', json={'selection': {'kind':'variant','sku':'V1'},
+        'options': {'images':False, 'allow_published_family':True}}, headers=ORIGIN)
+    assert response.status_code == 200 and response.json()['preview']['warnings'] == []
+    assert submit(client, response.json()).status_code == 202
+
+
+def test_published_family_batch_preview_cannot_queue_without_permission(publication):
+    client, _, (calls, products, *_) = publication
+    products['FAMILIA'] = {'id': 881, 'sku': 'FAMILIA', 'type': 'variable', 'status': 'publish'}
+    response = client.post('/api/woocommerce/batch-preview', json={
+        'selections':[{'kind':'simple','sku':'S1'},{'kind':'variant','sku':'V1'}],
+        'options':{'images':False}}, headers=ORIGIN)
+    reviewed = response.json()
+    assert len(reviewed['previews']) == 2 and not reviewed['errors']
+    result = client.post('/api/woocommerce/batch-jobs', json={
+        'preview_token':reviewed['preview_token'],'request_key':uid(),'confirm':True}, headers=ORIGIN)
+    assert result.status_code == 422 and 'Autoriza' in result.text
+    assert all(call['method'] == 'GET' for call in calls)
+    assert client.get('/api/woocommerce/jobs').json()['jobs'] == []
+
+
+def test_family_cannot_publish_two_variation_axes(store):
+    source_data = source()
+    source_data['COMPLETA']['V2']['atributo_nombre'] = 'Tamaño'
+    engine = Exporter(source_data)
+    try:
+        with pytest.raises(ValueError, match='un solo atributo'):
+            engine.preview('variant', 'V1', {'images':False,'stock':False,'tags':False})
+    finally:
+        engine.close()
+
+
+def test_new_compound_flavor_extends_existing_parent_without_losing_options(store):
+    _, products, variations, _ = store
+    products['FAMILIA'] = {'id':881,'sku':'FAMILIA','type':'variable','status':'publish',
+        'attributes':[{'id':18,'name':'Sabor','variation':True,'visible':True,'options':['Vainilla']},
+                      {'name':'Marca','variation':False,'options':['Marca original']}]}
+    data = source()
+    flavor = 'Camarón, Limón y Habanero'
+    data['COMPLETA']['V1']['atributo_valor'] = flavor
+    engine = Exporter(data, write=True)
+    try:
+        engine.execute('variant','V1', {'images':False,'stock':False,'tags':False,'allow_published_family':True,'status':'publish'})
+        assert len(products['FAMILIA']['attributes']) == 1
+        assert products['FAMILIA']['attributes'][0]['options'] == ['Vainilla',flavor,'Fresa']
+        assert variations['V1']['attributes'] == [{'id':18,'option':flavor}]
+    finally:
+        engine.close()
+
+
+def test_unauthorized_parent_extension_never_writes(store):
+    calls, products, *_ = store
+    products['FAMILIA'] = {'id':881,'sku':'FAMILIA','type':'variable','status':'publish','attributes':[]}
+    engine = Exporter(source(), write=True)
+    try:
+        with pytest.raises(ValueError, match='Autoriza'):
+            engine.execute('variant','V1', {'images':False,'stock':False,'tags':False,'status':'publish'})
+        assert all(call['method']=='GET' for call in calls)
+    finally:
+        engine.close()
 
 
 def test_permissions_and_cross_actor_jobs(publication):

@@ -437,6 +437,7 @@ def update_product(data: Product, value=Depends(editor)):
     idle(value)
     current = draft(value)
     product = data.model_dump()
+    product["attributes"] = {data.attribute: data.attribute_value} if data.attribute and data.attribute_value else {}
     try:
         product["barcode"] = barcode(product["barcode"])
     except ValueError as exc:
@@ -512,7 +513,8 @@ def analyze(request: Request, value=Depends(editor)):
                 return
         prompt = (
             "Analiza únicamente los hechos legibles en las fotos del producto. Devuelve JSON con nombre, marca, gramaje, "
-            "tipo_producto, variante (sabor/color/versión), codigo_barras (solo legible), atributos (objeto de textos), "
+            "tipo_producto, variante (sabor/color/versión), codigo_barras (solo legible), "
+            "atributos (objeto con un solo atributo que distingue la variación: Sabor, Color o Tamaño; no añadas el tipo de producto), "
             "campos_inciertos (array de nombres de campos), categoria, subcategoria, desc_corta, desc_larga, etiquetas (array). "
             "Deja lo desconocido vacío y señala los datos inciertos. No inventes ingredientes ni datos comerciales. "
             + DESCRIPTION_RULES + " Categorías existentes: " + json.dumps(categories, ensure_ascii=False)
@@ -553,8 +555,11 @@ def analyze(request: Request, value=Depends(editor)):
             variant=text(data.get("variante"))[:120], attributes=dict(list(attrs.items())[:20]),
             uncertain_fields=list(dict.fromkeys(uncertain))[:20])
         product.sku = recognized_code or runtime.generar_sku_logica(product.name, product.brand, product.size)
-        product.attribute = "Sabor" if product.variant else "Tamaño"
-        product.attribute_value = product.variant or product.size
+        from catalog_platform.attributes import single_attribute
+        chosen = single_attribute(attrs)
+        product.attribute, product.attribute_value = next(iter(chosen.items()),
+            ("Sabor" if product.variant else "Tamaño", product.variant or product.size))
+        product.attributes = {product.attribute: product.attribute_value} if product.attribute_value else {}
         current["product"] = product.model_dump()
         current.pop("brief_key", None)
         current["identity_review"] = capture_bridge.check(value, current["product"])

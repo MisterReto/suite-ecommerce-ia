@@ -225,6 +225,28 @@ class Exporter:
             return result
 
         self.ns["buscar_producto"], self.ns["buscar_variacion"] = find_product, find_variation
+        original_attributes = self.ns["atributos_padre"]
+
+        def one_variation_axis(children):
+            attrs = original_attributes(children)
+            if len(attrs) > 1:
+                raise ValueError("La familia debe usar un solo atributo de variación. "
+                    "Revisa el nombre del atributo en sus variantes antes de subir.")
+            return attrs
+
+        self.ns["atributos_padre"] = one_variation_axis
+        original_base = self.ns["datos_base"]
+
+        def base_with_one_axis(row, kind, stock, tags):
+            payload = original_base(row, kind, stock, tags)
+            if kind == "variable":
+                # Brand is descriptive metadata, never a second variation axis.
+                payload.pop("attributes", None)
+                if row.get("Marca", "").strip():
+                    payload.setdefault("meta_data", []).append({"key": "_rincon_marca", "value": row["Marca"].strip()})
+            return payload
+
+        self.ns["datos_base"] = base_with_one_axis
 
     def close(self):
         self.ns["wc_session"].close()
@@ -301,7 +323,7 @@ class Exporter:
         status = connection_status()
         if not status["configured"] or options["images"] and not status["images_configured"]:
             raise ValueError("Configura las credenciales de WooCommerce/WordPress antes de subir.")
-        parent, selected, _ = self.ns["resolver"](KINDS[kind], sku)
+        parent, selected, children = self.ns["resolver"](KINDS[kind], sku)
         existing = self.ns["buscar_producto"](parent["sku"])
         if existing and existing.get("type") not in {None, "simple" if kind == "simple" else "variable"}:
             raise ValueError("El SKU existente tiene otro tipo de producto en WooCommerce. Revisa la familia antes de continuar.")
@@ -311,6 +333,28 @@ class Exporter:
             allow = all(self.ns["buscar_variacion"](existing["id"], row["sku"]) for row in selected)
         if options.get("status") == "publish" and existing and existing.get("status") not in {"draft", "publish"}:
             raise ValueError("Solo se pueden publicar productos nuevos o borradores. Revisa el estado en WooCommerce.")
+        if existing and selected and any(not self.ns["buscar_variacion"](existing["id"], row["sku"]) for row in selected):
+            if existing.get("status") == "publish" and not allow:
+                raise ValueError("La familia ya está publicada. Autoriza añadir variantes a familias publicadas para continuar.")
+            axis = self.ns["atributos_padre"](children)[0]
+            remote_axes = [attr for attr in existing.get("attributes", []) if attr.get("variation")]
+            if any(attr.get("name", "").casefold() != axis["name"].casefold() for attr in remote_axes):
+                raise ValueError("La familia de WooCommerce usa otro atributo de variación. Revisa su atributo antes de añadir variantes.")
+            old = remote_axes[0] if remote_axes else {}
+            axis["options"] = list(dict.fromkeys([*old.get("options", []), *axis["options"]]))
+            if old.get("id"):
+                axis["id"] = old["id"]
+            payload = {"attributes": [axis]}
+            if parent.get("Marca", "").strip():
+                payload["meta_data"] = [{"key":"_rincon_marca", "value":parent["Marca"].strip()}]
+            if len(existing.get("attributes", [])) != 1 or not set(axis["options"]).issubset(old.get("options", [])):
+                updated = self.ns["wc"]("PUT", f"products/{existing['id']}", data=payload)
+                confirmed = [a for a in updated.get("attributes", []) if a.get("variation")]
+                if (len(updated.get("attributes", [])) != 1 or len(confirmed) != 1
+                        or confirmed[0].get("name", "").casefold() != axis["name"].casefold()
+                        or not set(axis["options"]).issubset(confirmed[0].get("options", []))):
+                    raise ValueError("WooCommerce no confirmó las opciones del atributo del padre. Revisa la familia antes de reintentar.")
+                self.ns["registrar"]("atributo_padre_actualizado", sku=parent["sku"])
         self.ns["ejecutar"](KINDS[kind], sku, imagenes=options["images"], stock=options["stock"],
             tags=options["tags"], permitir_publicada=allow)
         if options.get("status") == "publish":
@@ -327,8 +371,9 @@ class Exporter:
                 self.ns["registrar"]("producto_publicado", sku=parent["sku"], id=result["id"])
         return self.events
 
-    def preflight(self, kind, sku, options=None):
+    def preflight(self, kind, sku, options=None, *, review_only=False):
         """Read the store before review; the worker repeats the lookup before writes."""
+        warnings = []
         if connection_status()["configured"]:
             parent, selected, _ = self.ns["resolver"](KINDS[kind], sku)
             existing = self.ns["buscar_producto"](parent["sku"])
@@ -338,9 +383,13 @@ class Exporter:
                 raise ValueError("Solo se pueden publicar productos nuevos o borradores. Revisa el estado en WooCommerce.")
             if options and existing and existing.get("status") == "publish" and selected and not options.get("allow_published_family"):
                 if any(not self.ns["buscar_variacion"](existing["id"], row["sku"]) for row in selected):
-                    raise ValueError("La familia ya está publicada. Autoriza añadir variantes a familias publicadas para continuar.")
+                    message = "La familia ya está publicada. Autoriza añadir variantes a familias publicadas para continuar."
+                    if not review_only:
+                        raise ValueError(message)
+                    warnings.append(message)
             if existing and kind == "variant":
                 self.ns["buscar_variacion"](existing["id"], selected[0]["sku"])
+        return warnings
 
 
 def fingerprint(source, selection, options):

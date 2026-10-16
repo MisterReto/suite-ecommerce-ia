@@ -58,10 +58,9 @@ def normalize(rows, *, detailed_errors=False):
                     attrs = json.loads(attrs)
                 except ValueError:
                     attrs = {}
-            if row.get("atributo_valor"):
-                attrs[str(row.get("atributo_nombre") or "Tamaño")] = str(
-                    row["atributo_valor"]
-                )
+            from .attributes import single_attribute
+            attrs = single_attribute(attrs, str(row.get("atributo_nombre") or "Tamaño")
+                if row.get("atributo_valor") else "", row.get("atributo_valor"))
 
             def number(key, legacy, default=0):
                 val = row.get(key, row.get(legacy, default))

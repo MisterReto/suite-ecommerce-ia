@@ -645,7 +645,7 @@ def test_new_parent_cover_and_variant_are_atomic_in_master(capture_store, code, 
     with transaction() as db:
         child = db.get(Product, saved["draft"]["master_product_id"])
         parent = db.get(Product, child.parent_id)
-        assert child.product_type == "variation" and child.attributes == {"Sabor":"Chocolate", "Tamaño":"40 g"}
+        assert child.product_type == "variation" and child.attributes == {"Sabor":"Chocolate"}
         assert parent.product_type == "variable" and parent.price is None and parent.stock is None
         assert parent.sku == expected and not parent.barcode
         assert child.sku == p["sku"] and (child.barcode or "") == code

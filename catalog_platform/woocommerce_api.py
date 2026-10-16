@@ -146,7 +146,7 @@ def preview(data: Preview, value=Depends(context)):
         options, selection = data.options.model_dump(), data.selection.model_dump()
         engine = Exporter().load(value, include_images=options["images"])
         public = engine.preview(selection["kind"], selection["sku"], options)
-        engine.preflight(selection["kind"], selection["sku"], options)
+        public["warnings"] = engine.preflight(selection["kind"], selection["sku"], options, review_only=True)
         source = engine.snapshot(selection["kind"], selection["sku"])
         token = fingerprint(source, {**selection, "store": store_url()}, options)
         previews = value.setdefault("woocommerce_previews", {})
@@ -154,7 +154,8 @@ def preview(data: Preview, value=Depends(context)):
             if previews[old]["expires"] < time.time() or len(previews) >= 8:
                 del previews[old]
         previews[token] = {"token": token, "selection": selection, "options": options,
-                           "source": source, "store_url": store_url(), "expires": time.time() + 600}
+                           "source": source, "store_url": store_url(), "expires": time.time() + 600,
+                           "blockers": public["warnings"]}
         return {"preview": public, "preview_token": token, "options": options, "store": store_url()}
     except Exception as exc:
         raise HTTPException(422, safe_error(exc)) from None
@@ -171,6 +172,8 @@ def submit(data: Confirm, value=Depends(context)):
         raise HTTPException(422, "Revisa la vista previa vigente y confirma la carga.")
     if cached["store_url"] != store_url():
         raise HTTPException(409, "La tienda cambió. Prepara una nueva vista previa.")
+    if cached.get("blockers"):
+        raise HTTPException(422, cached["blockers"][0])
     return {"job": enqueue(value, cached, data.request_key)}
 
 
@@ -207,12 +210,13 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
         for selection in selected:
             try:
                 public = engine.preview(selection["kind"], selection["sku"], options)
-                engine.preflight(selection["kind"], selection["sku"], options)
+                public["warnings"] = engine.preflight(selection["kind"], selection["sku"], options, review_only=True)
                 source = engine.snapshot(selection["kind"], selection["sku"])
                 token = fingerprint(source, {**selection, "store": store_url()}, options)
                 previews.append(public)
                 private.append({"token": token, "selection": selection, "options": options,
-                    "source": source, "store_url": store_url(), "expires": time.time() + 600})
+                    "source": source, "store_url": store_url(), "expires": time.time() + 600,
+                    "blockers": public["warnings"]})
             except (ValueError, KeyError) as exc:
                 errors.append({"selection": selection, "message": safe_error(exc)})
         if sum(len(item["items"]) for item in previews) > int(os.getenv("WOOCOMMERCE_MAX_BATCH_PRODUCTS", "1000")):
@@ -242,6 +246,8 @@ def submit_batch(data: Confirm, value=Depends(context)):
         raise HTTPException(422, "Revisa un lote vigente sin errores y confirma la carga.")
     if cached["store_url"] != store_url():
         raise HTTPException(409, "La tienda cambió. Revisa el lote otra vez.")
+    if any(item.get("blockers") for item in cached["previews"]):
+        raise HTTPException(422, "Autoriza añadir variantes a las familias publicadas y revisa el lote otra vez.")
     with transaction() as db:
         key = "wc:" + data.request_key
         from .queue import request_lock

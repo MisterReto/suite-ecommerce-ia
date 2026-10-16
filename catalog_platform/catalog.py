@@ -172,6 +172,25 @@ def save_product(
             raise ValueError("La variación requiere un padre variable válido.")
     if data.get("product_type") == "variation" and not data.get("parent_id"):
         raise ValueError("Selecciona el padre de la variación.")
+    if "attributes" in data:
+        attrs = data["attributes"]
+        if len(attrs) > 1:
+            raise ValueError("Usa un solo atributo por producto; es el que define la variación.")
+        if data.get("product_type") == "variation" and attrs:
+            name, option = next(iter(attrs.items()))
+            if isinstance(option, list):
+                if len(option) != 1:
+                    raise ValueError("Una variación debe tener un solo valor de atributo.")
+                attrs = {name: option[0]}
+            parent_attrs = parent.attributes or {}
+            if len(parent_attrs) > 1:
+                raise ValueError("Corrige el padre para que use un solo atributo de variación.")
+            if parent_attrs:
+                parent_name = next(iter(parent_attrs))
+                if parent_name.casefold() != name.casefold():
+                    raise ValueError(f"El padre usa el atributo {parent_name}; selecciona ese atributo.")
+                attrs = {parent_name: next(iter(attrs.values()))}
+            data = {**data, "attributes": attrs}
     for field in FIELDS:
         if field == "stock":
             continue

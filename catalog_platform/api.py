@@ -19,6 +19,7 @@ from .security import require_role, role_for, cipher, member
 from .catalog import serialize, product_for, save_product, audit, csv_export, move_stock
 from .job_types import SUPPORTED_JOB_KINDS
 from .accounts import persist
+from .attributes import image_product
 from .queue import available, worker_ready, request_lock, dispatch, request_cancel
 
 router = APIRouter(prefix="/api/platform")
@@ -123,10 +124,10 @@ class ProductInput(BaseModel):
     @field_validator("attributes")
     @classmethod
     def bounded_attributes(cls, value):
-        if len(value) > 30:
-            raise ValueError("Máximo 30 atributos.")
+        if len(value) > 1:
+            raise ValueError("Usa un solo atributo por producto; es el que define la variación.")
         for key, item in value.items():
-            if len(key) > 80 or not isinstance(item, (str, list)):
+            if not key.strip() or len(key) > 80 or not isinstance(item, (str, list)):
                 raise ValueError(
                     "Usa nombres cortos y valores de texto o listas de opciones."
                 )
@@ -756,7 +757,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             ):
                 raise HTTPException(409, f"{product.sku} ya tiene un trabajo activo.")
             payload = {
-                "product": serialize(product),
+                "product": image_product(db, product),
                 "references": references[product.id],
                 "slots": data.slots,
                 "quantity": data.quantity,
@@ -1010,7 +1011,7 @@ def correct(asset_id: str, data: CorrectionInput, value=Depends(context)):
             "feedback": data.feedback,
             "previous_raw_id": asset.raw_drive_file_id,
             "history": asset.history,
-            "product": serialize(product_for(db, tenant(value), asset.product_id)),
+            "product": image_product(db, product_for(db, tenant(value), asset.product_id)),
         }
         job = GenerationJob(
             tenant_id=tenant(value),
@@ -1058,7 +1059,7 @@ def regenerate(asset_id: str, data: RegenerationInput, value=Depends(context)):
         payload = {**source.payload, "slots": [asset.slot], "quantity": 1,
                    "completed_keys": [], "in_flight": None,
                    "previous_asset_id": asset.id,
-                   "product": serialize(product_for(db, tenant(value), asset.product_id))}
+                   "product": image_product(db, product_for(db, tenant(value), asset.product_id))}
         for field in ("previous_raw_id", "feedback", "history"):
             payload.pop(field, None)
         product_id, model = asset.product_id, source.model

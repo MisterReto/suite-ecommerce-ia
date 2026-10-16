@@ -268,14 +268,9 @@ def mirror_records(value, current, rows, images=None):
     for row in selected:
         if text(row.get("sku")) == sku:
             p = current["product"]
-            attributes = dict(p.get("attributes") or {})
-            if p.get("size"):
-                attributes.setdefault("Tamaño", p["size"])
-            if p.get("variant") and not p.get("attribute_value"):
-                attributes.setdefault("Variante", p["variant"])
-            if p.get("product_type"):
-                attributes.setdefault("Tipo reconocido", p["product_type"])
-            row["attributes"] = attributes
+            # The Sheet's canonical axis is authoritative. Size/type remain
+            # descriptive fields and must not become additional variation axes.
+            row["attributes"] = {p["attribute"]: p["attribute_value"]} if p.get("attribute_value") else {}
     data, errors = normalize(selected)
     if errors or not any(r["sku"] == sku for r in data):
         raise ValueError("La captura está en Sheets pero no pudo validarse para el maestro. Revisa sus campos.")
@@ -294,8 +289,13 @@ def mirror_records(value, current, rows, images=None):
             parent = entry.pop("parent_sku", "")
             filenames = entry.pop("images_legacy", "").split(",")
             if entry["product_type"] == "variable":
-                entry["attributes"] = {k: [s.strip() for s in str(v).split(",") if s.strip()]
-                                       for k, v in entry["attributes"].items()}
+                # A comma can belong to one flavor ("Camarón, limón y habanero").
+                # Rebuild options from child rows, never by splitting their text.
+                entry["attributes"] = {k: list(dict.fromkeys(text(r.get("atributo_valor")) for r in rows
+                    if text(r.get("sku_padre")) == entry["sku"]
+                    and text(r.get("atributo_nombre")).casefold() == k.casefold()
+                    and text(r.get("atributo_valor")))) or (v if isinstance(v, list) else [str(v)])
+                    for k, v in entry["attributes"].items()}
             if parent:
                 if parent not in by_sku:
                     raise ValueError("No se encontró el padre. El padre y la variación no se guardaron parcialmente en el maestro.")
@@ -304,6 +304,10 @@ def mirror_records(value, current, rows, images=None):
             if previous:
                 # Existing parents retain all IDs and catalog fields; only their
                 # variation options are updated by this capture.
+                for name, options in entry["attributes"].items():
+                    old = previous.attributes.get(name, [])
+                    old = old if isinstance(old, list) else [old]
+                    entry["attributes"][name] = list(dict.fromkeys(old + options))
                 entry = {"product_type": "variable", "attributes": entry["attributes"]}
             product = save_product(db, root_for(value), value["email"], entry,
                                    previous.id if previous else None,
@@ -328,7 +332,7 @@ def mirror_records(value, current, rows, images=None):
             db.add(marker)
         marker.product_id, marker.status, marker.message = product.id, "completed", "Captura y relaciones incorporadas al catálogo."
         audit(db, root_for(value), value["email"], "capture.mirrored", product.id,
-              after={"revision": current["revision"], "sku": sku})
+              after={"revision": current["revision"], "sku": sku, "capture_size": current["product"].get("size", "")})
         return product.id
 
 

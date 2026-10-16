@@ -8,7 +8,7 @@ type Row = Selection & { name: string; brand: string; category: string; price: s
 type Options = { images: boolean; stock: boolean; tags: boolean; allow_published_family: boolean; status: "publish" | "draft" };
 type Item = { sku: string; name: string; price: string; stock: string; brand: string; category: string;
   tags: string; images: { id: string; name: string }[]; attribute: [string, string] | null };
-type Preview = Selection & { parent_sku: string; parent_name: string; items: Item[]; new_status: string };
+type Preview = Selection & { parent_sku: string; parent_name: string; items: Item[]; new_status: string; warnings?: string[] };
 type Review = { mode: "single" | "batch"; previews: Preview[]; preview_token: string; store: string;
   errors: { selection: Selection; message: string }[]; omitted: Selection[] };
 type Job = { id: string; batch_id: string | null; status: string; progress: number; message: string;
@@ -216,6 +216,13 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
       <h3>Vista previa</h3><p>{review.store} · {review.previews.length} selecciones · {options.status === "publish" ? "Publicados y visibles al terminar" : "Nuevos como borradores"}</p>
       {!!review.omitted.length && <p>Se excluyeron {review.omitted.length} selecciones duplicadas o variantes incluidas en una familia seleccionada.</p>}
       {review.errors.map((item, index) => <p role="alert" key={index}>{item.selection.sku}: {item.message}</p>)}
+      {review.previews.some(preview => preview.warnings?.length) && <div role="alert">
+        {review.previews.flatMap(preview => (preview.warnings || []).map(message => <p key={preview.sku + message}>{preview.sku}: {message}</p>))}
+        <label><input type="checkbox" checked={options.allow_published_family} disabled={disabled}
+          onChange={e => changeOption("allow_published_family", e.target.checked)} />
+          Autorizo añadir variantes a estas familias publicadas. Después pulsa «Revisar vista previa» otra vez.
+        </label>
+      </div>}
       {review.previews.map(preview => <article key={identity(preview)} className="wc-preview">
         <h4>{preview.parent_name} · {labels[preview.kind]}</h4>
         {preview.items.map(item => <div key={item.sku}>
@@ -226,9 +233,9 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
           {options.images && <p>Imágenes: {item.images.map(image => image.name).join(", ")}</p>}
         </div>)}
       </article>)}
-      <label><input type="checkbox" checked={confirmed} disabled={disabled || !!review.errors.length || !canSubmit}
+      <label><input type="checkbox" checked={confirmed} disabled={disabled || !!review.errors.length || review.previews.some(p => !!p.warnings?.length) || !canSubmit}
         onChange={e => setConfirmed(e.target.checked)} /> {options.status === "publish" ? "Confirmo cargar y publicar estos productos o familias en WooCommerce." : "Confirmo cargar los productos nuevos como borradores en WooCommerce."}</label>
-      <button type="button" className="button primary" disabled={disabled || !confirmed || !!review.errors.length || !canSubmit}
+      <button type="button" className="button primary" disabled={disabled || !confirmed || !!review.errors.length || review.previews.some(p => !!p.warnings?.length) || !canSubmit}
         onClick={() => void submit()}>{review.mode === "single" ? "Cargar selección" : "Cargar lote"}</button>
     </section>}
     <section className="p-card">

@@ -11,7 +11,7 @@ const { chromium } = require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
 const product = { id: "test-product", sku: "TEST-INTEGRATION-MOBILE", barcode: "1234567890123",
   name: "Producto de prueba móvil", brand: "Glico", category: "Dulces", subcategory: "Chocolate",
   short_description: "Referencia de prueba", long_description: "Ficha sintética de pruebas",
-  tags: [], attributes: {}, product_type: "simple", parent_id: null, price: 35, cost: 20,
+  tags: [], attributes: {Tamaño:"85 g",Sabor:"Chocolate"}, product_type: "simple", parent_id: null, price: 35, cost: 20,
   stock: 10, status: "pending", version: 1 };
 const asset = { id: "test-asset", image_id: "test-image", product_id: product.id, job_id: "test-job",
   provider: "gemini", model: "gemini-3.1-flash-image", sku: product.sku, product_name: product.name,
@@ -40,6 +40,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const requests = [];
     const controls = [];
     const nativeWrites = [];
+    const productEdits = [], wcReviews = [];
     let remaining = 2, batchSteps = 0;
     let catalogRemoved = false;
     let jobList = ["studio_generation", "generation", "enrichment"].map((kind, index) => ({
@@ -49,6 +50,25 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.route("**/service-health", route => route.fulfill({ json: { ok: true, backend: "fastapi" } }));
     await page.route("**/api/**", async route => {
       const request = route.request(); const pathname = new URL(request.url()).pathname;
+      if (pathname.startsWith('/api/woocommerce/')) {
+        const row = {kind:'variant',sku:'041789002960',name:'Maruchan Camarón, Limón y Habanero',
+          brand:'Maruchan',category:'Ramen',price:'12',parent_sku:'041789xxxxxx',variants:0};
+        if (pathname.endsWith('/connection')) return route.fulfill({json:{configured:true,images_configured:true,missing:[],media_missing:[],store:'https://example.test'}});
+        if (pathname.endsWith('/catalog')) return route.fulfill({json:{rows:[row],total:1,brands:['Maruchan'],categories:['Ramen']}});
+        if (pathname.endsWith('/preview')) {
+          const body = request.postDataJSON(); wcReviews.push(body);
+          return route.fulfill({json:{preview:{...row,parent_name:'Maruchan',items:[{...row,stock:'0',tags:'',
+            attribute:['Sabor','Camarón, Limón y Habanero'],images:[{id:'final',name:'041789002960_1_hd.jpg'}]}],
+            warnings:body.options.allow_published_family?[]:['La familia ya está publicada. Autoriza añadir variantes a familias publicadas para continuar.']},
+            preview_token:'a'.repeat(64),store:'https://example.test'}});
+        }
+        assert.equal(request.method(),'GET','Review must not create WooCommerce jobs');
+        return route.fulfill({json:{jobs:[]}});
+      }
+      if (pathname === '/api/platform/products/'+product.id && request.method()==='PUT') {
+        const body = request.postDataJSON(); productEdits.push(body); Object.assign(product,body);
+        return route.fulfill({json:{product,drive_saved:true}});
+      }
       if (pathname.startsWith("/api/tools/")) {
         const operation = pathname.slice("/api/tools/".length);
         if (request.method() === "POST") nativeWrites.push({operation,body:request.postDataJSON()});
@@ -135,6 +155,11 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("button", { name: "Editar", exact: true }).click();
     assert.ok(await page.getByRole("textbox").count() > 3, "Editable product form is available");
     const editForm = page.locator(".p-card").filter({has:page.getByRole("heading",{name:"Editar producto",exact:true})});
+    await editForm.getByText(/Esta ficha tiene varios atributos antiguos/).waitFor();
+    await editForm.getByLabel("Atributo de variación", {exact:true}).fill("Sabor");
+    await editForm.getByLabel("Valor del atributo", {exact:true}).fill("Camarón, Limón y Habanero");
+    assert.equal(await editForm.getByLabel("Valor del atributo", {exact:true}).inputValue(), "Camarón, Limón y Habanero");
+    assert.equal(await editForm.getByPlaceholder('{"Tamaño":"41 g"}').count(), 0, "Attributes do not require editing JSON");
     try {
       await editForm.getByText("Opciones de Lista completa en tu Drive.",{exact:true}).waitFor();
     } catch (error) {
@@ -148,6 +173,10 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await editForm.getByLabel("Subcategoría",{exact:true}).selectOption("Vajilla");
     await editForm.getByRole("checkbox",{name:"Japón",exact:true}).check();
     assert.ok(await editForm.getByRole("checkbox",{name:"Japón",exact:true}).isChecked());
+    await editForm.getByRole('button',{name:'Guardar',exact:true}).click();
+    await page.getByText('Producto guardado en el catálogo maestro.',{exact:true}).waitFor();
+    assert.deepEqual(productEdits[0].attributes,{Sabor:'Camarón, Limón y Habanero'});
+    assert.equal(productEdits[0].sync_drive,true);
     await nav.getByRole("link", { name: "Generar", exact: true }).click();
     await page.getByRole("button", { name: "Revisar imágenes", exact: false }).click();
     await page.locator(".p-asset-card").first().click();
@@ -225,6 +254,18 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-mobile.png"),fullPage:true});
     await nav.getByRole("link",{name:"Más",exact:true}).click();
     assert.equal(await nav.getByRole("button",{name:"Publicación masiva",exact:true}).count(),0);
+    await nav.getByRole('button',{name:'Publicar en WooCommerce',exact:true}).click();
+    await page.getByRole('checkbox',{name:'Seleccionar Variante 041789002960',exact:true}).check();
+    await page.getByRole('button',{name:'Revisar vista previa',exact:true}).click();
+    const wcReview = page.getByRole('region',{name:'Vista previa de la carga'});
+    await wcReview.getByText('Sabor: Camarón, Limón y Habanero',{exact:true}).waitFor();
+    assert.ok(await wcReview.getByRole('button',{name:'Cargar selección',exact:true}).isDisabled());
+    await wcReview.getByRole('checkbox',{name:/Autorizo añadir variantes a estas familias publicadas/}).check();
+    await page.getByRole('button',{name:'Revisar vista previa',exact:true}).click();
+    await wcReview.getByText('Sabor: Camarón, Limón y Habanero',{exact:true}).waitFor();
+    await wcReview.getByRole('checkbox',{name:/Confirmo cargar y publicar/}).check();
+    assert.ok(await wcReview.getByRole('button',{name:'Cargar selección',exact:true}).isEnabled());
+    assert.deepEqual(wcReviews.map(r=>r.options.allow_published_family),[false,true]);
     assert.ok(!nativeWrites.some(row => /media|product-sync|batch/.test(row.operation)), "No store writes");
     assert.deepEqual(errors, [], "No browser exceptions");
     console.log("Browser: 360/390/430px, sidebar/bottom tools, local counts and logs, removed integration controls, deletion/cancellation and paid idempotency passed.");

@@ -68,10 +68,11 @@ def save_to_drive(value, product, previous_sku, parent_sku):
         headers[20] = "codigo_barras"
         additions.append({"range": f"'{MASTER_SHEET}'!U1", "values": [["codigo_barras"]]})
     attrs = product.attributes or {}
-    variation = [(key, val) for key, val in attrs.items() if isinstance(val, (str, list))
-                 and key not in {"Tipo reconocido", "Variante"}]
-    if variation:
-        key, val = variation[0]
+    if len(attrs) > 1:
+        raise ValueError("Usa un solo atributo de variación antes de guardar en Drive.")
+    fields.update(atributo_nombre="", atributo_valor="")
+    if attrs:
+        key, val = next(iter(attrs.items()))
         fields.update(atributo_nombre=key, atributo_valor=", ".join(val) if isinstance(val, list) else val)
     changes = additions + [{"range": f"'{MASTER_SHEET}'!{column_name(headers.index(key) + 1)}{target}", "values": [[item]]}
                            for key, item in fields.items() if key in headers]

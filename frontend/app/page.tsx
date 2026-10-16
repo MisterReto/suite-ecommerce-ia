@@ -33,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import SingleAttributeFields, { singleAttribute } from "@/components/SingleAttributeFields";
 import { recoverSession } from "@/lib/session-recovery";
 import { ensureApiReady, wakeServices } from "@/lib/service-readiness";
 import DriveClassification from "@/components/DriveClassification";
@@ -381,7 +382,6 @@ export default function Platform() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Product>(blank);
-  const [attributeText, setAttributeText] = useState("{}");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
@@ -634,7 +634,6 @@ export default function Platform() {
     setDetail(data);
     setForm(data.product);
     setStock(data.product.stock || 0);
-    setAttributeText(JSON.stringify(data.product.attributes, null, 2));
     setEditing(false);
   };
   // Abre confirmación y limpia la aceptación previa de incertidumbre.
@@ -687,14 +686,10 @@ export default function Platform() {
   };
   // Valida atributos de formulario y guarda la ficha con el contrato/versionado de API.
   const saveProduct = async () => {
-    let attrs;
-    try {
-      attrs = JSON.parse(attributeText);
-      if (!attrs || typeof attrs !== "object" || Array.isArray(attrs))
-        throw new Error();
-    } catch {
-      throw new Error("Los atributos deben ser un objeto JSON válido.");
-    }
+    const attrs = Object.fromEntries(Object.entries(singleAttribute(form.attributes))
+      .map(([name, value]) => [name.trim(), Array.isArray(value) ? value.map(v => v.trim()).filter(Boolean) : value.trim()])
+      .filter(([, value]) => Array.isArray(value) ? value.length : value));
+    if (Object.keys(attrs).some(name => !name)) throw new Error("Escribe el nombre del atributo de variación.");
     const {parent_id, ...fields} = form;
     const data = await api<{ product: Product; drive_saved?: boolean; message?: string }>(
       form.id ? "/api/platform/products/" + form.id : "/api/platform/products",
@@ -1214,7 +1209,6 @@ export default function Platform() {
                       className="button primary"
                       onClick={() => {
                         setForm(blank());
-                        setAttributeText("{}");
                         setEditing(true);
                       }}
                     >
@@ -1492,15 +1486,8 @@ export default function Platform() {
                           }
                         />
                       </label>
-                      <label className="p-form-field">
-                        Atributos
-                        <textarea
-                          rows={3}
-                          value={attributeText}
-                          onChange={(e) => setAttributeText(e.target.value)}
-                          placeholder={'{"Tamaño":"41 g"}'}
-                        />
-                      </label>
+                      <SingleAttributeFields attributes={form.attributes} family={form.product_type === "variable"}
+                        onChange={attributes => setForm(previous => ({ ...previous, attributes }))} />
                       <div className="p-button-row">
                         <button
                           className="button primary"
@@ -1696,8 +1683,8 @@ export default function Platform() {
                               onClick={() => {
                                 const proposal = j.payload.proposal!;
                                 const attrs = {
-                                  ...form.attributes,
-                                  ...(proposal.size
+                                  ...singleAttribute(form.attributes),
+                                  ...(!Object.keys(singleAttribute(form.attributes)).length && proposal.size
                                     ? { Tamaño: String(proposal.size) }
                                     : {}),
                                 };
@@ -1710,9 +1697,6 @@ export default function Platform() {
                                   ),
                                   attributes: attrs,
                                 } as Product);
-                                setAttributeText(
-                                  JSON.stringify(attrs, null, 2),
-                                );
                                 setEditing(true);
                               }}
                             >
