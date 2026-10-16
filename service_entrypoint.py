@@ -25,11 +25,13 @@ fastapi_app.include_router(woocommerce_router)
 # sustituye el heartbeat del worker.
 @fastapi_app.get("/service-health")
 def service_health():
+    from catalog_platform.gemini_config import server_key
     return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": "api",
             "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "worker"),
             "service_id": os.getenv("RENDER_SERVICE_ID", ""),
             "version": os.getenv("RENDER_GIT_COMMIT", ""),
-            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory"}
+            "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory",
+            "gemini_configured": bool(server_key())}
 
 
 _mounts = [r for r in fastapi_app.routes if (isinstance(r, Mount) and r.path in {"", "/"}) or getattr(r,"path",None) == "/{tool_path:path}"]

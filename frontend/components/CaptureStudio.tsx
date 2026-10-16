@@ -391,7 +391,6 @@ export default function CaptureStudio({
   const [correctionSlot, setCorrectionSlot] = useState<string | null>(null);
   const [correction, setCorrection] = useState("");
   const [correctionErrors, setCorrectionErrors] = useState<string[]>([]);
-  const [key, setKey] = useState("");
   const [folder, setFolder] = useState("");
   const [showBrief, setShowBrief] = useState(false);
   const [rows, setRows] = useState<CatalogRow[]>([]);
@@ -778,12 +777,8 @@ export default function CaptureStudio({
             <div className="notice">
               <Info size={18} />
               <span>
-                Guarda tu clave de Gemini en Ajustes para analizar y generar
-                imágenes.
+                El servicio de IA no está configurado. Contacta al administrador para analizar y generar imágenes.
               </span>
-              <button className="text-button" onClick={() => go("settings")}>
-                Abrir ajustes
-              </button>
             </div>
           )}
           {error && (
@@ -1768,55 +1763,14 @@ export default function CaptureStudio({
                     <Sparkles size={24} />
                     <div>
                       <h2>Gemini</h2>
-                      <p>Tu proyecto de Google genera las imágenes.</p>
+                      <p>Servicio de imágenes de la tienda.</p>
                     </div>
                     {session.gemini_configured && (
                       <span className="pill green">Configurado</span>
                     )}
                   </div>
-                  <Field label="Clave de API">
-                    <input
-                      type="password"
-                      value={key}
-                      onChange={(e) => setKey(e.target.value)}
-                      placeholder={
-                        session.gemini_configured
-                          ? "Clave configurada · ingresa una nueva para cambiarla"
-                          : "AIza…"
-                      }
-                      autoComplete="off"
-                      disabled={busy}
-                    />
-                  </Field>
-                  <p className="micro-copy left">
-                    Tu clave se guarda cifrada en el servidor, asociada a tu cuenta y tienda. Permanece configurada al volver a iniciar sesión.
-                  </p>
-                  <button
-                    className="button purple"
-                    disabled={busy || !signedIn || !key}
-                    onClick={() =>
-                      attempt(async () => {
-                        await api("/api/settings", "POST", { api_key: key });
-                        setKey("");
-                        await refresh();
-                        setMessage(
-                          "Clave guardada. Ya puedes generar imágenes.",
-                        );
-                      })
-                    }
-                  >
-                    Guardar clave
-                  </button>
-                  <div className="form-actions">
-                    <button className="button secondary small" disabled={busy || !session.gemini_configured} onClick={() => attempt(async () => {
-                      const r = await api<{message: string; image_model_available: boolean; text_model_available: boolean}>("/api/settings/gemini/test", "POST", {});
-                      setMessage(r.message + (r.image_model_available && r.text_model_available ? " Los dos modelos actuales están disponibles." : " Revisa la disponibilidad de los modelos actuales en tu proyecto."));
-                    })}>Comprobar clave y modelos</button>
-                    <button className="button secondary small" disabled={busy || !session.gemini_configured} onClick={() => attempt(async () => {
-                      await api("/api/settings/gemini", "DELETE"); setKey(""); await refresh(); setMessage("Clave personal eliminada.");
-                    })}>Eliminar clave</button>
-                  </div>
-                  <p className="micro-copy left">Configuración activa: {session.gemini_configured ? "clave personal de Ajustes" : "sin clave personal"}.</p>
+                  <p>Gemini lo administra la tienda. No necesitas ingresar una clave para generar imágenes.</p>
+                  {!session.gemini_configured && <p className="micro-copy left">El administrador debe habilitar el servicio de IA.</p>}
                 </section>
               </div>
               <section className="card consumption">
@@ -1876,7 +1830,7 @@ export default function CaptureStudio({
                 {[
                   {
                     name: "Conecta tu cuenta",
-                    text: "En Ajustes, conecta Google Drive y guarda la clave de Gemini. El inventario está en Proyecto_IA o en la carpeta que selecciones.",
+                    text: "En Ajustes, conecta Google Drive. La tienda administra Gemini. El inventario está en Proyecto_IA o en la carpeta que selecciones.",
                   },
                   {
                     name: "Fotografía el producto",
@@ -1909,8 +1863,7 @@ export default function CaptureStudio({
               <div className="notice">
                 <Info size={18} />
                 <span>
-                  Al volver a entrar, se recuperan el borrador guardado y la
-                  configuración de Gemini de tu cuenta. Si Google solicita
+                  Al volver a entrar, se recupera el borrador guardado. Si Google solicita
                   acceso, vuelve a conectar Drive. Ante una subida interrumpida,
                   consulta su progreso antes de repetir.
                 </span>

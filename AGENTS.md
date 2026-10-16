@@ -11,6 +11,8 @@ Conservar toda la integración de WooCommerce salvo una petición explícita del
 
 ## Generador protegido
 
+Gemini usa exclusivamente `GEMINI_API_KEY` como secreto de Render en API y worker. No reintroducir claves personales, formularios de clave ni credenciales Gemini en snapshots o conexiones de usuario. El frontend solo recibe el estado de configuración.
+
 Preservar los prompts, modelos, referencias, correcciones, marca y nombres de archivo. Mantener el contrato de `test_generation_contract.py` y `test_colab_generation.py`; no regenerar sus referencias para aceptar cambios accidentales.
 
 El Colab conserva su flujo masivo original de CSV y Drive, guardado directo y auditoría. Cualquier reparación de otra área debe dejar intacto ese flujo.

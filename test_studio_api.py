@@ -23,6 +23,7 @@ ORIGIN = {"Origin": "https://suite.example"}
 
 @pytest.fixture
 def setup(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-with-no-live-credits")
     monkeypatch.setenv("STUDIO_IMAGE_JOBS", "local")
     monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://suite.example")
     sid = secrets.token_urlsafe(24)

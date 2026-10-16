@@ -76,7 +76,7 @@ async function exercise(browser, engine, width) {
       return route.fulfill({status:503,contentType:"text/html",body:"<!DOCTYPE html><title>Service starting</title>"});
     }
     if (p === "/api/session") json = {authenticated:true, email:"admin@example.test", gemini_configured:configured,
-      gemini_source:configured ? "user_settings" : "not_configured", folder:"Tienda sintética", image_model:"gemini-3.1-flash-image",
+      gemini_source:configured ? "render" : "not_configured", folder:"Tienda sintética", image_model:"gemini-3.1-flash-image",
       text_model:"gemini-3.1-flash-lite-preview", estimated_image_usd:.067, draft};
     else if (p === "/api/platform/status") json = {ready:true, configured:true, worker_ready:true, worker_can_queue:true, role:"admin"};
     else if (p === "/api/platform/dashboard") json = {stats:{low_stock:0,out_of_stock:0,sync_errors:0,pending_jobs:0,pending_products:0},activity:[],ecommerce:null};
@@ -141,8 +141,8 @@ async function exercise(browser, engine, width) {
     else if (p === "/api/save") {
       saves++; draft.saved="Producto guardado"; draft.sync_status="pending_repair";draft.sync_error="Sheets guardó; falta el maestro";json=complete();
     } else if (p === "/api/capture-sync") {draft.sync_status="synced";delete draft.sync_error;json=complete();}
-    else if (p === "/api/settings") {assert.ok(body().api_key);configured=true;json={ok:true};}
-    else if (p === "/api/settings/gemini" && method === "DELETE") {configured=false;json={ok:true};}
+    else if (p === "/api/settings") {assert.ok(!("api_key" in body()), "The app never submits a personal key");json={ok:true};}
+    else if (p === "/api/settings/gemini" && method === "DELETE") {assert.fail("The app cannot delete the server secret");}
     else if (p === "/api/settings/gemini/test") json={message:"Modelos consultados sin generar",image_model_available:true,text_model_available:true};
     return route.fulfill({json});
   });
@@ -256,12 +256,10 @@ async function exercise(browser, engine, width) {
       assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${engine}/${width}: ${name} overflow`);
     }
     await page.getByRole("button",{name:"Ajustes",exact:true}).tap();
-    const key=capture.getByLabel("Clave de API",{exact:true});
-    await key.fill("TEST_ONLY_PERSONAL_KEY_12345");await capture.getByRole("button",{name:"Guardar clave",exact:true}).tap();
-    await page.waitForTimeout(250);assert.equal(await key.inputValue(),"");
-    assert.ok(!JSON.stringify(await page.evaluate(()=>({...localStorage}))).includes("TEST_ONLY_PERSONAL_KEY"));
-    await capture.getByRole("button",{name:"Comprobar clave y modelos"}).tap();
-    await capture.getByText(/Modelos consultados sin generar/).waitFor();
+    assert.equal(await capture.getByLabel("Clave de API",{exact:true}).count(),0);
+    assert.equal(await capture.getByRole("button",{name:"Guardar clave",exact:true}).count(),0);
+    assert.equal(await capture.getByRole("button",{name:"Eliminar clave",exact:true}).count(),0);
+    await capture.getByText("Gemini lo administra la tienda. No necesitas ingresar una clave para generar imágenes.",{exact:true}).waitFor();
     await nav.getByRole("link",{name:"Generar",exact:true}).tap();
     await page.getByRole("button",{name:"Capturar producto",exact:true}).tap();
     assert.equal(await capture.getByLabel("Nombre del producto",{exact:true}).inputValue(),"Pocky Chocolate 40 g revisado al salir");

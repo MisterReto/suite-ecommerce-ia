@@ -120,20 +120,22 @@ def test_changed_allowlist_invalidates_existing_session(setup, monkeypatch):
     assert client.get("/api/session").json()["authenticated"] is False
 
 
-def test_recovery_uses_current_folder_and_personal_key(setup):
+def test_recovery_uses_current_folder_and_server_key(setup, monkeypatch):
     client, value, _ = setup
     sid = value["session_id"]
     web_sessions.save(sid, value)
-    from catalog_platform.accounts import save_gemini
+    from catalog_platform.accounts import save_profile
     with transaction() as db:
-        save_gemini(db, "another-test-folder", value["email"], "new-personal-test-key", "Nueva tienda")
+        save_profile(db, "another-test-folder", value["email"], "Nueva tienda")
+    monkeypatch.setenv("GEMINI_API_KEY", "new-server-test-key")
     studio.runtime.SESSIONS.pop(sid)
     restored = client.get("/api/session")
     assert restored.status_code == 200, restored.text
     assert restored.json()["folder_id"] == "another-test-folder"
     assert restored.json()["folder"] == "Nueva tienda"
-    assert studio.runtime.SESSIONS[sid]["gemini_key"] == "new-personal-test-key"
-    assert "new-personal-test-key" not in restored.text
+    assert studio.runtime.SESSIONS[sid]["gemini_key"] == "new-server-test-key"
+    assert restored.json()["gemini_source"] == "render"
+    assert "new-server-test-key" not in restored.text
 
 
 def test_transient_restore_error_is_503_without_logging_out(setup, monkeypatch):

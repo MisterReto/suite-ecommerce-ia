@@ -46,6 +46,8 @@ services:
   envVars:
   - key: SUITE_SERVE_FRONTEND
     value: 'false'
+  - key: GEMINI_API_KEY
+    sync: false
   - key: APP_PUBLIC_ORIGIN
     fromService:
       type: web
@@ -141,6 +143,11 @@ services:
       property: connectionString
   - key: IMAGE_WORKER_CONCURRENCY
     value: '1'
+  - key: GEMINI_API_KEY
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: GEMINI_API_KEY
   - key: CREDENTIAL_ENCRYPTION_KEY
     fromService:
       type: web

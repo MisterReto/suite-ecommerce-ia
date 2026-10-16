@@ -5,7 +5,7 @@ El flujo principal se conserva: **capturar → analizar con Gemini → detectar 
 | Paso | Código | Comportamiento conservado |
 |---|---|---|
 | Fotografía / cámara | CaptureStudio, studio_api, product_capture | Cámara móvil y upload, validación de imagen, referencias originales |
-| Análisis | ProductCapture / gemini_gateway | Gemini con la clave personal configurada; extracción y clasificación simple/variable |
+| Análisis | ProductCapture / gemini_gateway | Gemini con el secreto del servidor; extracción y clasificación simple/variable |
 | Coincidencias | catalog_capture / capture_bridge | Búsqueda por SKU/barcode y similitud en catálogo local y Sheet; ya no consulta tiendas externas |
 | Familia | product_generation / capture_bridge | Padres y variantes, atributos, marca/categoría, portada del padre |
 | Preparación | creative_pipeline / ImageGenerationService | Prompt HD y brief lifestyle/comercial, referencias y estilos actuales |
@@ -31,6 +31,6 @@ Las carpetas `imagenes_generadas`, candidatos temporales, originales/raw, ejempl
 
 Regenerar conserva el resultado anterior y las referencias. Corregir utiliza el raw anterior y el feedback individual. La cancelación y el cierre de navegador no eliminan el historial. Un checkpoint marcado incierto impide repetir automáticamente una llamada pagada.
 
-Más → Ajustes guarda la API key Gemini con Fernet en PostgreSQL, por actor y carpeta. `accounts.persist` guarda Google por separado; `accounts.load` recupera Google y consulta la clave Gemini vigente. No usa AI_API_KEY global como fallback ni requiere una clave personal en Render.
+API y worker leen exclusivamente `GEMINI_API_KEY` desde los secretos de Render, mediante `catalog_platform/gemini_config.py`. Ajustes muestra el estado del servicio sin solicitar, modificar ni eliminar claves. Las claves personales antiguas y los valores de snapshots se ignoran. `accounts.persist` guarda únicamente la conexión de Google y las preferencias de carpeta; `accounts.load` incorpora el secreto vigente del entorno al ejecutar un trabajo. El secreto no se devuelve en respuestas ni se persiste en conexiones o borradores.
 
 Las pruebas automatizadas emplean dobles del proveedor y bloquean conexiones externas. La aceptación con Gemini real está pendiente y requiere autorización de gasto. Consultar [REGRESSION_RESULTS.md](REGRESSION_RESULTS.md).

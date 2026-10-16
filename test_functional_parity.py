@@ -90,110 +90,75 @@ def sheet_row(values, sku="POCKFR40", name="Pocky Fresa 40 g", kind="simple", pa
     values.append([record.get(k, "") for k in MASTER_COLUMNS] + ["", "", "", "", "Sabor", "Fresa", code])
 
 
-@pytest.mark.parametrize("pasted,personal", [
-    pytest.param("AIza" + "P" * 35, "AIza" + "P" * 35, id="standard"),
-    pytest.param("AQ." + "Ab0_-/+=" * 64, "AQ." + "Ab0_-/+=" * 64, id="long-opaque"),
-    pytest.param(" \nAQ." + "Ab0_-/+=" * 64 + "\r\n", "AQ." + "Ab0_-/+=" * 64, id="clipboard-whitespace"),
-])
-def test_key_is_encrypted_persistent_and_never_uses_render(capture_store, monkeypatch, pasted, personal):
+@pytest.mark.parametrize("pasted", ["personal-key-that-must-not-be-used", "", "AQ." + "x" * 400])
+def test_personal_key_endpoints_cannot_change_the_render_secret(capture_store, pasted):
     client, value, *_ = capture_store
-    monkeypatch.setenv("AI_API_KEY", "R" * 25)
-    assert client.post("/api/settings", json={"api_key": pasted}, headers=ORIGIN).status_code == 200
-    with transaction() as db:
-        row = accounts.account(db, value["platform_tenant"], value["email"], "gemini")
-        assert personal not in row.encrypted_credentials
-        assert unseal(row.encrypted_credentials) == {"api_key": personal}
-    sid = secrets.token_urlsafe(24)
-    restored = dict(email=value["email"], expires_at=time.time()+600, creds=value["creds"])
-    studio.runtime.SESSIONS[sid] = restored
-    client.cookies.set("session_id", sid)
-    try:
-        response = client.get("/api/session")
-        assert response.status_code == 200, response.text
-        assert response.json()["gemini_source"] == "user_settings"
-        assert restored["gemini_key"] == personal
-        assert personal not in response.text and "R"*25 not in response.text
-        assert client.delete("/api/settings/gemini", headers=ORIGIN).status_code == 200
-        assert client.get("/api/session").json()["gemini_configured"] is False
-        assert "gemini_key" not in restored
-    finally:
-        studio.runtime._eliminar_sesion(sid)
-        client.cookies.set("session_id", value["session_id"])
-
-
-@pytest.mark.parametrize("pasted", [
-    pytest.param("", id="empty"),
-    pytest.param("AIza-short", id="incomplete"),
-    pytest.param("P" * 25 + " " + "P" * 25, id="internal-space"),
-    pytest.param("P" * 25 + "\n" + "P" * 25, id="internal-newline"),
-    pytest.param("P" * 25 + "\x00", id="control"),
-    pytest.param("P" * 25 + "\u200b", id="invisible-unicode"),
-    pytest.param("P" * 4097, id="oversized"),
-])
-def test_bad_key_paste_does_not_replace_saved_credentials(capture_store, pasted):
-    client, value, *_ = capture_store
-    response = client.post("/api/settings", json={"api_key": pasted}, headers=ORIGIN)
-    assert response.status_code == 422
+    assert client.post("/api/settings", json={"api_key": pasted}, headers=ORIGIN).status_code == 422
+    assert client.delete("/api/settings/gemini", headers=ORIGIN).status_code == 422
+    response = client.get("/api/session")
+    assert response.json()["gemini_source"] == "render" and response.json()["gemini_configured"]
     assert value["gemini_key"] == "test-key-no-spend"
+    assert "test-key-no-spend" not in response.text
     with transaction() as db:
-        assert accounts.gemini_for(db, value["platform_tenant"], value["email"]) == "test-key-no-spend"
-    if len(pasted) >= 20:
-        assert pasted not in response.text
+        assert accounts.account(db, value["platform_tenant"], value["email"], "gemini") is None
 
 
-def test_worker_reloads_updated_key_and_stale_google_snapshot_cannot_undo_it(capture_store):
+def test_old_personal_keys_and_snapshots_never_replace_the_render_secret(capture_store, monkeypatch):
+    client, value, *_ = capture_store
+    with transaction() as db:
+        accounts.put(db, value["platform_tenant"], value["email"], "gemini", {"api_key": "old-personal-key"})
+    value["gemini_key"] = "stale-session-key"
+    response = client.get("/api/session")
+    assert value["gemini_key"] == "test-key-no-spend" and response.json()["gemini_source"] == "render"
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setenv("AI_API_KEY", "legacy-global-key-is-not-the-configured-secret")
+    response = client.get("/api/session")
+    assert not response.json()["gemini_configured"] and "gemini_key" not in value
+    assert response.json()["gemini_source"] == "not_configured"
+
+
+def test_worker_loads_current_render_secret_without_persisting_it(capture_store, monkeypatch):
     _, value, *_ = capture_store
     with transaction() as db:
         accounts.persist(db, value["platform_tenant"], value["email"], value)
+        saved = accounts.account(db, value["platform_tenant"], value["email"], "studio")
+        assert "gemini_key" not in unseal(saved.encrypted_credentials)
         old = accounts.load(db, value["platform_tenant"], value["email"])
-        accounts.save_gemini(db, value["platform_tenant"], value["email"], "N"*25)
+        assert old["gemini_key"] == "test-key-no-spend"
+        accounts.put(db, value["platform_tenant"], value["email"], "gemini", {"api_key": "old-personal-key"})
+    monkeypatch.setenv("GEMINI_API_KEY", "rotated-render-secret")
     with transaction() as db:
         accounts.persist(db, value["platform_tenant"], value["email"], old)
-        new = accounts.load(db, value["platform_tenant"], value["email"])
-        assert new["gemini_key"] == "N"*25
-        accounts.delete_gemini(db, value["platform_tenant"], value["email"])
+        loaded = accounts.load(db, value["platform_tenant"], value["email"])
+        assert loaded["gemini_key"] == "rotated-render-secret" and loaded["gemini_source"] == "render"
+    monkeypatch.delenv("GEMINI_API_KEY")
     with transaction() as db:
         assert "gemini_key" not in accounts.load(db, value["platform_tenant"], value["email"])
 
 
-def test_slow_credential_refresh_keeps_inflight_key_and_deletion_still_clears_it(capture_store, monkeypatch):
-    client, value, *_ = capture_store
-    start(client)
-    expected = value["gemini_key"]
+def test_slow_profile_refresh_does_not_erase_the_server_secret(capture_store, monkeypatch):
+    _, value, *_ = capture_store
+    restored = {"email": value["email"], "gemini_key": "test-key-no-spend"}
     reading, release = Event(), Event()
-    original = accounts.gemini_for
-    def delayed(db, tenant, actor):
-        key = original(db, tenant, actor)
-        reading.set()
-        assert release.wait(5), "Timed out waiting for the concurrent key reader"
-        return key
-    monkeypatch.setattr(accounts, "gemini_for", delayed)
+    original = accounts.account
+    def delayed(db, tenant, actor, provider):
+        result = original(db, tenant, actor, provider)
+        if provider == "studio_profile":
+            reading.set()
+            assert release.wait(5)
+        return result
+    monkeypatch.setattr(accounts, "account", delayed)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        refresh = pool.submit(accounts.restore, value)
+        refresh = pool.submit(accounts.restore, restored)
         try:
-            assert reading.wait(2), "The database refresh did not start"
-            assert value.get("gemini_key") == expected, "A polling refresh erased the key used by an active operation"
-            assert value["gemini_source"] == "user_settings"
+            assert reading.wait(2)
+            assert restored["gemini_key"] == "test-key-no-spend" and restored["gemini_source"] == "render"
         finally:
             release.set()
         refresh.result(timeout=5)
-    monkeypatch.setattr(accounts, "gemini_for", original)
-    with transaction() as db:
-        accounts.delete_gemini(db, value["platform_tenant"], value["email"])
-    accounts.restore(value)
-    assert "gemini_key" not in value and value["gemini_source"] == "not_configured"
-
-
-def test_credentials_are_isolated_by_actor_and_store(capture_store):
-    _, value, *_ = capture_store
-    with transaction() as db:
-        accounts.save_gemini(db, value["platform_tenant"], "editor@example.test", "E"*25)
-        accounts.save_gemini(db, "another-store", value["email"], "S"*25)
-    with transaction() as db:
-        assert accounts.gemini_for(db, value["platform_tenant"], value["email"]) == "test-key-no-spend"
-        assert accounts.gemini_for(db, value["platform_tenant"], "editor@example.test") == "E"*25
-        assert accounts.gemini_for(db, "another-store", value["email"]) == "S"*25
-        assert accounts.gemini_for(db, value["platform_tenant"], "viewer@example.test") is None
+    monkeypatch.delenv("GEMINI_API_KEY")
+    accounts.restore(restored)
+    assert "gemini_key" not in restored
 
 
 def test_key_check_lists_models_without_generating(capture_store, monkeypatch):

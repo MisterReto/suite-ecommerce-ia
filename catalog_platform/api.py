@@ -712,7 +712,7 @@ def enqueue(data: EnqueueInput, value=Depends(context)):
             422, "Revisa el lote y confirma el costo antes de ejecutar."
         )
     if not value.get("gemini_key"):
-        raise HTTPException(422, "Conecta tu clave de IA en Más → Conexiones.")
+        raise HTTPException(422, "El administrador debe configurar Gemini en el servidor.")
     with transaction() as db:
         request_lock(db, tenant(value), data.request_key)
         old = db.scalars(

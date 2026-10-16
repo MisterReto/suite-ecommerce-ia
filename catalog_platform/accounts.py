@@ -1,9 +1,8 @@
 """Persist server credentials encrypted, scoped to the authenticated folder/user."""
-# Conexiones cifradas por carpeta y usuario, preferencias personales y clave Gemini del usuario.
+# Conexiones Drive cifradas y preferencias personales; Gemini se configura en el servidor.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import hashlib
-import os
 from sqlalchemy import select, func
 from .models import IntegrationAccount
 from .security import seal, unseal
@@ -63,19 +62,19 @@ def delete_gemini(db, tenant, actor):
     put(db, tenant, actor, "gemini", {}, "disconnected")
 
 
-# Relee perfil y clave personal en cada solicitud; no utiliza una clave global como respaldo.
+# Recupera la carpeta personal y aplica exclusivamente el secreto actual del servidor.
 def restore(value):
-    """Resolve a personal key on every request. No environment-key fallback."""
+    """Ignore personal credentials and stale snapshots, including after a rotation."""
     from .database import configured, transaction
     from .security import member
+    from .gemini_config import apply_server_key
+    allowed = member(value.get("email", ""))
+    apply_server_key(value, allowed=allowed)
     if not configured():
-        return  # Compatibility with the historical session-only service.
-    actor = value.get("email", "")
-    if not actor or not member(actor):
-        value.pop("gemini_key", None)
-        value["gemini_source"] = "not_configured"
         return
-    key = None
+    actor = value.get("email", "")
+    if not actor or not allowed:
+        return
     with transaction() as db:
         root = value.get("platform_tenant") or value.get("carpeta_raiz_id_manual")
         if not root:
@@ -86,16 +85,6 @@ def restore(value):
                 if root:
                     value["carpeta_raiz_id_manual"] = root
                     value["carpeta_raiz_nombre_manual"] = preferences.get("folder_name", "")
-        root = root or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        if root:
-            key = gemini_for(db, root, actor)
-    # Requests and the analysis thread share this dictionary. A slow refresh
-    # must not remove a valid key while an already authorized operation reads it.
-    if key:
-        value.update(gemini_key=key, gemini_source="user_settings")
-    else:
-        value.pop("gemini_key", None)
-        value["gemini_source"] = "not_configured"
 
 
 # Guarda las credenciales Drive cifradas para que el worker pueda actuar sin el navegador.
@@ -120,8 +109,7 @@ def load(db, tenant, actor):
         )
     snapshot = unseal(record.encrypted_credentials)
     data = {key: snapshot[key] for key in ("creds", "carpeta_raiz_id_manual", "carpeta_raiz_nombre_manual") if key in snapshot}
-    data.pop("gemini_key", None)  # Old snapshots may contain a global Render key.
-    key = gemini_for(db, tenant, actor)
-    if key:
-        data.update(gemini_key=key, gemini_source="user_settings")
+    from .gemini_config import apply_server_key
+    from .security import member
+    apply_server_key(data, allowed=member(actor))
     return data

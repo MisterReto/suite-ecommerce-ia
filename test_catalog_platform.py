@@ -49,15 +49,16 @@ def setup(tmp_path,monkeypatch):
     monkeypatch.setenv("RENDER_EXTERNAL_URL","https://suite.example")
     monkeypatch.setenv("APP_ROLE_MAP",json.dumps({"admin@example.test":"admin","editor@example.test":"editor","viewer@example.test":"viewer"}))
     monkeypatch.setenv("STOCK_AUTHORITY","app")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-no-spend")
     Base.metadata.create_all(engine_for(url))
     tenant="test_"+secrets.token_hex(12);sid=secrets.token_urlsafe(24)
     value={"session_id":sid,"email":"admin@example.test","expires_at":time.time()+600,
         "file_namespace":secrets.token_urlsafe(24),"platform_tenant":tenant,"carpeta_raiz_id_manual":tenant,
         "gemini_key":"test-key-no-spend","creds":{"token":"private-token","refresh_token":"private-refresh"}}
     studio.runtime.SESSIONS[sid]=value
-    from catalog_platform.accounts import save_gemini
+    from catalog_platform.accounts import save_profile
     with transaction() as db:
-        save_gemini(db, tenant, value["email"], value["gemini_key"])
+        save_profile(db, tenant, value["email"])
     drive=DriveDouble(tenant)
     from drive_service import DriveService
     monkeypatch.setattr(DriveService,"for_session",lambda *args:drive)

@@ -2304,7 +2304,7 @@ export default function Platform() {
                     Configurar conexiones
                   </button>
                   <p className="p-muted">
-                    La clave Gemini se configura en Ajustes y se guarda cifrada para tu usuario.
+                    La tienda administra Gemini. No necesitas ingresar una clave de IA.
                   </p>
                 </div>
               </>

@@ -139,7 +139,7 @@ def editor(request: Request):
 # Comprueba conexión Google/carpeta y las condiciones necesarias para el flujo solicitado.
 def ready(value):
     if not value.get("gemini_key"):
-        raise HTTPException(422, "Guarda tu clave de Gemini en Ajustes.")
+        raise HTTPException(422, "El administrador debe configurar Gemini en el servidor.")
 
 
 # Obtiene o crea el borrador propio de esta sesión.
@@ -324,24 +324,15 @@ def catalog_taxonomy(value=Depends(authenticated_session)):
     return choices_from_rows(rows, runtime.CATEGORIAS_DEFECTO, runtime.SUBCATEGORIAS_DEFECTO)
 
 
-# Valida/guarda carpeta y clave Gemini personal; mantiene conexión cifrada y borrador del
-# usuario.
+# Guarda la carpeta de Drive. Gemini se administra exclusivamente desde Render.
 @app.post("/api/settings")
 def settings(data: Settings, request: Request, value=Depends(editor)):
     from catalog_platform.database import configured, transaction
     from catalog_platform import accounts
     from catalog_platform.security import require_role
     require_role(value, "admin", "editor")
-    key = None
     if data.api_key is not None:
-        key = data.api_key.get_secret_value().strip()
-        # Provider keys are opaque: authorization keys can exceed the old
-        # 256-character limit and use punctuation. Reject paste errors only;
-        # /api/settings/gemini/test checks validity with Google without generating.
-        if not re.fullmatch(r"[!-~]{20,4096}", key):
-            raise HTTPException(422, "Pega la clave completa de Gemini, sin espacios internos ni saltos de línea.")
-        if not configured():
-            raise HTTPException(503, "Activa PostgreSQL y el cifrado del servidor para guardar tu clave de forma persistente.")
+        raise HTTPException(422, "Gemini se configura mediante un secreto de Render; no se aceptan claves personales.")
     if data.folder is not None:
         idle(value)
         if data.folder.strip() and not runtime._extraer_folder_id(data.folder):
@@ -364,35 +355,14 @@ def settings(data: Settings, request: Request, value=Depends(editor)):
             with transaction() as db:
                 accounts.save_profile(db, value["carpeta_raiz_id_manual"], value["email"],
                                       value.get("carpeta_raiz_nombre_manual", ""))
-    if key is not None:
-        root = value.get("platform_tenant") or value.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        if not root:
-            root, _, _, _ = runtime._preparar_estructura(runtime._get_drive_service(value), value)
-        with transaction() as db:
-            accounts.save_gemini(db, root, value.get("email", ""), key,
-                                value.get("carpeta_raiz_nombre_manual", ""))
-        value.update(gemini_key=key, gemini_source="user_settings", carpeta_raiz_id_manual=root)
-        if value.get("studio_draft"):
-            value["studio_draft"].pop("brief_key", None)
-    elif configured():
-        accounts.restore(value)
-    return {"ok": True, "message": "Ajustes guardados. La clave personal queda cifrada y persiste entre sesiones." if key else "Carpeta actualizada."}
+    accounts.restore(value)
+    return {"ok": True, "message": "Carpeta actualizada."}
 
 
-# Desconecta la clave personal y evita restaurarla desde snapshots antiguos.
+# Bloquea el endpoint anterior: la app no puede eliminar el secreto del servidor.
 @app.delete("/api/settings/gemini")
 def remove_gemini(value=Depends(editor)):
-    from catalog_platform.database import configured, transaction
-    from catalog_platform import accounts, studio_jobs
-    from catalog_platform.security import require_role
-    require_role(value, "admin", "editor")
-    if not configured():
-        raise HTTPException(503, "El almacenamiento de credenciales no está disponible.")
-    with transaction() as db:
-        accounts.delete_gemini(db, studio_jobs.tenant_for(value), value.get("email", ""))
-    value.pop("gemini_key", None)
-    value["gemini_source"] = "not_configured"
-    return {"ok": True, "message": "Clave personal eliminada. Los nuevos trabajos requieren otra clave en Ajustes."}
+    raise HTTPException(422, "Gemini se administra mediante el secreto de Render; no se puede eliminar desde la app.")
 
 
 # Comprueba la clave configurada mediante la operación de diagnóstico existente.
