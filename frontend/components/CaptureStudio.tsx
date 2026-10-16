@@ -1397,16 +1397,17 @@ export default function CaptureStudio({
                                   type="checkbox"
                                   checked={picture.approved}
                                   disabled={busy || !!draft?.saved}
-                                  onChange={(e) =>
-                                    attempt(async () => {
+                                  onChange={(e) => {
+                                    const approved = e.target.checked;
+                                    void attempt(async () => {
                                       const r = await api<{ draft: Draft }>(
                                         "/api/images/" + s.id + "/approve",
                                         "POST",
-                                        { approved: e.target.checked },
+                                        { approved },
                                       );
                                       setDraft(r.draft);
-                                    })
-                                  }
+                                    });
+                                  }}
                                 />
                                 {picture.approved
                                   ? "Aprobada"
