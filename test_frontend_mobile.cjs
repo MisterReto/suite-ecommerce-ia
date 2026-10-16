@@ -260,7 +260,9 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const wcReview = page.getByRole('region',{name:'Vista previa de la carga'});
     await wcReview.getByText('Sabor: Camarón, Limón y Habanero',{exact:true}).waitFor();
     assert.ok(await wcReview.getByRole('button',{name:'Cargar selección',exact:true}).isDisabled());
-    await wcReview.getByRole('checkbox',{name:/Autorizo añadir variantes a estas familias publicadas/}).check();
+    // Authorization invalidates and unmounts this review immediately.
+    await wcReview.getByRole('checkbox',{name:/Autorizo añadir variantes a estas familias publicadas/}).click();
+    await wcReview.waitFor({state:'hidden'});
     await page.getByRole('button',{name:'Revisar vista previa',exact:true}).click();
     await wcReview.getByText('Sabor: Camarón, Limón y Habanero',{exact:true}).waitFor();
     await wcReview.getByRole('checkbox',{name:/Confirmo cargar y publicar/}).check();
