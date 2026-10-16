@@ -55,7 +55,7 @@ def save_to_drive(value, product, previous_sku, parent_sku):
                   nombre_producto=product.name, Marca=product.brand,
                   descripcion_corta=product.short_description, descripcion_larga=product.long_description,
                   Existencias="" if product.product_type == "variable" else product.stock,
-                  precio="" if product.product_type == "variable" else product.price,
+                  precio="" if product.product_type == "variable" or product.price is None else product.price,
                   categorias=join_category_path(product.category, product.subcategory), etiquetas=", ".join(product.tags or []),
                   codigo_barras=product.barcode or "")
     # These extension columns are established by capture; never overwrite another

@@ -87,6 +87,16 @@ def test_failed_drive_edit_reports_pending_and_retry_does_not_duplicate_stock_or
             InventoryMovement.tenant_id == value["platform_tenant"], InventoryMovement.product_id == product["id"])) == 2
 
 
+def test_clearing_the_price_clears_the_drive_cell(drive_edit):
+    client, _, sheet = drive_edit
+    product = create(client)
+    result = client.put(f"/api/platform/products/{product['id']}", json={**product,
+        "price": None, "sync_drive": True}, headers=ORIGIN)
+    assert result.status_code == 200 and result.json()["drive_saved"] is True, result.text
+    assert sheet.rows[1][11] == ""  # Sheets skips nulls; an empty string clears a cell.
+    assert result.json()["product"]["price"] is None
+
+
 def test_duplicate_drive_sku_and_changed_columns_are_reported_without_writes(drive_edit):
     client, _, sheet = drive_edit
     product = create(client)
