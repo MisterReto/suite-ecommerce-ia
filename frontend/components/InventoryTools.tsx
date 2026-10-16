@@ -3,6 +3,7 @@
 // Conteos y movimientos locales con confirmación explícita.
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import WooCommerceInventory from "./WooCommerceInventory";
 
 type Tool = "count";
 type Row = {
@@ -21,10 +22,11 @@ type Props = {
   tool: Tool; namespace: string; canEdit: boolean; isAdmin: boolean; online: boolean;
   api: <T>(path: string, method?: string, body?: unknown, timeout?: number) => Promise<T>;
   ask: (confirmation: Confirmation) => void;
+  openPublisher: () => void;
 };
 const money = (n: number | null) => n == null ? "—" : new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n);
 
-export default function InventoryTools({ tool, namespace, canEdit, isAdmin, online, api, ask }: Props) {
+export default function InventoryTools({ tool, namespace, canEdit, isAdmin, online, api, ask, openPublisher }: Props) {
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [error, setError] = useState("");
@@ -77,6 +79,7 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
     </section>}
     {busy && <p role="status"><Loader2 className="spin" size={18} /> Consultando servidor…</p>}
     {tool === "count" && <>
+      <WooCommerceInventory online={online} api={api} openPublisher={openPublisher} />
       <section className="p-card">
         <h2>Conteo y movimientos de Drive</h2>
         <p className="p-muted">Registra existencias físicas en tu inventario conectado. Las portadas no tienen stock propio.</p>

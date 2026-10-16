@@ -96,7 +96,9 @@ def test_individual_is_reviewed_and_durable_before_worker_writes(publication, mo
     worker.execute_job(job_id)
     result = client.get("/api/woocommerce/jobs/" + job_id).json()["job"]
     assert result["status"] == "completed", result
-    assert products["S1"]["status"] == "draft" and products["S1"]["stock_quantity"] == 4
+    assert products["S1"]["status"] == "publish" and products["S1"]["stock_quantity"] == 4
+    assert products["S1"]["catalog_visibility"] == "visible"
+    assert "publicados" in result["message"].lower()
     assert any(event["action"] == "producto_creado" for event in result["events"])
     maker.assert_not_called()
 

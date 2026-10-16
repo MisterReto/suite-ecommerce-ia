@@ -5,7 +5,7 @@ import { wakeServices } from "@/lib/service-readiness";
 
 type Selection = { kind: "simple" | "family" | "variant"; sku: string };
 type Row = Selection & { name: string; brand: string; category: string; price: string; variants: number; parent_sku: string };
-type Options = { images: boolean; stock: boolean; tags: boolean; allow_published_family: boolean };
+type Options = { images: boolean; stock: boolean; tags: boolean; allow_published_family: boolean; status: "publish" | "draft" };
 type Item = { sku: string; name: string; price: string; stock: string; brand: string; category: string;
   tags: string; images: { id: string; name: string }[]; attribute: [string, string] | null };
 type Preview = Selection & { parent_sku: string; parent_name: string; items: Item[]; new_status: string };
@@ -34,7 +34,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
   const [kind, setKind] = useState("");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Row[]>([]);
-  const [options, setOptions] = useState<Options>({ images: true, stock: false, tags: false, allow_published_family: false });
+  const [options, setOptions] = useState<Options>({ images: true, stock: false, tags: false, allow_published_family: false, status: "publish" });
   const [review, setReview] = useState<Review>();
   const [confirmed, setConfirmed] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -103,7 +103,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
       ? previous.filter(item => identity(item) !== identity(row)) : [...previous, row]);
     clearReview();
   };
-  const changeOption = (name: keyof Options, value: boolean) => {
+  const changeOption = (name: Exclude<keyof Options, "status">, value: boolean) => {
     setOptions(previous => ({ ...previous, [name]: value })); clearReview();
   };
   const prepare = () => attempt(async () => {
@@ -130,7 +130,8 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
     await api(review.mode === "single" ? "/api/woocommerce/jobs" : "/api/woocommerce/batch-jobs", "POST",
       { preview_token: review.preview_token, request_key, confirm: true });
     setConfirmed(false);
-    setNotice("Carga en cola. Puedes seguir usando la aplicación; los productos nuevos se crean como borradores.");
+    setNotice(options.status === "publish" ? "Carga en cola. Los productos se publicarán al completar la carga."
+      : "Carga en cola. Los productos nuevos se guardarán como borradores.");
     await loadJobs();
   });
   const retry = (job: Job) => attempt(async () => {
@@ -146,7 +147,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
     <section className="p-card">
       <h2>Publicar en WooCommerce</h2>
       <p>Selecciona productos de Sheets y revisa la carga. Las imágenes se relacionan por el SKU real de Drive.</p>
-      <p className="p-muted">Productos nuevos: borradores. Productos existentes: se conservan.</p>
+      <p className="p-muted">Publicación al terminar la carga. También puedes elegir guardar los nuevos como borradores. Los productos existentes conservan sus datos; al elegir Publicado, sus borradores se publican.</p>
       {connection && <p role="status">Tienda: {connection.store || "Pendiente de configurar"} · {connection.configured ? "Configurada" : "Faltan credenciales"}</p>}
       {isAdmin && connection && (!connection.configured || !connection.images_configured) && <details>
         <summary>Configuración de conexión</summary>
@@ -197,6 +198,11 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
         <label><input type="checkbox" checked={options.stock} onChange={e => changeOption("stock", e.target.checked)} disabled={disabled} /> Inventario</label>
         <label><input type="checkbox" checked={options.tags} onChange={e => changeOption("tags", e.target.checked)} disabled={disabled} /> Etiquetas</label>
       </fieldset>
+      <label className="p-form-field">Estado al terminar la carga<select value={options.status} disabled={disabled}
+        onChange={e => { setOptions(previous => ({ ...previous, status: e.target.value as Options["status"] })); clearReview(); }}>
+        <option value="publish">Publicado y visible en la tienda</option><option value="draft">Guardar nuevos como borrador</option>
+      </select></label>
+      <p className="p-muted">Al publicar una variante se publica su familia, incluidas las variantes que ya existan. Revisa la familia completa antes de confirmar.</p>
       <p className="p-muted">Al incluir etiquetas se usan las de cada fila de Sheets. Revisa sus valores en la vista previa.</p>
       <details><summary>Familias ya publicadas</summary><label>
         <input type="checkbox" checked={options.allow_published_family} onChange={e => changeOption("allow_published_family", e.target.checked)} disabled={disabled} />
@@ -207,7 +213,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
       {selected.length > 100 && <p role="alert">Selecciona hasta 100 productos, familias o variantes por lote.</p>}
     </section>
     {review && <section className="p-card" aria-label="Vista previa de la carga">
-      <h3>Vista previa</h3><p>{review.store} · {review.previews.length} selecciones · borradores</p>
+      <h3>Vista previa</h3><p>{review.store} · {review.previews.length} selecciones · {options.status === "publish" ? "Publicados y visibles al terminar" : "Nuevos como borradores"}</p>
       {!!review.omitted.length && <p>Se excluyeron {review.omitted.length} selecciones duplicadas o variantes incluidas en una familia seleccionada.</p>}
       {review.errors.map((item, index) => <p role="alert" key={index}>{item.selection.sku}: {item.message}</p>)}
       {review.previews.map(preview => <article key={identity(preview)} className="wc-preview">
@@ -221,7 +227,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
         </div>)}
       </article>)}
       <label><input type="checkbox" checked={confirmed} disabled={disabled || !!review.errors.length || !canSubmit}
-        onChange={e => setConfirmed(e.target.checked)} /> Confirmo esta carga en WooCommerce con las opciones revisadas.</label>
+        onChange={e => setConfirmed(e.target.checked)} /> {options.status === "publish" ? "Confirmo cargar y publicar estos productos o familias en WooCommerce." : "Confirmo cargar los productos nuevos como borradores en WooCommerce."}</label>
       <button type="button" className="button primary" disabled={disabled || !confirmed || !!review.errors.length || !canSubmit}
         onClick={() => void submit()}>{review.mode === "single" ? "Cargar selección" : "Cargar lote"}</button>
     </section>}

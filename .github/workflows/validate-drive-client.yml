@@ -127,7 +127,7 @@ jobs:
           TEST_REDIS_URL: redis://localhost:6379/0
         run: python -m pytest test_catalog_platform.py test_catalog_controls.py test_stabilization.py test_free_render.py test_functional_parity.py test_web_sessions.py test_integration_removal.py test_sheet_catalog_sync.py -q
       - name: Publicación Colab individual, lotes y prioridad de imágenes
-        run: python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_generation_contract.py -q
+        run: python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_woocommerce_compare.py test_generation_contract.py -q
       - name: Evidencia visual de navegación y fallos del navegador
         if: always()
         uses: actions/upload-artifact@v4

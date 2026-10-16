@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from .api import context, admin
 from .database import transaction
-from .models import GenerationJob, GenerationBatch
+from .models import GenerationJob, GenerationBatch, Product
+from .woocommerce_compare import read_store, compare, quantity
 from .woocommerce_export import Exporter, fingerprint, connection_status, safe_error, store_url
 from .woocommerce_jobs import KIND, enqueue, public_job
 
@@ -28,6 +29,7 @@ class Options(BaseModel):
     stock: bool = False
     tags: bool = False
     allow_published_family: bool = False
+    status: Literal["publish", "draft"] = "publish"
 
 
 class Preview(BaseModel):
@@ -49,6 +51,43 @@ class BatchPreview(BaseModel):
 @router.get("/connection")
 def connection(value=Depends(context)):
     return connection_status()
+
+
+@router.get("/inventory-comparison")
+def inventory_comparison(refresh: bool = False, value=Depends(context)):
+    engine = None
+    try:
+        if not connection_status()["configured"]:
+            raise HTTPException(503, "Configura la conexión de WooCommerce para comparar el inventario.")
+        origin, tenant = store_url(), value["platform_tenant"]
+        cached = value.get("woocommerce_inventory_cache")
+        if (not refresh and cached and cached["expires"] > time.time()
+                and cached["store"] == origin and cached["tenant"] == tenant):
+            snapshot = cached["snapshot"]
+        else:
+            engine = Exporter()
+            snapshot = read_store(engine)
+            value["woocommerce_inventory_cache"] = {"snapshot": snapshot, "store": origin,
+                "tenant": tenant, "expires": time.time() + 45}
+        with transaction() as db:
+            products = db.scalars(select(Product).where(Product.tenant_id == tenant,
+                Product.status.notin_(["deleted", "archived"]))).all()
+            by_id = {row.id: row for row in products}
+            local = [{"sku": row.sku, "name": row.name, "stock": quantity(row.stock),
+                "kind": "family" if row.product_type == "variable" else
+                    "variant" if row.product_type in {"variation", "variant"} or row.parent_id else "simple",
+                "parent_sku": by_id[row.parent_id].sku if row.parent_id in by_id else "",
+                "brand": row.brand, "category": row.category} for row in products]
+        return {**compare(local, snapshot["rows"]), "store": origin,
+            "checked_at": snapshot["checked_at"], "woocommerce_products": snapshot["products"],
+            "woocommerce_variations": snapshot["variations"]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, safe_error(exc)) from None
+    finally:
+        if engine:
+            engine.close()
 
 
 @router.post("/connection/test")
@@ -107,7 +146,7 @@ def preview(data: Preview, value=Depends(context)):
         options, selection = data.options.model_dump(), data.selection.model_dump()
         engine = Exporter().load(value, include_images=options["images"])
         public = engine.preview(selection["kind"], selection["sku"], options)
-        engine.preflight(selection["kind"], selection["sku"])
+        engine.preflight(selection["kind"], selection["sku"], options)
         source = engine.snapshot(selection["kind"], selection["sku"])
         token = fingerprint(source, {**selection, "store": store_url()}, options)
         previews = value.setdefault("woocommerce_previews", {})
@@ -168,7 +207,7 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
         for selection in selected:
             try:
                 public = engine.preview(selection["kind"], selection["sku"], options)
-                engine.preflight(selection["kind"], selection["sku"])
+                engine.preflight(selection["kind"], selection["sku"], options)
                 source = engine.snapshot(selection["kind"], selection["sku"])
                 token = fingerprint(source, {**selection, "store": store_url()}, options)
                 previews.append(public)

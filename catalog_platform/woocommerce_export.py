@@ -274,7 +274,7 @@ class Exporter:
                 "tags": row.get("etiquetas", "") if options["tags"] else "",
                 "attribute": self.ns["atributo_variante"](row) if selected else None,
                 "images": [{"id": f["id"], "name": f["name"]} for f in self.ns["fotos_sku"](row["sku"])]
-                    if options["images"] else []} for row in rows], "new_status": "draft"}
+                    if options["images"] else []} for row in rows], "new_status": options.get("status", "draft")}
 
     def snapshot(self, kind, sku):
         parent, selected, children = self.ns["resolver"](KINDS[kind], sku)
@@ -293,15 +293,44 @@ class Exporter:
         status = connection_status()
         if not status["configured"] or options["images"] and not status["images_configured"]:
             raise ValueError("Configura las credenciales de WooCommerce/WordPress antes de subir.")
+        parent, selected, _ = self.ns["resolver"](KINDS[kind], sku)
+        existing = self.ns["buscar_producto"](parent["sku"])
+        if existing and existing.get("type") not in {None, "simple" if kind == "simple" else "variable"}:
+            raise ValueError("El SKU existente tiene otro tipo de producto en WooCommerce. Revisa la familia antes de continuar.")
+        allow = options.get("allow_published_family", False)
+        # A retry that only finds acknowledged variants performs no new writes.
+        if existing and existing.get("status") == "publish" and selected and not allow:
+            allow = all(self.ns["buscar_variacion"](existing["id"], row["sku"]) for row in selected)
+        if options.get("status") == "publish" and existing and existing.get("status") not in {"draft", "publish"}:
+            raise ValueError("Solo se pueden publicar productos nuevos o borradores. Revisa el estado en WooCommerce.")
         self.ns["ejecutar"](KINDS[kind], sku, imagenes=options["images"], stock=options["stock"],
-            tags=options["tags"], permitir_publicada=options.get("allow_published_family", False))
+            tags=options["tags"], permitir_publicada=allow)
+        if options.get("status") == "publish":
+            # Keep the unchanged Colab creation logic. Publish only after every
+            # selected variation has finished successfully; failures leave a draft.
+            product = self.ns["buscar_producto"](parent["sku"])
+            if not product:
+                raise ValueError("No se encontró el producto creado para confirmar su publicación.")
+            if product.get("status") != "publish" or product.get("catalog_visibility") == "hidden":
+                result = self.ns["wc"]("PUT", f"products/{product['id']}",
+                    data={"status": "publish", "catalog_visibility": "visible"})
+                if result.get("status") != "publish" or result.get("catalog_visibility") != "visible":
+                    raise ValueError("WooCommerce no confirmó la publicación. Revisa el producto antes de reintentar.")
+                self.ns["registrar"]("producto_publicado", sku=parent["sku"], id=result["id"])
         return self.events
 
-    def preflight(self, kind, sku):
+    def preflight(self, kind, sku, options=None):
         """Read the store before review; the worker repeats the lookup before writes."""
         if connection_status()["configured"]:
             parent, selected, _ = self.ns["resolver"](KINDS[kind], sku)
             existing = self.ns["buscar_producto"](parent["sku"])
+            if existing and existing.get("type") not in {None, "simple" if kind == "simple" else "variable"}:
+                raise ValueError("El SKU existente tiene otro tipo de producto en WooCommerce. Revisa la familia antes de continuar.")
+            if options and options.get("status") == "publish" and existing and existing.get("status") not in {"draft", "publish"}:
+                raise ValueError("Solo se pueden publicar productos nuevos o borradores. Revisa el estado en WooCommerce.")
+            if options and existing and existing.get("status") == "publish" and selected and not options.get("allow_published_family"):
+                if any(not self.ns["buscar_variacion"](existing["id"], row["sku"]) for row in selected):
+                    raise ValueError("La familia ya está publicada. Autoriza añadir variantes a familias publicadas para continuar.")
             if existing and kind == "variant":
                 self.ns["buscar_variacion"](existing["id"], selected[0]["sku"])
 

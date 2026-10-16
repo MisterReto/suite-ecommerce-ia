@@ -4027,6 +4027,10 @@ details p {
 .wc-row > input { flex-shrink: 0; margin-top: 4px; }
 .wc-row > span { min-width: 0; }
 .wc-options { display: flex; gap: 18px; flex-wrap: wrap; margin: 18px 0; border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.wc-inventory-row { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; overflow-wrap: anywhere; }
+.wc-inventory-row small { display: block; color: var(--muted); }
+.wc-inventory-row p { margin: 0; }
+@media (min-width: 760px) { .wc-inventory-row { grid-template-columns: 1fr 1fr; } .wc-inventory-row > p { grid-column: 1 / -1; } }
 .wc-preview { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
 .wc-preview progress { width: 100%; max-width: 500px; }
 .wc-publisher .button { margin-top: 10px; }

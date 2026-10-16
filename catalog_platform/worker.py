@@ -393,7 +393,8 @@ def execute_job(job_id):
     try:
         queue.checkpoint(job_id, OWNER)
         if process(job):
-            message = ("Carga terminada. Productos nuevos en borrador." if job["kind"] == "woocommerce_export"
+            message = (("Carga terminada. Productos publicados en WooCommerce." if job["payload"].get("options", {}).get("status") == "publish"
+                        else "Carga terminada. Productos nuevos en borrador.") if job["kind"] == "woocommerce_export"
                        else "Completado. Revisa el resultado antes de guardar.")
             queue.finish(job_id, OWNER, True, message)
         return {"executed": True}

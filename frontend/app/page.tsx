@@ -2245,7 +2245,8 @@ export default function Platform() {
           <InventoryTools key={(session.email || "") + ":" + (session.folder_id || "")}
             tool="count"
             namespace={(session.email || "") + ":" + (session.folder_id || "")}
-            canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask} />
+            canEdit={canEdit} isAdmin={isAdmin} online={online} api={api} ask={ask}
+            openPublisher={() => { location.hash = "more/woocommerce"; setSection("more"); setMoreTab("woocommerce"); }} />
         )}
 
         {section === "more" && moreTab === "woocommerce" && session.authenticated && (

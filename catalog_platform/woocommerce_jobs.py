@@ -143,7 +143,8 @@ def process(job, owner):
             queue.request_lock(db, "woocommerce:" + store_url(), parent["sku"])
             engine.execute(selection["kind"], selection["sku"], payload["options"])
         payload["in_flight"] = None
-        checkpoint("Carga terminada. Los productos nuevos quedaron en borrador.")
+        checkpoint("Carga terminada. Productos publicados en WooCommerce." if payload["options"].get("status") == "publish"
+            else "Carga terminada. Los productos nuevos quedaron en borrador.")
         with transaction() as db:
             audit(db, job["tenant_id"], job["actor"], "woocommerce.export.completed",
                   after={"job_id": job["id"], "selection": selection})

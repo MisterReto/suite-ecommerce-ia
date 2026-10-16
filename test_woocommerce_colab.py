@@ -61,8 +61,12 @@ def store(monkeypatch):
         body = kwargs.get("json") or {}
         calls.append({"method": method, "endpoint": endpoint, "body": deepcopy(body), "data": kwargs.get("data"), "params": deepcopy(kwargs.get("params") or {})})
         if endpoint == "wc/v3/products" and method == "GET":
-            sku = (kwargs.get("params") or {}).get("sku")
-            result = [products[sku]] if sku in products and ((products[sku].get("status") == "trash") == ((kwargs.get("params") or {}).get("status") == "trash")) else []
+            params = kwargs.get("params") or {}
+            sku = params.get("sku")
+            result = [p for code, p in products.items() if (not sku or code == sku)
+                and ((p.get("status") == "trash") == (params.get("status") == "trash"))]
+            size, page = params.get("per_page", 100), params.get("page", 1)
+            result = result[(page - 1) * size:page * size]
         elif endpoint == "wc/v3/products" and method == "POST":
             assert body["sku"] not in products, "No duplicate product write"
             result = {**deepcopy(body), "id": 100 + len(products)}
@@ -74,7 +78,12 @@ def store(monkeypatch):
             result = {**deepcopy(body), "id": 200 + len(variations)}
             variations[body["sku"]] = result
         elif endpoint.startswith("wc/v3/products/"):
-            result = [] if method == "GET" else {**body, "id": len(calls)}
+            existing = next((p for p in products.values() if str(p["id"]) == endpoint.rsplit("/", 1)[-1]), None)
+            if method == "PUT" and existing:
+                existing.update(deepcopy(body))
+                result = existing
+            else:
+                result = [] if method == "GET" else {**body, "id": len(calls)}
         elif endpoint.startswith("wp/v2/media/"):
             result = {"id": 22, "source_url": "https://rincon.creandotusite.com/uploads/" + media[22]}
         elif endpoint == "wp/v2/media":
@@ -84,7 +93,7 @@ def store(monkeypatch):
         else:
             raise AssertionError(endpoint)
         return SimpleNamespace(ok=True, status_code=201 if method == "POST" else 200,
-                               json=lambda: deepcopy(result), text=json.dumps(result))
+                               json=lambda: deepcopy(result), text=json.dumps(result), headers={})
 
     monkeypatch.setattr(requests.Session, "request", request)
     return calls, products, variations, media
