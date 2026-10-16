@@ -86,6 +86,26 @@ def test_sheet_mirror_failure_reports_saved_source_without_repeating_movement(mo
     sync.assert_called_once()
 
 
+def test_sync_api_exposes_partial_success_and_per_product_warnings(client, monkeypatch):
+    from catalog_platform import sheet_sync
+    expected = {"updated": 1, "failed": 1, "product_ids": ["good"],
+                "warnings": [{"sku": "BAD", "name": "Producto inválido", "message": "Corrige las existencias."}]}
+    monkeypatch.setattr(sheet_sync, "sync_inventory", Mock(return_value=expected))
+    result = client.post("/api/tools/sync", json={"confirm": True, "skus": ["GOOD", "BAD"]})
+    assert result.status_code == 200 and result.json()["ok"] is True
+    assert result.json()["result"] == expected
+    assert "1 producto no se pudo" in result.json()["message"] and "advertencias" in result.json()["message"]
+
+
+def test_saved_counts_do_not_claim_complete_catalog_sync_after_partial_failure(monkeypatch):
+    from catalog_platform import sheet_sync
+    import sheet_inventory
+    monkeypatch.setattr("catalog_platform.database.configured", lambda: True)
+    monkeypatch.setattr(sheet_sync, "sync_inventory", Mock(return_value={"updated": 1, "failed": 1, "warnings": []}))
+    result = sheet_inventory.mirror_saved({"email": "test@example.test"}, ["GOOD", "BAD"])
+    assert result["catalog_synced"] is False and "No repitas el movimiento" in result["catalog_message"]
+
+
 def test_native_sheet_write_uses_shared_capture_guard(monkeypatch):
     from contextlib import contextmanager
     import sheet_inventory

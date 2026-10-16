@@ -5,6 +5,8 @@ import json
 import os
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi import HTTPException
 
 from catalog_capture import text
 from catalog_taxonomy import read_inventory
@@ -18,24 +20,32 @@ from .queue import request_lock
 from .security import require_role
 
 
-def named_images(drive, names):
+def named_images(drive, names, *, warnings=None):
     """Read exact names only from direct children of imagenes_generadas."""
     names = {name for name in names if name and "/" not in name and "\\" not in name}
     if not names:
         return {}
     folder = drive.generated_images_folder()
-    if not folder:
-        return {}
     results = {}
-    for item in drive.list(folder, "mimeType contains 'image/'",
-                           fields="id,name,mimeType,parents,trashed", limit=20000):
+    duplicates = set()
+    items = drive.list(folder, "mimeType contains 'image/'",
+                       fields="id,name,mimeType,parents,trashed", limit=20000) if folder else []
+    for item in items:
         name = item.get("name")
         if (name not in names or folder not in item.get("parents", []) or item.get("trashed")
                 or not item.get("mimeType", "").startswith("image/")):
             continue
         if name in results and results[name] != item["id"]:
-            raise ValueError(f"Hay imágenes duplicadas con el mismo nombre en imagenes_generadas: {name}. Revisa esa carpeta antes de continuar.")
+            if warnings is None:
+                raise ValueError(f"Hay imágenes duplicadas con el mismo nombre en imagenes_generadas: {name}. Revisa esa carpeta antes de continuar.")
+            duplicates.add(name)
         results[name] = item["id"]
+    for name in duplicates:
+        results.pop(name, None)
+    if warnings is not None:
+        for name in sorted(names - results.keys()):
+            reason = "Hay varias imágenes con este nombre" if name in duplicates else "No se encontró la imagen"
+            warnings.append({"image": name, "message": f"{reason} en imagenes_generadas. Se omitió esta imagen; los datos del producto sí se pueden sincronizar."})
     return results
 
 
@@ -70,9 +80,9 @@ def sync_inventory_product(value, row, inventory):
 
 def mirror_rows(db, value, root, selected, files, *, fresh=False):
     """Upsert a validated family in one transaction, retaining existing identities."""
-    normalized, errors = normalize(selected)
+    normalized, errors = normalize(selected, detailed_errors=True)
     if errors or len(normalized) != len(selected):
-        raise ValueError("Los datos de Sheets no pudieron validarse para el catálogo de la app.")
+        raise ValueError(errors[0]["message"] if errors else "Los datos de Sheets no pudieron validarse para el catálogo de la app.")
     from studio_api import runtime
     saved = {}
     for data in sorted(normalized, key=lambda item: item["product_type"] != "variable"):
@@ -106,11 +116,11 @@ def mirror_rows(db, value, root, selected, files, *, fresh=False):
 
 
 def sync_inventory(value, skus):
-    """Re-read selected SKUs under the same lock as capture and Drive deletion."""
+    """Re-read under the capture lock, isolating each product with a savepoint."""
     if not configured():
         raise ValueError("Conecta la base de datos del catálogo antes de sincronizar.")
     require_role(value, "admin", "editor")
-    if not isinstance(skus, list) or not 1 <= len(skus) <= 500 or any(not isinstance(sku, str) or not sku.strip() or len(sku) > 80 for sku in skus):
+    if not isinstance(skus, list) or not 1 <= len(skus) <= 500 or any(not isinstance(sku, str) for sku in skus):
         raise ValueError("Selecciona entre 1 y 500 SKU válidos.")
     root = value.get("platform_tenant") or value.get("carpeta_raiz_id_manual") or os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     if not root:
@@ -125,21 +135,75 @@ def sync_inventory(value, skus):
         by_sku = {}
         for row in rows:
             by_sku.setdefault(text(row.get("sku")), []).append(row)
-        wanted = {sku.strip() for sku in skus}
-        for sku in list(wanted):
+        requested = {sku.strip() for sku in skus}
+        wanted = requested.copy()
+        for sku in requested:
+            matches = by_sku.get(sku, [])
+            if len(matches) == 1 and text(matches[0].get("sku_padre")):
+                wanted.add(text(matches[0]["sku_padre"]))
+        warnings, failed, selected, normalized = [], set(), {}, {}
+
+        def warn(sku, message, *, failure=False, image=None):
+            matches = by_sku.get(sku, [])
+            item = {"sku": sku, "name": text(matches[0].get("nombre_producto")) if len(matches) == 1 else "", "message": message}
+            if image:
+                item["image"] = image
+            warnings.append(item)
+            if failure:
+                failed.add(sku)
+
+        for sku in sorted(wanted):
+            if not sku or len(sku) > 80:
+                warn(sku, "El SKU debe contener entre 1 y 80 caracteres.", failure=True)
+                continue
             matches = by_sku.get(sku, [])
             if len(matches) != 1:
-                raise ValueError("Un SKU falta o está duplicado en Sheets. Recarga la tabla.")
-            parent = text(matches[0].get("sku_padre"))
-            if parent:
-                wanted.add(parent)
-        if any(len(by_sku.get(sku, [])) != 1 for sku in wanted):
-            raise ValueError("La variación requiere un padre único en Sheets.")
-        selected = [by_sku[sku][0] for sku in sorted(wanted)]
-        files = named_images(drive, set().union(*(image_names(item) for item in selected)))
-        saved = mirror_rows(db, value, root, selected, files, fresh=True)
+                reason = "El SKU está duplicado en Sheets" if matches else "El SKU falta en Sheets"
+                warn(sku, reason + ". Corrige el inventario y vuelve a sincronizarlo.", failure=True)
+                continue
+            data, errors = normalize(matches, detailed_errors=True)
+            if errors or not data:
+                warn(sku, errors[0]["message"] if errors else "Faltan datos del producto.", failure=True)
+                continue
+            selected[sku], normalized[sku] = matches[0], data[0]
+
+        image_warnings = []
+        try:
+            files = named_images(drive, set().union(*(image_names(row) for row in selected.values())), warnings=image_warnings)
+        except Exception:
+            # A Drive image lookup outage need not prevent saving product data.
+            files = {}
+            image_warnings = [{"image": name, "message": "No se pudieron consultar las imágenes en Drive. Revisa la conexión y los permisos; se sincronizaron los datos sin añadir esta imagen."}
+                              for name in sorted(set().union(*(image_names(row) for row in selected.values())))]
+        saved = {}
+        for sku in sorted(selected, key=lambda key: (normalized[key]["product_type"] == "variation", key)):
+            data = normalized[sku]
+            parent = data["parent_sku"]
+            if data["product_type"] == "variation" and (parent not in saved or normalized[parent]["product_type"] != "variable"):
+                warn(sku, f"No se pudo sincronizar su padre {parent or '(sin SKU padre)'}. Revisa que exista una sola fila de tipo variable y corrige sus advertencias.", failure=True)
+                continue
+            try:
+                # Roll back this product's fields, images, stock and audit together.
+                with db.begin_nested():
+                    product_ids = mirror_rows(db, value, root, [selected[sku]], files, fresh=True)
+                    db.flush()
+                saved.update(product_ids)
+            except (ValueError, HTTPException) as exc:
+                from app_security import public_error
+                warn(sku, public_error(ValueError(exc.detail) if isinstance(exc, HTTPException) else exc), failure=True)
+                continue
+            except SQLAlchemyError:
+                warn(sku, "No se pudo guardar el producto en la base de datos. Revisa conflictos de SKU y sus relaciones antes de reintentar.", failure=True)
+                continue
+            except Exception:
+                warn(sku, "Un error interno impidió guardar este producto. Revisa los registros del servidor y vuelve a sincronizarlo.", failure=True)
+                continue
+            for issue in image_warnings:
+                if issue["image"] in image_names(selected[sku]):
+                    warn(sku, issue["message"], image=issue["image"])
     value.pop("capture_snapshot", None)
-    return {"updated": len(saved), "product_ids": list(saved.values())}
+    return {"requested": len(requested), "updated": len(saved), "failed": len(failed),
+            "product_ids": list(saved.values()), "warnings": warnings}
 
 
 def delete_from_drive(db, value, product):

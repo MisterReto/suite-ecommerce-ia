@@ -52,7 +52,12 @@ async def execute(request, operation, value):
         from catalog_platform.sheet_sync import sync_inventory
         payload = await request.json()
         result = await asyncio.to_thread(sync_inventory, value, payload.get("skus"))
-        return {"ok": True, "result": result, "message": f"Se sincronizaron {result['updated']} productos con el catálogo de la app."}
+        message = ("Se sincronizó 1 producto" if result["updated"] == 1 else f"Se sincronizaron {result['updated']} productos") + " con el catálogo de la app."
+        if result.get("failed"):
+            message += " 1 producto no se pudo sincronizar." if result["failed"] == 1 else f" {result['failed']} productos no se pudieron sincronizar."
+        if result.get("warnings"):
+            message += " Revisa las advertencias por producto."
+        return {"ok": True, "result": result, "message": message}
     if operation == "inventory":
         return await asyncio.to_thread(inventory, value, request.query_params.get("q", "")[:500])
     if operation == "history":

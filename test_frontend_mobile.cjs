@@ -57,6 +57,12 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
           rows:[{sku:product.sku,nombre_producto:product.name,Marca:product.brand,categorias:"Dulces",Existencias:10,precio:35,counted:false,variable_parent:false},
             {sku:"123456xxxxxxx",nombre_producto:"Portada de prueba",Existencias:0,precio:0,counted:false,variable_parent:true}]}});
         if (operation === "history") return route.fulfill({json:{rows:[]}});
+        if (operation === "sync") return route.fulfill({json:{ok:true,
+          message:"Se sincronizó 1 producto con el catálogo de la app. 1 producto no se pudo sincronizar. Revisa las advertencias por producto.",
+          result:{updated:1,failed:1,product_ids:[product.id],warnings:[
+            {sku:"123456xxxxxxx",name:"Portada de prueba",message:"Corrige estos campos: nombre (1–180 caracteres)."},
+            {sku:product.sku,name:product.name,image:"imagen_"+"larga".repeat(40)+".jpg",message:"Hay varias imágenes con este nombre en imagenes_generadas. Se omitió esta imagen."}
+          ]}}});
         if (operation === "media-preview") return route.fulfill({json:{summary:{ready:1},
           wordpress_configured:true,wordpress_write:true,woocommerce_write:true,
           rows:[{sku:product.sku,name:product.name,ready:true,wc_id:10,images:[{requested_filename:product.sku+"_1_hd.jpg",resolved_filename:product.sku+"_1_hd.jpg",resolution:"exact"}]}]}});
@@ -207,9 +213,14 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("button",{name:"Sincronizar catálogo de la app (2)",exact:true}).click();
     assert.equal(nativeWrites.length,1,"Catalog sync opens confirmation before writing");
     await page.getByRole("dialog").getByRole("button",{name:"Sincronizar catálogo",exact:true}).click();
-    await page.getByText("Guardado en prueba",{exact:true}).waitFor();
+    await page.getByText(/Se sincronizó 1 producto/).waitFor();
     assert.equal(nativeWrites[1].operation,"sync");
     assert.deepEqual(nativeWrites[1].body,{confirm:true,skus:[product.sku,"123456xxxxxxx"]});
+    const warnings = page.getByRole("status",{name:"Advertencias de sincronización"});
+    await warnings.waitFor();
+    assert.equal(await warnings.getByRole("listitem").count(),2);
+    await warnings.getByText(/Corrige estos campos: nombre/).waitFor();
+    await warnings.getByText(/Hay varias imágenes/).waitFor();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"Native inventory fits phone width");
     await page.screenshot({path:path.join(__dirname,"test-results","navigation-mobile.png"),fullPage:true});
     await nav.getByRole("link",{name:"Más",exact:true}).click();

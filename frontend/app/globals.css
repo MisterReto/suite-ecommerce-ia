@@ -3984,6 +3984,9 @@ details p {
 }
 /* Native tools share the platform shell; only their table scrolls horizontally. */
 .p-native-tools { min-width: 0; }
+.p-sync-warnings { border: 1px solid #d6a329; background: #fffaf0; overflow-wrap: anywhere; }
+.p-sync-warnings ul { max-height: 360px; overflow-y: auto; padding-left: 24px; }
+.p-sync-warnings li + li { margin-top: 12px; }
 .p-native-tools > p[role="status"] { display: flex; gap: 8px; align-items: center; }
 .p-native-tools .p-toolbar { align-items: end; flex-wrap: wrap; }
 .p-native-tools .p-toolbar .p-form-field { margin: 0; flex: 1 1 180px; }

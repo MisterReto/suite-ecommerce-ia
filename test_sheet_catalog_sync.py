@@ -255,12 +255,13 @@ def test_native_table_sync_reads_fresh_sheet_and_mirrors_catalog(setup, monkeypa
     assert result["updated"] == 1
     assert client.get("/api/platform/products").json()["items"][0]["sku"] == "SPRITE"
     monkeypatch.setattr(sheet_sync, "read_inventory", lambda *args: (object(), "sheet", []))
-    with pytest.raises(ValueError, match="falta"):
-        sheet_sync.sync_inventory(value, ["SPRITE"])
+    result = sheet_sync.sync_inventory(value, ["SPRITE"])
+    assert result["updated"] == 0 and result["failed"] == 1
+    assert result["warnings"][0]["sku"] == "SPRITE" and "falta" in result["warnings"][0]["message"]
     assert client.get("/api/platform/products").json()["total"] == 1
 
 
-def test_native_bulk_sync_is_atomic_and_preserves_family(setup, monkeypatch):
+def test_native_bulk_sync_keeps_valid_products_and_preserves_family(setup, monkeypatch):
     client, value, _ = setup
     parent = {"sku": "FAMILYFULL", "nombre_producto": "Familia", "tipo": "variable", "categorias": "Dulces > Galletas"}
     child = {"sku": "CHILD", "sku_padre": "FAMILYFULL", "tipo": "variation", "nombre_producto": "Fresa", "precio": 35, "Existencias": 7}
@@ -273,10 +274,118 @@ def test_native_bulk_sync_is_atomic_and_preserves_family(setup, monkeypatch):
     assert next(item for item in items if item["sku"] == "CHILD")["parent_id"] == father["id"]
     invalid = {"sku": "INVALID", "nombre_producto": "Inválido", "tipo": "simple", "Existencias": -1}
     monkeypatch.setattr(sheet_sync, "read_inventory", lambda *args: (object(), "sheet", [{**child, "Existencias": 9}, parent, invalid]))
-    with pytest.raises(ValueError, match="validarse"):
-        sheet_sync.sync_inventory(value, ["CHILD", "INVALID"])
+    result = sheet_sync.sync_inventory(value, ["CHILD", "INVALID"])
+    assert result["updated"] == 2 and result["failed"] == 1
+    assert result["warnings"][0]["sku"] == "INVALID"
+    assert "existencias" in result["warnings"][0]["message"]
     assert client.get("/api/platform/products").json()["total"] == 2
-    assert client.get("/api/platform/products/" + next(item["id"] for item in items if item["sku"] == "CHILD")).json()["product"]["stock"] == 7
+    assert client.get("/api/platform/products/" + next(item["id"] for item in items if item["sku"] == "CHILD")).json()["product"]["stock"] == 9
+
+
+def bulk_source(monkeypatch, rows):
+    monkeypatch.setattr(sheet_sync, "read_inventory", lambda *args: (object(), "sheet", rows))
+    monkeypatch.setattr(sheet_sync, "DriveService", lambda *args: SimpleNamespace(owns=lambda *args: True))
+
+
+def test_bulk_sync_reports_missing_duplicates_and_bad_fields_without_repeating_stock(setup, monkeypatch):
+    client, value, _ = setup
+    rows = [{"sku": "GOOD", "nombre_producto": "Válido", "Existencias": 4},
+            {"sku": "DUP", "nombre_producto": "Primero"}, {"sku": "DUP", "nombre_producto": "Segundo"},
+            {"sku": "PRICE", "nombre_producto": "Precio inválido", "precio": "private-cell"},
+            {"sku": "NAME", "nombre_producto": ""}]
+    bulk_source(monkeypatch, rows)
+    result = sheet_sync.sync_inventory(value, ["GOOD", "GOOD", "DUP", "MISSING", "PRICE", "NAME", "", "X" * 81])
+    assert result["requested"] == 7 and result["updated"] == 1 and result["failed"] == 6
+    issues = {item["sku"]: item["message"] for item in result["warnings"]}
+    assert "duplicado" in issues["DUP"] and "falta" in issues["MISSING"]
+    assert "precio" in issues["PRICE"] and "nombre" in issues["NAME"]
+    assert "private-cell" not in str(result)
+    assert sheet_sync.sync_inventory(value, ["GOOD"])["product_ids"] == result["product_ids"]
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(InventoryMovement).where(InventoryMovement.product_id == result["product_ids"][0])) == 1
+    assert client.get("/api/platform/products").json()["total"] == 1
+
+
+@pytest.mark.parametrize("parent", [None, {"sku": "PARENTFULL", "nombre_producto": ""},
+                                     {"sku": "PARENT", "nombre_producto": "Tipo simple"}])
+def test_bulk_sync_skips_bad_parent_and_children_but_saves_unrelated_products(setup, monkeypatch, parent):
+    client, value, _ = setup
+    parent_sku = parent["sku"] if parent else "ABSENT"
+    child = {"sku": "CHILD", "nombre_producto": "Variante", "tipo": "variation", "sku_padre": parent_sku}
+    rows = [child, {"sku": "GOOD", "nombre_producto": "Válido"}] + ([parent] if parent else [])
+    bulk_source(monkeypatch, rows)
+    result = sheet_sync.sync_inventory(value, ["CHILD", "GOOD"])
+    assert any(item["sku"] == "CHILD" and parent_sku in item["message"] for item in result["warnings"])
+    assert {p["sku"] for p in client.get("/api/platform/products").json()["items"]} == ({"GOOD", "PARENT"} if parent_sku == "PARENT" else {"GOOD"})
+
+
+def test_bulk_sync_invalid_sibling_does_not_block_valid_variant(setup, monkeypatch):
+    client, value, _ = setup
+    rows = [{"sku": "PARENTFULL", "nombre_producto": "Familia"},
+            {"sku": "BAD", "nombre_producto": "Inválido", "tipo": "variation", "sku_padre": "PARENTFULL", "Existencias": -1},
+            {"sku": "GOOD", "nombre_producto": "Válido", "tipo": "variation", "sku_padre": "PARENTFULL", "Existencias": 3}]
+    bulk_source(monkeypatch, rows)
+    result = sheet_sync.sync_inventory(value, ["BAD", "GOOD"])
+    assert result["updated"] == 2 and result["failed"] == 1
+    products = {p["sku"]: p for p in client.get("/api/platform/products").json()["items"]}
+    assert products["GOOD"]["parent_id"] == products["PARENTFULL"]["id"]
+
+
+def test_bulk_sync_real_database_failure_rolls_back_only_that_product(setup, monkeypatch):
+    client, value, _ = setup
+    existing = create(client, sku="B_FAIL", stock=2, category="Antes")
+    rows = [{"sku": sku, "nombre_producto": "Actualizado", "Existencias": 8, "categorias": "Después"}
+            for sku in ["A_GOOD", "B_FAIL", "C_GOOD"]]
+    bulk_source(monkeypatch, rows)
+    original = sheet_sync.mirror_rows
+    def fail_after_write(db, value, root, selected, files, **kwargs):
+        result = original(db, value, root, selected, files, **kwargs)
+        if selected[0]["sku"] == "B_FAIL":
+            db.add(Product(tenant_id=root, sku="B_FAIL", name="private-token"))
+            db.flush()  # Real uniqueness violation; the session must recover via savepoint.
+        return result
+    monkeypatch.setattr(sheet_sync, "mirror_rows", fail_after_write)
+    result = sheet_sync.sync_inventory(value, [row["sku"] for row in rows])
+    assert result["updated"] == 2 and result["failed"] == 1
+    assert result["warnings"][0]["sku"] == "B_FAIL" and "base de datos" in result["warnings"][0]["message"]
+    assert "private-token" not in str(result) and "INSERT" not in str(result)
+    product = client.get("/api/platform/products/" + existing["id"]).json()["product"]
+    assert product["stock"] == 2 and product["category"] == "Antes" and product["name"] == existing["name"]
+    assert client.get("/api/platform/products").json()["total"] == 3
+    with transaction() as db:
+        assert db.scalar(select(func.count()).select_from(InventoryMovement).where(InventoryMovement.product_id == existing["id"])) == 1
+
+
+def test_bulk_sync_image_duplicates_and_missing_files_warn_without_losing_data(setup, monkeypatch):
+    client, value, _ = setup
+    sdk = DriveDouble(value["platform_tenant"])
+    sdk.items["duplicate"] = {**sdk.items["own"], "id": "duplicate"}
+    row = {"sku": "GOOD", "nombre_producto": "Producto", "imagenes": "sprite.jpg,cover.jpg,missing.jpg"}
+    monkeypatch.setattr(sheet_sync, "read_inventory", lambda *args: (sdk, "sheet", [row]))
+    result = sheet_sync.sync_inventory(value, ["GOOD"])
+    assert result["updated"] == 1 and result["failed"] == 0
+    assert {item["image"] for item in result["warnings"]} == {"sprite.jpg", "missing.jpg"}
+    assert all(item["sku"] == "GOOD" for item in result["warnings"])
+    with transaction() as db:
+        assert list(db.scalars(select(ProductImage.drive_file_id).where(ProductImage.product_id == result["product_ids"][0]))) == ["shared"]
+
+
+def test_bulk_sync_image_lookup_failure_is_sanitized_and_keeps_product_data(setup, monkeypatch):
+    _, value, _ = setup
+    bulk_source(monkeypatch, [{"sku": "GOOD", "nombre_producto": "Producto", "imagenes": "sprite.jpg"}])
+    monkeypatch.setattr(sheet_sync, "named_images", Mock(side_effect=RuntimeError("private-token")))
+    result = sheet_sync.sync_inventory(value, ["GOOD"])
+    assert result["updated"] == 1 and result["failed"] == 0
+    assert "permisos" in result["warnings"][0]["message"] and "private-token" not in str(result)
+
+
+def test_bulk_sync_global_source_boundary_still_blocks_all_writes(setup, monkeypatch):
+    client, value, _ = setup
+    bulk_source(monkeypatch, [{"sku": "GOOD", "nombre_producto": "Producto"}])
+    monkeypatch.setattr(sheet_sync, "DriveService", lambda *args: SimpleNamespace(owns=lambda *args: False))
+    with pytest.raises(ValueError, match="autorizada"):
+        sheet_sync.sync_inventory(value, ["GOOD"])
+    assert client.get("/api/platform/products").json()["total"] == 0
 
 
 def test_delete_removes_sheet_and_trashes_only_own_images_with_backups(setup, monkeypatch):

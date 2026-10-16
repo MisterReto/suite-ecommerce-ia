@@ -7,6 +7,7 @@ import io
 import json
 import hashlib
 from datetime import datetime, timezone
+from pydantic import ValidationError
 from sqlalchemy import select
 from .models import Product, ProductImage, GenerationJob, uid
 from .catalog import save_product, serialize, audit
@@ -17,7 +18,7 @@ from inventory_schema import split_category_path
 
 
 # Convierte filas externas al contrato de producto sin inventar cantidades ausentes.
-def normalize(rows):
+def normalize(rows, *, detailed_errors=False):
     from .api import ProductInput
 
     results = []
@@ -64,7 +65,10 @@ def normalize(rows):
 
             def number(key, legacy, default=0):
                 val = row.get(key, row.get(legacy, default))
-                return default if val in (None, "") else float(val)
+                try:
+                    return default if val in (None, "") else float(val)
+                except (TypeError, ValueError):
+                    raise ValueError(f"El campo {legacy} debe contener un número válido.") from None
 
             data = ProductInput(
                 sku=sku,
@@ -98,12 +102,32 @@ def normalize(rows):
                 :1000
             ]
             results.append(result)
-        except Exception:
+        except Exception as exc:
+            message = "Revisa SKU, tipo, nombre, cantidades o estructura de atributos."
+            if detailed_errors:
+                if isinstance(exc, ValidationError):
+                    labels = {
+                        "sku": "SKU (1–80 letras, números, guiones o guiones bajos)",
+                        "name": "nombre (1–180 caracteres)",
+                        "price": "precio (número entre 0 y 1,000,000)",
+                        "cost": "costo (número entre 0 y 1,000,000)",
+                        "stock": "existencias (número entre 0 y 1,000,000)",
+                        "product_type": "tipo (simple, variable o variation)",
+                        "tags": "etiquetas (máximo 20, de hasta 80 caracteres)",
+                        "attributes": "atributos (nombres y opciones de texto dentro de los límites)",
+                    }
+                    fields = dict.fromkeys(labels.get(str(e["loc"][0]), str(e["loc"][0])) for e in exc.errors())
+                    message = "Corrige estos campos: " + ", ".join(fields) + "."
+                elif isinstance(exc, json.JSONDecodeError):
+                    message = "Las etiquetas contienen JSON inválido; usa una lista válida o texto separado por comas."
+                elif isinstance(exc, ValueError):
+                    # Only our own fixed validation messages; never include raw cell values.
+                    message = str(exc)
             errors.append(
                 {
                     "row": index + 2,
                     "sku": str(row.get("sku", ""))[:80],
-                    "message": "Revisa SKU, tipo, nombre, cantidades o estructura de atributos.",
+                    "message": message,
                 }
             )
     return results, errors

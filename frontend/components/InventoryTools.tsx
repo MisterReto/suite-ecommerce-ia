@@ -16,6 +16,7 @@ type Inventory = {
 type History = { timestamp: string; tipo: string; cantidad: number; stock_anterior: number;
   stock_nuevo: number; motivo: string; referencia: string; usuario: string };
 type Confirmation = { title: string; text: string; label: string; action: () => Promise<void> };
+type SyncWarning = { sku: string; name: string; message: string; image?: string };
 type Props = {
   tool: Tool; namespace: string; canEdit: boolean; isAdmin: boolean; online: boolean;
   api: <T>(path: string, method?: string, body?: unknown, timeout?: number) => Promise<T>;
@@ -28,6 +29,7 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
   const submitting = useRef(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [syncWarnings, setSyncWarnings] = useState<SyncWarning[]>([]);
   const [query, setQuery] = useState("");
   const [inventory, setInventory] = useState<Inventory>();
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -43,7 +45,7 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
     api<T>("/api/tools/" + operation, method, body, 330_000);
   const attempt = async (action: () => Promise<void>) => {
     if (submitting.current || !online) return;
-    submitting.current = true; setBusy(true); setError(""); setNotice("");
+    submitting.current = true; setBusy(true); setError(""); setNotice(""); setSyncWarnings([]);
     try { await action(); } catch (e) { if (mounted.current) setError((e as Error).message); }
     finally { submitting.current = false; if (mounted.current) setBusy(false); }
   };
@@ -66,6 +68,13 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
   return <div className="p-native-tools" aria-label="Herramientas integradas">
     {error && <div className="p-alert danger" role="alert">{error}</div>}
     {notice && <div className="p-alert" role="status">{notice}</div>}
+    {syncWarnings.length > 0 && <section className="p-card p-sync-warnings" aria-label="Advertencias de sincronización" role="status">
+      <h2>Advertencias de sincronización ({syncWarnings.length})</h2>
+      <p className="p-muted">Los productos sincronizados ya están guardados. Corrige lo indicado en cada advertencia y vuelve a sincronizar.</p>
+      <ul>{syncWarnings.map((warning, index) => <li key={warning.sku + ":" + index}>
+        <strong>{warning.sku || "(sin SKU)"}</strong>{warning.name && <> · {warning.name}</>}{warning.image && <> · {warning.image}</>}: {warning.message}
+      </li>)}</ul>
+    </section>}
     {busy && <p role="status"><Loader2 className="spin" size={18} /> Consultando servidor…</p>}
     {tool === "count" && <>
       <section className="p-card">
@@ -84,8 +93,9 @@ export default function InventoryTools({ tool, namespace, canEdit, isAdmin, onli
           <button className="button secondary" disabled={!canEdit || disabled || !inventory.rows.length} onClick={() => {
             const skus = selected.length ? selected : inventory.rows.map(row => row.sku);
             confirm("Sincronizar catálogo", `${skus.length} SKU. Se leerán sus datos actuales de Drive y se actualizarán productos, categorías, imágenes y existencias en la app.`, "Sincronizar catálogo", async () => {
-              const data = await request<{ message: string }>("sync", "POST", { confirm: true, skus });
-              await loadInventory(); setNotice(data.message);
+              const data = await request<{ message: string; result: { warnings?: SyncWarning[] } }>("sync", "POST", { confirm: true, skus });
+              setNotice(data.message); setSyncWarnings(data.result.warnings || []);
+              await loadInventory();
             });
           }}>Sincronizar catálogo de la app ({selected.length || inventory.rows.length})</button>
           <div className="p-table-wrap"><table><thead><tr><th>Seleccionar</th><th>SKU / historial</th><th>Producto</th><th>Stock</th><th>Precio</th><th>Conteo físico final</th><th>Estado</th></tr></thead>

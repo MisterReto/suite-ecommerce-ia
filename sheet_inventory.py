@@ -28,6 +28,12 @@ def mirror_saved(session, skus):
     from catalog_platform.sheet_sync import sync_inventory
     try:
         result = sync_inventory(session, skus)
+        if result.get("failed"):
+            return {"catalog_synced": False, "catalog_result": result,
+                    "catalog_message": f"Se sincronizaron {result['updated']} productos; {result['failed']} quedaron pendientes. Drive guardado. No repitas el movimiento: usa Sincronizar catálogo para revisar las advertencias."}
+        if result.get("warnings"):
+            return {"catalog_synced": True, "catalog_result": result,
+                    "catalog_message": "Catálogo actualizado con advertencias de imágenes. Usa Sincronizar catálogo para revisarlas."}
         return {"catalog_synced": True, "catalog_result": result, "catalog_message": "Catálogo de la app actualizado."}
     except Exception:
         return {"catalog_synced": False, "catalog_message": "Drive guardado. No repitas el movimiento: usa Sincronizar catálogo para completar la actualización en la app."}
