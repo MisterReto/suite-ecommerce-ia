@@ -35,7 +35,7 @@ def context(request: Request):
         raise HTTPException(401, "Conecta Google Drive para continuar.")
     if not member(value.get("email", "")):
         raise HTTPException(
-            403, "El administrador debe autorizar tu correo y su rol en la configuración de Render."
+            403, "El administrador debe autorizar tu cuenta en APP_ROLE_MAP."
         )
     if not configured():
         raise HTTPException(

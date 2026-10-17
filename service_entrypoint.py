@@ -28,13 +28,12 @@ fastapi_app.include_router(loyverse_router)
 @fastapi_app.get("/service-health")
 def service_health():
     from catalog_platform.gemini_config import server_key
-    from access_policy import status as access_status
     return {"ok": True, "interface": "nextjs", "backend": "fastapi", "role": "api",
             "generation_backend": os.getenv("STUDIO_IMAGE_JOBS", "worker"),
             "service_id": os.getenv("RENDER_SERVICE_ID", ""),
             "version": os.getenv("RENDER_GIT_COMMIT", ""),
             "session_backend": "postgresql" if os.getenv("DATABASE_URL") else "memory",
-            "gemini_configured": bool(server_key()), "access": access_status()}
+            "gemini_configured": bool(server_key())}
 
 
 _mounts = [r for r in fastapi_app.routes if (isinstance(r, Mount) and r.path in {"", "/"}) or getattr(r,"path",None) == "/{tool_path:path}"]

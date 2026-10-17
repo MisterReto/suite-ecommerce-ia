@@ -22,12 +22,10 @@ def health_server(ready, port):
                 self.send_error(404)
                 return
             from .gemini_config import server_key
-            from access_policy import status as access_status
             body = json.dumps({
                 "ok": ready.is_set(), "role": "image-worker", "backend": "rq",
                 "version": os.getenv("RENDER_GIT_COMMIT", "local"),
                 "gemini_configured": bool(server_key()),
-                "access": access_status(),
             }).encode()
             self.send_response(200 if ready.is_set() else 503)
             self.send_header("Content-Type", "application/json")

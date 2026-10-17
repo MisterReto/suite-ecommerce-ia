@@ -40,7 +40,7 @@ class RoleMiddleware:
         ):
             return await JSONResponse(
                 {
-                    "error": "Tu cuenta no está autorizada. El administrador debe revisar tu correo y su rol en Render."
+                    "error": "Tu cuenta no está autorizada. El administrador debe añadirla a APP_ROLE_MAP."
                 },
                 status_code=403,
             )(scope, receive, send)

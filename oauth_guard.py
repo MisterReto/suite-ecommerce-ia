@@ -1,6 +1,8 @@
 """Bounded, one-use Google OAuth state. Compatible with the production session runtime."""
 # Estado OAuth y PKCE de un solo uso, con caducidad y lista de correos autorizados.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
+import os
+import json
 import secrets
 import threading
 import time
@@ -36,5 +38,12 @@ def consume_oauth(cookie_state, state):
 
 # Comprueba la lista de acceso y, cuando se exige, los correos con rol configurado.
 def email_allowed(email):
-    from access_policy import login_allowed
-    return login_allowed(email)
+    allowed = {e.strip().casefold() for e in os.getenv("APP_ALLOWED_EMAILS", "").split(",") if e.strip()}
+    if not allowed and os.getenv("APP_REQUIRE_ALLOWLIST", "false").lower() == "true":
+        try:
+            roles = json.loads(os.getenv("APP_ROLE_MAP", "{}"))
+        except ValueError:
+            return False
+        return isinstance(roles, dict) and email.casefold() in {
+            str(key).casefold() for key, role in roles.items() if role in {"admin", "editor", "viewer"}}
+    return not allowed or email.casefold() in allowed
