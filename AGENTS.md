@@ -20,4 +20,6 @@ El Colab conserva su flujo masivo original de CSV y Drive, guardado directo y au
 
 ## Documentación
 
+Drive debe validar pertenencia a la carpeta autorizada, sin exigir que el usuario sea propietario. Cuando Google omita `parents`, la prueba alternativa es un listado acotado desde esa carpeta, con ID exacto, paginación y sin seguir accesos directos. Nunca autorizar solo por nombre ni saltarse la validación de una hoja global fuera de su carpeta. Una carpeta personal seleccionada usa su propio inventario y no la hoja predeterminada de Render.
+
 Notion es una guía de funcionamiento vigente. Actualizar sus secciones existentes; no acumular mapas duplicados, notas de versiones ni registros de cambios. Documentar restricciones de manera visible.

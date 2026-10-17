@@ -46,7 +46,7 @@ Las credenciales de conexión y cifrado siguen configuradas en Render. No se tra
 | `GOOGLE_REDIRECT_URI` | B | API + worker | Callback explícito; prevalece sobre BASE | No | Uno de URI/BASE | Sí si BASE correcto | Sí | OAuth vuelve al destino incorrecto |
 | `GOOGLE_REFRESH_TOKEN` | C | Sin lector activo; verificar históricos | Refresh de usuario está dentro de OAuth cifrado | Sí | No en código actual | Solo tras verificar consumidores históricos | No en runtime actual | Quitar de histórico sin comprobar puede romper su OAuth |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | A | API + worker, opcional | Cuenta dedicada existente, si se usa | Sí | Condicional | Solo si no se usa; confirmar primero | Sí | Cambia acceso Google y scopes del modo dedicado |
-| `GOOGLE_SHEET_ID` | B | API + worker | ID del inventario_completo existente | No | Sí operativamente | No recomendado | Sí | Depende de discovery, puede resolver otro archivo |
+| `GOOGLE_SHEET_ID` | B | API + worker | Inventario existente de la carpeta predeterminada; otra carpeta seleccionada busca su propia hoja nativa | No | Sí operativamente | No recomendado | Sí | Depende de discovery, puede resolver otro archivo |
 | `IMAGE_JOB_TIMEOUT_SECONDS` | B | API + worker | Timeout de ejecución RQ; default 1800 | No | Default en código | Sí si default sirve | Sí | Tiempo distinto puede cortar jobs |
 | `IMAGE_WORKER_CONCURRENCY` | B | Worker | Procesos RQ 1–8; default 1 | No | Default seguro en código | Sí si 1 basta | Sí | Usa 1; afecta RAM/tiempo si se cambia |
 | `IMAGE_WORKER_ORIGIN` | B | API | URL pública de despertar del worker existente | No | Sí operativamente con suspensión free | No recomendado | Sí | Worker puede continuar dormido; no reemplaza Redis |

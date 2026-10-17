@@ -1176,11 +1176,21 @@ def _preparar_estructura(service, sesion=None):
         if hasattr(service, "root_id"):
             service.root_id = carpeta_manual
         images=_buscar_archivo(service,NOMBRE_SUBCARPETA_IMAGENES,carpeta_manual,"application/vnd.google-apps.folder")
-        sheet=os.getenv("GOOGLE_SHEET_ID") or _buscar_archivo(service,NOMBRE_GOOGLE_SHEET,carpeta_manual,"application/vnd.google-apps.spreadsheet")
-        if os.getenv("GOOGLE_SHEET_ID"):
+        configured_sheet = os.getenv("GOOGLE_SHEET_ID")
+        default_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        # A personal store must use its own inventory, never the default
+        # store's configured Sheet. Keep strict validation for the default.
+        if default_root and carpeta_manual != default_root:
+            configured_sheet = None
+        sheet = configured_sheet or _buscar_archivo(service,NOMBRE_GOOGLE_SHEET,carpeta_manual,"application/vnd.google-apps.spreadsheet")
+        if configured_sheet:
             from drive_service import DriveService
             boundary = DriveService(service, carpeta_manual)
             if not boundary.owns(sheet) or boundary.metadata(sheet).get("mimeType") != "application/vnd.google-apps.spreadsheet":
+                import logging
+                logging.getLogger(__name__).warning(
+                    "drive_inventory_boundary_rejected default_root=%s personal_root=%s",
+                    carpeta_manual == default_root, bool(sesion.get("carpeta_raiz_id_manual")))
                 raise ValueError("GOOGLE_SHEET_ID no es una hoja nativa de la carpeta autorizada.")
         return carpeta_manual,images,sheet,_buscar_archivo(service,NOMBRE_LOGO,carpeta_manual)
     if carpeta_manual:

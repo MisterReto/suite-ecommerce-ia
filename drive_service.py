@@ -3,6 +3,7 @@
 import io
 import re
 from pathlib import Path
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload, MediaIoBaseUpload
 
 
@@ -43,7 +44,12 @@ class DriveService:
                 )
                 .execute()
             )
-            rows.extend(result.get("files", []))
+            for item in result.get("files", []):
+                # The server-side parent query proves this relationship even
+                # when a link-shared file omits parents from its metadata.
+                if "parents" in fields and not item.get("parents"):
+                    item["parents"] = [parent]
+                rows.append(item)
             if len(rows) > limit:
                 raise ValueError("La carpeta excede el límite de esta operación.")
             page = result.get("nextPageToken")
@@ -97,7 +103,10 @@ class DriveService:
         return parent
 
     def owns(self, file_id, include_trashed=False):
+        if not self.root_id or not file_id:
+            return False
         pending, seen = [file_id], set()
+        missing_parents, name = False, None
         for _ in range(10):
             if self.root_id in pending:
                 return True
@@ -106,18 +115,65 @@ class DriveService:
                 if item in seen:
                     continue
                 seen.add(item)
-                info = (
-                    self.files()
-                    .get(
-                        fileId=item, fields="id,parents,trashed", supportsAllDrives=True
-                    )
-                    .execute()
-                )
+                try:
+                    info = self.files().get(fileId=item,
+                        fields="id,name,parents,trashed", supportsAllDrives=True).execute()
+                except HttpError as error:
+                    if item == file_id or error.resp.status not in {403, 404}:
+                        raise
+                    missing_parents = True
+                    continue
+                if item == file_id:
+                    name = info.get("name")
+                    if info.get("trashed") and not include_trashed:
+                        return False
                 if not info.get("trashed") or include_trashed:
+                    missing_parents |= not bool(info.get("parents"))
                     next_ids.extend(info.get("parents", []))
             pending = next_ids
             if not pending:
                 break
+        return bool(missing_parents and name and self._listed_descendant(
+            file_id, name, include_trashed))
+
+    def _listed_descendant(self, file_id, name, include_trashed):
+        """Prove membership from the root down when parents are not visible.
+
+        Every request stays inside an already proven folder. Never follow
+        shortcuts or grant access based only on a matching filename.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", self.root_id):
+            return False
+        safe = name.replace("\\", "\\\\").replace("'", "\\'")
+        pending, seen, requests = [(self.root_id, 0)], set(), 0
+        while pending:
+            folder, depth = pending.pop(0)
+            if folder in seen:
+                continue
+            seen.add(folder)
+            page = None
+            while True:
+                requests += 1
+                if requests > 100:
+                    return False
+                result = self.files().list(
+                    q=f"'{folder}' in parents"
+                        + ("" if include_trashed else " and trashed=false")
+                        + f" and (name='{safe}' or mimeType='application/vnd.google-apps.folder')",
+                    fields="nextPageToken,files(id,mimeType,trashed)",
+                    pageSize=100, pageToken=page,
+                    supportsAllDrives=True, includeItemsFromAllDrives=True,
+                ).execute()
+                for item in result.get("files", []):
+                    if item.get("trashed") and not include_trashed:
+                        continue
+                    if item.get("id") == file_id:
+                        return True
+                    if item.get("mimeType") == "application/vnd.google-apps.folder" and depth < 9:
+                        pending.append((item["id"], depth + 1))
+                page = result.get("nextPageToken")
+                if not page:
+                    break
         return False
 
     def download(self, file_id):
