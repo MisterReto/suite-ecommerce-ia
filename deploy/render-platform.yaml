@@ -173,8 +173,21 @@ services:
       type: web
       name: rincon-catalog-api
       envVarKey: APP_ROLE_MAP
+  - key: APP_ALLOWED_EMAILS
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: APP_ALLOWED_EMAILS
+  - key: APP_REQUIRE_ALLOWLIST
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: APP_REQUIRE_ALLOWLIST
   - key: APP_DEFAULT_ROLE
-    value: viewer
+    fromService:
+      type: web
+      name: rincon-catalog-api
+      envVarKey: APP_DEFAULT_ROLE
   - key: GOOGLE_SHEET_ID
     fromService:
       type: web

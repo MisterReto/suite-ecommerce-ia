@@ -40,31 +40,14 @@ def unseal(data):
 # Resuelve admin, editor o viewer desde la configuración y valida el formato del mapa de
 # roles.
 def role_for(email):
-    try:
-        roles = json.loads(os.getenv("APP_ROLE_MAP", "{}"))
-    except ValueError:
-        raise RuntimeError("APP_ROLE_MAP debe ser JSON de correos y roles.") from None
-    if not isinstance(roles, dict):
-        raise RuntimeError("APP_ROLE_MAP debe ser un objeto de correos y roles.")
-    roles = {str(key).casefold(): value for key, value in roles.items()}
-    fallback = "viewer" if os.getenv("DATABASE_URL") else "editor"
-    role = roles.get(email.casefold(), os.getenv("APP_DEFAULT_ROLE", fallback))
-    if role not in {"admin", "editor", "viewer"}:
-        raise RuntimeError("Rol configurado inválido.")
-    return role
+    from access_policy import role_for as resolve
+    return resolve(email)
 
 
 # Comprueba la pertenencia del correo al catálogo autorizado.
 def member(email):
-    if not os.getenv("DATABASE_URL") and not os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"):
-        return True
-    try:
-        roles = json.loads(os.getenv("APP_ROLE_MAP", "{}"))
-    except ValueError:
-        return False
-    if not isinstance(roles, dict):
-        return False
-    return email.casefold() in {str(key).casefold() for key in roles}
+    from access_policy import catalog_member
+    return catalog_member(email)
 
 
 # Rechaza en servidor una operación si el usuario no pertenece al catálogo o carece del rol

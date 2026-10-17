@@ -20,4 +20,6 @@ El Colab conserva su flujo masivo original de CSV y Drive, guardado directo y au
 
 ## Documentación
 
+El acceso se resuelve en `access_policy.py`: una allowlist explícita autoriza pertenencia al catálogo; `APP_ROLE_MAP` asigna los roles individuales y `APP_DEFAULT_ROLE` rige los correos permitidos sin rol específico. Con allowlist vacía y acceso restringido solo entran los roles explícitos válidos. No volver a exigir que el correo esté duplicado en ambas variables ni elevar roles implícitamente. API y worker deben compartir la política; `/service-health` permite comparar conteos y huella sin publicar correos.
+
 Notion es una guía de funcionamiento vigente. Actualizar sus secciones existentes; no acumular mapas duplicados, notas de versiones ni registros de cambios. Documentar restricciones de manera visible.

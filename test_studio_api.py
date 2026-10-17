@@ -27,7 +27,7 @@ def setup(monkeypatch):
     monkeypatch.setenv("STUDIO_IMAGE_JOBS", "local")
     monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://suite.example")
     sid = secrets.token_urlsafe(24)
-    value = {"session_id": sid, "expires_at": time.time()+600,
+    value = {"session_id": sid, "email": "studio@example.test", "expires_at": time.time()+600,
              "file_namespace": secrets.token_urlsafe(24), "gemini_key": "test-key-with-no-live-credits"}
     studio.runtime.SESSIONS[sid] = value
     monkeypatch.setattr(studio.runtime.captura, "snapshot", lambda *a: (None, "test-sheet", []))
@@ -93,7 +93,7 @@ def test_auth_csrf_and_upload_ownership(setup):
     assert "/tmp/" not in client.get("/api/session").text
     assert value["gemini_key"] not in client.get("/api/session").text
     sid = secrets.token_urlsafe(24)
-    studio.runtime.SESSIONS[sid] = {"session_id": sid, "expires_at": time.time()+600}
+    studio.runtime.SESSIONS[sid] = {"session_id": sid, "email": "other@example.test", "expires_at": time.time()+600}
     try:
         client.cookies.set("session_id", sid)
         assert client.get("/api/files/"+key).status_code == 404
@@ -183,7 +183,7 @@ def test_job_progress_recovers_and_conflicting_work_is_blocked(setup, monkeypatc
         assert client.post("/api/generate", json={"slots": ["1_hd"]}, headers=ORIGIN).status_code == 409
         assert client.put("/api/draft", json=studio.Product().model_dump(), headers=ORIGIN).status_code == 409
         sid = secrets.token_urlsafe(24)
-        studio.runtime.SESSIONS[sid] = {"session_id": sid, "expires_at": time.time()+600}
+        studio.runtime.SESSIONS[sid] = {"session_id": sid, "email": "other@example.test", "expires_at": time.time()+600}
         client.cookies.set("session_id", sid)
         assert client.get("/api/jobs/"+response.json()["job"]["id"]).status_code == 404
         studio.runtime._eliminar_sesion(sid)
