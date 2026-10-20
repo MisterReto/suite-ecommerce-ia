@@ -9,7 +9,10 @@ import os
 import secrets
 import time
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
+from starlette.background import BackgroundTask
+from pathlib import Path
+import tempfile
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
@@ -557,19 +560,21 @@ def image(image_id: str, download: bool = False, value=Depends(context)):
         if not item:
             raise HTTPException(404, "Imagen no disponible.")
         file_id = item.drive_file_id
-    data = DriveService.for_session(runtime, value).download(file_id)
-    # Metadata is authenticated and scoped to this tenant.
-    return Response(
-        data,
+    # Download in bounded chunks to /tmp instead of buffering full images
+    # in API RAM. Preserve tenant scoping and Drive ownership validation.
+    handle, path = tempfile.mkstemp(prefix="rincon_image_", suffix=".jpg", dir="/tmp")
+    os.close(handle)
+    try:
+        DriveService.for_session(runtime, value).download_to(file_id, path)
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+    return FileResponse(
+        path,
         media_type=item.mime_type,
-        headers={
-            "Cache-Control": "no-store",
-            **(
-                {"Content-Disposition": "attachment; filename=imagen-rincon"}
-                if download
-                else {}
-            ),
-        },
+        filename="imagen-rincon" if download else None,
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(Path(path).unlink, missing_ok=True),
     )
 
 
