@@ -46,6 +46,11 @@ services:
   envVars:
   - key: SUITE_SERVE_FRONTEND
     value: 'false'
+  # Run image generation only in the worker, not the API process.
+  - key: STUDIO_IMAGE_JOBS
+    value: worker
+  - key: GENERATION_QUEUE_BACKEND
+    value: rq
   - key: GEMINI_API_KEY
     sync: false
   - key: APP_PUBLIC_ORIGIN
@@ -143,6 +148,10 @@ services:
       property: connectionString
   - key: IMAGE_WORKER_CONCURRENCY
     value: '1'
+  - key: STUDIO_IMAGE_JOBS
+    value: worker
+  - key: GENERATION_QUEUE_BACKEND
+    value: rq
   - key: GEMINI_API_KEY
     fromService:
       type: web
