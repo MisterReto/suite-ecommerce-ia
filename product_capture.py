@@ -1,11 +1,13 @@
 """Product capture and family covers scoped to the connected customer."""
 import hashlib
+from contextlib import closing
 import io
 from pathlib import Path
 import re
 import secrets
 import textwrap
 import time
+import tempfile
 
 from fastapi import Request
 
@@ -212,18 +214,21 @@ class ProductCapture:
         image_id = self.backend["_buscar_archivo"](service, name, folder)
         if not image_id:
             return None
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, service.files().get_media(fileId=image_id))
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-            if buffer.tell() > 12 * 1024 * 1024:
-                return None
-        buffer.seek(0)
-        with Image.open(buffer) as source:
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            image.thumbnail((1200, 1200))
-            return image
+        with tempfile.TemporaryFile(dir="/tmp") as buffer:
+            downloader = MediaIoBaseDownload(buffer, service.files().get_media(fileId=image_id),
+                                            chunksize=512 * 1024)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                if buffer.tell() > 12 * 1024 * 1024:
+                    return None
+            buffer.seek(0)
+            with closing(Image.open(buffer)) as source:
+                # Reduce before RGB conversion/copies; JPEG can use decoder draft mode.
+                source.draft(None, (1200, 1200))
+                source.thumbnail((1200, 1200))
+                with closing(ImageOps.exif_transpose(source)) as oriented:
+                    return oriented.convert("RGB")
 
     def cover(self, kind, mode, parent, title, sku, reference, request: Request):
         if kind != "Variable":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import io
@@ -843,16 +844,17 @@ def save(data: Save, request: Request, value=Depends(editor)):
 def match_image(sku: str, value=Depends(session)):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", sku):
         raise HTTPException(422, "SKU inválido.")
-    service, _, rows = runtime.captura.snapshot(value)
-    row = next((r for r in rows if text(r.get("sku")) == sku), {})
-    filename = text(row.get("imagenes")).split(",")[0].strip()
-    _, folder, _, _ = runtime._preparar_estructura(service, value)
-    picture = runtime.captura._drive_picture(service, folder, filename) if filename else None
-    if picture is None:
-        raise HTTPException(404, "Este producto no tiene una foto disponible.")
-    path = f"/tmp/{value['file_namespace']}_match_{hashlib.sha256(sku.encode()).hexdigest()[:20]}.jpg"
-    picture.save(path, "JPEG", quality=85)
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    from catalog_platform.image_delivery import PREVIEW_SLOTS, memory_operation, temporary_image
+    with PREVIEW_SLOTS, memory_operation("match_preview"):
+        service, _, rows = runtime.captura.snapshot(value)
+        row = next((r for r in rows if text(r.get("sku")) == sku), {})
+        filename = text(row.get("imagenes")).split(",")[0].strip()
+        _, folder, _, _ = runtime._preparar_estructura(service, value)
+        picture = runtime.captura._drive_picture(service, folder, filename) if filename else None
+        if picture is None:
+            raise HTTPException(404, "Este producto no tiene una foto disponible.")
+        with closing(picture):
+            return temporary_image(lambda path: picture.save(path, "JPEG", quality=85))
 
 
 # Concilia un guardado pendiente entre Sheets y SQL sin repetir una generación.
