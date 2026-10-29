@@ -15,11 +15,21 @@ class DriveService:
         # Compatibility boundary: old capture/media modules keep their proven calls.
         return self.client.files()
 
+    def close(self):
+        """Release this owned client's persistent HTTP connections."""
+        close = getattr(self.client, "close", None)
+        if close:
+            close()
+
     @classmethod
     def for_session(cls, runtime, value):
         client = runtime._get_drive_service(value)
-        root, _, _, _ = runtime._preparar_estructura(client, value)
         service = client if isinstance(client, cls) else cls(client)
+        try:
+            root, _, _, _ = runtime._preparar_estructura(client, value)
+        except BaseException:
+            service.close()
+            raise
         service.root_id = root
         return service
 
