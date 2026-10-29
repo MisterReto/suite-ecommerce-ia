@@ -32,6 +32,8 @@ ORIGIN={"Origin":"https://suite.example"}
 class DriveDouble:
     def __init__(self,root): self.root_id=root;self.files={};self.uploads=[]
     def download(self,key): return self.files[key]
+    def download_to(self,key,path):
+        Path(path).write_bytes(self.files[key]);return path
     def working_folder(self,*parts): return "/".join(parts)
     def folder(self,name,parent=None): return (parent + "/" if parent else "") + name
     def upload(self,path,name,folder,properties=None):
