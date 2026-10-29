@@ -558,7 +558,7 @@ def image(image_id: str, download: bool = False, value=Depends(context)):
             raise HTTPException(404, "Imagen no disponible.")
         file_id = item.drive_file_id
     from .image_delivery import drive_image
-    return drive_image(DriveService.for_session(runtime, value), file_id,
+    return drive_image(lambda: DriveService.for_session(runtime, value), file_id,
                        media_type=item.mime_type, download=download)
 
 

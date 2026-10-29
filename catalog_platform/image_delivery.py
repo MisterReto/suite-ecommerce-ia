@@ -59,8 +59,16 @@ def temporary_image(writer, *, media_type="image/jpeg", download=False):
         raise
 
 
-def drive_image(drive, file_id, *, media_type, download=False):
+def drive_image(drive_factory, file_id, *, media_type, download=False):
     def write(path):
+        # Bound client construction and folder validation as well as the transfer.
+        # Queued requests must not retain a Google SDK client while waiting here.
         with DOWNLOAD_SLOTS, memory_operation("catalog_download"):
-            drive.download_to(file_id, path)
+            drive = drive_factory()
+            try:
+                drive.download_to(file_id, path)
+            finally:
+                close = getattr(drive, "close", None)
+                if close:
+                    close()
     return temporary_image(write, media_type=media_type, download=download)

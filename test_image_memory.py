@@ -96,7 +96,7 @@ def test_concurrent_downloads_are_bounded_and_not_buffered():
                 counts["active"] -= 1
     drive = SimpleNamespace(download_to=write)
     def fetch(i):
-        response = drive_image(drive, str(i), media_type="image/jpeg")
+        response = drive_image(lambda: drive, str(i), media_type="image/jpeg")
         messages = deliver(response)
         return b"".join(m.get("body", b"") for m in messages)
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -133,7 +133,58 @@ def test_drive_download_retains_ownership_check(tmp_path):
     drive = DriveService(None, "authorized")
     drive.owns = lambda _: False
     with pytest.raises(ValueError):
-        drive_image(drive, "foreign", media_type="image/jpeg")
+        drive_image(lambda: drive, "foreign", media_type="image/jpeg")
+
+
+def test_client_lifecycle_is_bounded_before_construction():
+    lock = threading.Lock()
+    counts = {"active": 0, "peak": 0, "created": 0, "closed": 0}
+    class Client:
+        def __init__(self):
+            with lock:
+                counts["active"] += 1
+                counts["created"] += 1
+                counts["peak"] = max(counts["peak"], counts["active"])
+            time.sleep(.01)  # Represents discovery/folder validation, before media I/O.
+        def download_to(self, key, path):
+            time.sleep(.01)
+            Path(path).write_bytes(key.encode())
+        def close(self):
+            with lock:
+                counts["active"] -= 1
+                counts["closed"] += 1
+    def fetch(i):
+        response = drive_image(Client, str(i), media_type="image/jpeg")
+        return b"".join(m.get("body", b"") for m in deliver(response))
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        assert list(pool.map(fetch, range(24))) == [str(i).encode() for i in range(24)]
+    assert counts == {"active": 0, "peak": 2, "created": 24, "closed": 24}
+
+
+def test_failed_media_download_closes_client_and_unlinks_partial_file():
+    from unittest.mock import Mock
+    paths = []
+    def fail(key, path):
+        paths.append(Path(path))
+        Path(path).write_bytes(b"partial")
+        raise ValueError("not authorized")
+    client = SimpleNamespace(download_to=fail, close=Mock())
+    with pytest.raises(ValueError, match="not authorized"):
+        drive_image(lambda: client, "foreign", media_type="image/jpeg")
+    client.close.assert_called_once()
+    assert len(paths) == 1 and not paths[0].exists()
+
+
+def test_failed_drive_folder_validation_closes_the_owned_client():
+    from unittest.mock import Mock
+    from drive_service import DriveService
+    sdk = SimpleNamespace(close=Mock())
+    value = {"email": "editor@example.test"}
+    runtime = SimpleNamespace(_get_drive_service=Mock(return_value=DriveService(sdk)),
+                              _preparar_estructura=Mock(side_effect=ValueError("wrong root")))
+    with pytest.raises(ValueError, match="wrong root"):
+        DriveService.for_session(runtime, value)
+    sdk.close.assert_called_once()
 
 
 @pytest.mark.parametrize("email,role", [("admin@example.test", "admin"),
