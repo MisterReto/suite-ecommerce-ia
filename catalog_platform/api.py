@@ -557,9 +557,20 @@ def image(image_id: str, download: bool = False, value=Depends(context)):
         if not item:
             raise HTTPException(404, "Imagen no disponible.")
         file_id = item.drive_file_id
-    from .image_delivery import drive_image
-    return drive_image(DriveService.for_session(runtime, value), file_id,
-                       media_type=item.mime_type, download=download)
+    data = DriveService.for_session(runtime, value).download(file_id)
+    # Metadata is authenticated and scoped to this tenant.
+    return Response(
+        data,
+        media_type=item.mime_type,
+        headers={
+            "Cache-Control": "no-store",
+            **(
+                {"Content-Disposition": "attachment; filename=imagen-rincon"}
+                if download
+                else {}
+            ),
+        },
+    )
 
 
 # Resuelve exactamente los productos y variantes que se van a cotizar; excluye padres y
