@@ -14,11 +14,50 @@ on:
       - cleanup/remove-store-integrations-20261012
   pull_request:
     branches:
+      - feature/woocommerce-and-product-removal-20261009
       - agent/woocommerce-inventory-foundation
       - agent/catalog-platform
       - agent/stabilize-architecture-20261006
 
 jobs:
+  image-memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rincon_test
+          POSTGRES_PASSWORD: test-only-not-a-secret
+          POSTGRES_DB: rincon_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rincon_test -d rincon_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt -r requirements-test.txt
+      - name: Image delivery, permissions and interrupted response cleanup
+        run: python -m pytest -q test_image_memory.py test_drive_shared_access.py test_capture_workflow.py test_generation_contract.py test_colab_generation.py
+      - name: Real Redis RQ and PostgreSQL without paid provider calls
+        env:
+          TEST_REDIS_URL: redis://localhost:6379/15
+          TEST_DATABASE_URL: postgresql+psycopg://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
+        run: python -m pytest -q test_image_memory.py test_catalog_platform.py test_stabilization.py test_free_render.py
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -120,7 +159,7 @@ jobs:
           PY
       - name: Verificar aislamiento y delegación entre servicios
         run: |
-          python -m pytest test_stability.py test_generation_content.py test_catalog_capture.py test_bulk_security.py test_gemini_costs.py test_capture_workflow.py test_colab_generation.py -q
+          python -m pytest test_stability.py test_generation_content.py test_catalog_capture.py test_bulk_security.py test_gemini_costs.py test_capture_workflow.py test_colab_generation.py test_image_memory.py -q
           python -m pytest test_studio_api.py test_creative_pipeline.py test_generation_contract.py test_catalog_platform.py test_catalog_controls.py test_frontend_separation.py test_functional_parity.py test_web_sessions.py test_native_tools.py test_integration_removal.py test_sheet_catalog_sync.py test_drive_shared_access.py test_product_edit.py test_product_attributes.py -q
       - name: Cola y solicitudes concurrentes en PostgreSQL real
         env:
