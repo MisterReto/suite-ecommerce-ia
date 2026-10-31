@@ -1,4 +1,4 @@
-# Existing native inventory services; preserve manually configured Neon connections.
+# API, worker and queue on Render; frontend on Vercel. Preserve Neon connections.
 previews:
   generation: 'off'
 databases: []
@@ -10,28 +10,6 @@ services:
   maxmemoryPolicy: noeviction
   persistenceMode: 'off'
   ipAllowList: []
-- type: web
-  name: rincon-frontend
-  runtime: docker
-  repo: https://github.com/MisterReto/suite-ecommerce-ia
-  branch: feature/woocommerce-and-product-removal-20261009
-  dockerfilePath: ./Dockerfile.frontend
-  dockerContext: .
-  plan: free
-  region: oregon
-  autoDeployTrigger: "off"
-  healthCheckPath: /
-  envVars:
-  - key: SUITE_API_ORIGIN
-    fromService:
-      type: web
-      name: rincon-catalog-api
-      envVarKey: RENDER_EXTERNAL_URL
-  - key: SUITE_WORKER_ORIGIN
-    fromService:
-      type: web
-      name: rincon-catalog-worker
-      envVarKey: RENDER_EXTERNAL_URL
 - type: web
   name: rincon-catalog-api
   runtime: docker
@@ -49,10 +27,7 @@ services:
   - key: GEMINI_API_KEY
     sync: false
   - key: APP_PUBLIC_ORIGIN
-    fromService:
-      type: web
-      name: rincon-frontend
-      envVarKey: RENDER_EXTERNAL_URL
+    value: https://rincon-frontend.vercel.app
   - key: DATABASE_URL
     sync: false
   - key: IMAGE_WORKER_ORIGIN
@@ -91,11 +66,8 @@ services:
     value: viewer
   - key: GOOGLE_SHEET_ID
     value: 1gnuDwcceWwN4ksNnyq3Hs_MQHTfnZQZjeLnph72aUrE
-  - key: GOOGLE_REDIRECT_BASE
-    fromService:
-      type: web
-      name: rincon-frontend
-      envVarKey: RENDER_EXTERNAL_URL
+  - key: GOOGLE_REDIRECT_URI
+    value: https://rincon-frontend.vercel.app/auth/callback
   - key: WOOCOMMERCE_URL
     fromService:
       type: web
@@ -180,11 +152,11 @@ services:
       type: web
       name: rincon-catalog-api
       envVarKey: GOOGLE_SHEET_ID
-  - key: GOOGLE_REDIRECT_BASE
+  - key: GOOGLE_REDIRECT_URI
     fromService:
       type: web
-      name: rincon-frontend
-      envVarKey: RENDER_EXTERNAL_URL
+      name: rincon-catalog-api
+      envVarKey: GOOGLE_REDIRECT_URI
   - key: WOOCOMMERCE_URL
     fromService:
       type: web
