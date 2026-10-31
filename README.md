@@ -32,4 +32,8 @@ Los tests requieren los valores **ficticios** Google que preparan sus fixtures. 
 
 API: `uvicorn service_entrypoint:fastapi_app --host 0.0.0.0 --port 8000`. Worker de Render: `python -m catalog_platform.worker_web`; necesita PostgreSQL, Redis y la misma clave de cifrado que API. Frontend separado: SUITE_FRONTEND_MODE=standalone y SUITE_API_ORIGIN HTTPS de API al construir.
 
+El frontend de Vercel utiliza la raíz `frontend`, framework Next.js, `npm ci` y `npm run build`, con el directorio de salida predeterminado. Configurar `SUITE_FRONTEND_MODE=vercel`, `SUITE_API_ORIGIN=https://rincon-catalog-api.onrender.com` y `SUITE_WORKER_ORIGIN=https://rincon-catalog-worker.onrender.com`. No copiar secretos del backend a Vercel. La rama de producción es `feature/woocommerce-and-product-removal-20261009`.
+
+Para cambiar el dominio, registrar su URL HTTPS exacta terminada en `/auth/callback` en el cliente OAuth de Google y configurar `GOOGLE_REDIRECT_URI` explícita en API y worker. API debe usar ese origen exacto en `APP_PUBLIC_ORIGIN`. Se requiere iniciar sesión en el nuevo dominio. Comprobar login, catálogo y cargas antes de suspender únicamente el servicio `rincon-frontend` de Render; conservar API, worker y cola activos. Los proxies externos de Vercel tienen un límite de 120 segundos por petición; los trabajos largos deben continuar mediante sus flujos en cola o Colab.
+
 La propuesta deploy/render-platform.yaml se valida en CI y mantiene autodeploy desactivado. No aplicarla como alta de infraestructura; corresponde a los recursos existentes. No guardar secretos en .env versionados ni NEXT_PUBLIC_*.

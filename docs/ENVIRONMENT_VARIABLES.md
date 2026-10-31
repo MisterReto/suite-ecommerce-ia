@@ -72,7 +72,7 @@ Las credenciales de conexión y cifrado siguen configuradas en Render. No se tra
 | `STUDIO_IMAGE_JOBS` | B | API + worker | worker predeterminado en Dockerfiles y entrypoint API | No | Sí en runtime; incluida en imagen | Sí del panel después de construir la imagen nueva | Override opcional | API y worker de la imagen nueva conservan generación separada |
 | `SUITE_API_ORIGIN` | B | Frontend build | Origen HTTPS de FastAPI | No | Sí con standalone | No | Sí | Build/proxy falla; nunca añadir credenciales |
 | `SUITE_DRIVE_ONLY` | C | Módulo retirado / verificar históricos | Parámetro exclusivo de ecommerce/puente retirado | No | No en tres procesos limpios | Sí actuales después de corte; históricos pendiente | No en runtime activo | Sin efecto en flujo limpio; histórico puede depender |
-| `SUITE_FRONTEND_MODE` | B | Frontend build | standalone o export | No | Sí para Next separado | No en arquitectura actual | Sí | Default export no conserva proxy standalone |
+| `SUITE_FRONTEND_MODE` | B | Frontend build | vercel, standalone o export | No | Sí para Next separado | No en arquitectura actual | Sí | Default export no conserva proxy; Vercel utiliza vercel |
 | `SUITE_SERVE_FRONTEND` | B | API | Compatibilidad hosting frontend; default false | No | Default seguro false | Sí en API separada | Sí | true carga hosting adicional; false mantiene proxy Next |
 | `SUITE_SERVICE_ROLE` | C | Solo retired_service; API/worker no lo leen | Etiqueta de health histórico, antes main/sync | No | No en tres procesos actuales | Sí actuales después del corte; conservar históricos | Histórico solamente | Sin efecto en API/worker limpios; histórico usa default |
 | `SYNC_DRIVE_CACHE_TTL` | C | Módulo retirado / verificar históricos | Parámetro exclusivo de ecommerce/puente retirado | No | No en tres procesos limpios | Sí actuales después de corte; históricos pendiente | No en runtime activo | Sin efecto en flujo limpio; histórico puede depender |
@@ -108,7 +108,7 @@ La tabla incluye todos los nombres leídos en código actual, los lectores de m�
 
 ## Defaults y variaciones por servicio
 
-- Frontend: SUITE_FRONTEND_MODE=standalone y SUITE_API_ORIGIN del servicio API. Solo el origen público se expone al navegador, nunca tokens.
+- Frontend: SUITE_FRONTEND_MODE=vercel en Vercel o standalone en un servidor Next propio; SUITE_API_ORIGIN del servicio API y SUITE_WORKER_ORIGIN del worker. Solo los orígenes públicos se exponen al navegador, nunca tokens. El dominio nuevo requiere GOOGLE_REDIRECT_URI explícita en API/worker y APP_PUBLIC_ORIGIN exacto en API; registrar el callback en Google y verificarlo antes de suspender el frontend de Render.
 - API: STUDIO_IMAGE_JOBS=worker por defecto, SUITE_SERVE_FRONTEND=false por defecto. RQ, origen público, límites, allowlist, roles, carpeta/Sheet siguen configurables.
 - Worker: GENERATION_QUEUE_BACKEND=rq, STUDIO_IMAGE_JOBS=worker, DATABASE_URL y REDIS_URL compartidos con API. Concurrencia default 1 y timeout default 1800 permanecen parametrizables.
 - CREDENTIAL_ENCRYPTION_KEY: conservar el valor actual en API y la referencia compartida del worker. El Blueprint cambia generateValue por sync:false para evitar generar una clave nueva. No rotar ni regenerar durante esta limpieza.

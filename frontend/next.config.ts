@@ -1,8 +1,9 @@
-// Modo standalone/export y proxy al origen API validado; conserva cookies y sirve /login localmente.
+// Modos standalone, Vercel y export; proxy al origen API validado y /login local.
 // Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 import type { NextConfig } from "next";
 
-const separate = process.env.SUITE_FRONTEND_MODE === "standalone";
+const vercel = process.env.SUITE_FRONTEND_MODE === "vercel";
+const separate = vercel || process.env.SUITE_FRONTEND_MODE === "standalone";
 let upstream = "";
 let workerOrigin = "";
 if (separate) {
@@ -24,7 +25,7 @@ if (separate) {
 }
 
 const config: NextConfig = {
-  output: separate ? "standalone" : "export",
+  output: vercel ? undefined : separate ? "standalone" : "export",
   trailingSlash: !separate,
   skipTrailingSlashRedirect: separate,
   images: { unoptimized: true },
