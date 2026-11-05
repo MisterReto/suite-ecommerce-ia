@@ -5,6 +5,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 import secrets
 import time
@@ -202,6 +203,7 @@ class ConfirmInput(BaseModel):
 class DeleteProductInput(ConfirmInput):
     version: int = Field(ge=1)
     delete_from_drive: bool = False
+    retain_untrashable_images: bool = False
 
 
 # Confirmación y lista limitada a 100 IDs; no interpreta Detener todos como una consulta
@@ -431,9 +433,18 @@ def delete_product(product_id: str, data: DeleteProductInput, value=Depends(cont
         drive_result = None
         if data.delete_from_drive:
             from .sheet_sync import delete_from_drive
+            from .deletion_errors import DeletionError
             try:
-                drive_result = delete_from_drive(db, value, product)
-            except Exception:
+                options = {"retain_untrashable_images": True} if data.retain_untrashable_images else {}
+                drive_result = delete_from_drive(db, value, product, **options)
+            except DeletionError as error:
+                logging.getLogger("uvicorn.error").warning(
+                    "product_delete_failed stage=%s exception_type=%s provider_status=%s provider_reason=%s",
+                    error.stage, error.cause_type, error.provider_status, error.provider_reason)
+                raise HTTPException(error.status_code, str(error)) from None
+            except Exception as error:
+                logging.getLogger("uvicorn.error").warning(
+                    "product_delete_failed stage=unknown exception_type=%s", type(error).__name__)
                 raise HTTPException(503, "No se completó la eliminación en Drive. El producto permanece en la app; reintenta para terminar la operación.") from None
         for job in pending:
             request_cancel(job)
