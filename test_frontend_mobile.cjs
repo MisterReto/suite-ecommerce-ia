@@ -42,7 +42,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     const nativeWrites = [];
     const productEdits = [], wcReviews = [];
     let remaining = 2, batchSteps = 0;
-    let catalogRemoved = false;
+    let catalogRemoved = false, retainMedia = false;
     let jobList = ["studio_generation", "generation", "enrichment"].map((kind, index) => ({
       id: "queued-"+index, kind, actor: "test@example.test", product_id: null,
       status: "queued", progress: 0, message: "En cola", created_at: "2026-10-10T05:57:00Z", payload: {},
@@ -100,7 +100,8 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
       if (pathname === "/api/platform/products/"+product.id && request.method() === "DELETE") {
         controls.push({method:request.method(),path:pathname,body:request.postDataJSON()});
         catalogRemoved = true;
-        return route.fulfill({json:{ok:true,product_id:product.id,drive:{sheet:{deleted:true},trashed_image_ids:["test-image"],backup_id:"test-backup"}}});
+        return route.fulfill({json:{ok:true,product_id:product.id,drive:{sheet:{deleted:true},
+          trashed_image_ids:retainMedia?[]:["test-image"],retained_image_ids:retainMedia?["protected-image"]:[],backup_id:"test-backup"}}});
       }
       if (pathname.endsWith("/cancel") && request.method() === "POST") {
         const body = request.postDataJSON();
@@ -147,7 +148,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     assert.ok((await removeButton.boundingBox()).height >= 44, "Delete has a mobile touch target");
     await removeButton.click();
     const removeDialog = page.getByRole("dialog");
-    await removeDialog.getByText(/sus imágenes propias irán a la papelera de Drive/).waitFor();
+    await removeDialog.getByText(/las demás permanecerán en Drive y te avisaremos/).waitFor();
     await removeDialog.getByText(/Las imágenes compartidas y el historial se conservan/).waitFor();
     assert.equal(controls.length,0,"Opening confirmation performs no deletion");
     await removeDialog.getByRole("button", {name:"Cancelar",exact:true}).click();
@@ -206,7 +207,14 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await page.getByRole("dialog").getByRole("button", {name:"Eliminar producto",exact:true}).click();
     await page.getByRole("heading", {name:"Tu catálogo empieza aquí",exact:true}).waitFor();
     assert.equal(controls[2].method,"DELETE");
-    assert.deepEqual(controls[2].body,{confirm:true,version:product.version,delete_from_drive:true});
+    assert.deepEqual(controls[2].body,{confirm:true,version:product.version,delete_from_drive:true,retain_untrashable_images:true});
+    await page.getByText("Producto eliminado de la app y Sheets. Sus imágenes propias se enviaron a la papelera de Drive.",{exact:true}).waitFor();
+    catalogRemoved = false; retainMedia = true;
+    await page.getByRole("button",{name:"Actualizar panel",exact:true}).click();
+    await page.getByRole("button",{name:"Eliminar "+product.name,exact:true}).click();
+    await page.getByRole("dialog").getByRole("button",{name:"Eliminar producto",exact:true}).click();
+    await page.getByRole("heading",{name:"Tu catálogo empieza aquí",exact:true}).waitFor();
+    await page.getByText("Producto eliminado de la app y Sheets. Se conservó una imagen en Drive porque Google no permite a tu cuenta enviarla a la papelera.",{exact:true}).waitFor();
     await page.evaluate(() => dispatchEvent(new Event("offline")));
     await page.getByText("Sin conexión", { exact: true }).waitFor();
     await page.evaluate(() => dispatchEvent(new Event("online")));

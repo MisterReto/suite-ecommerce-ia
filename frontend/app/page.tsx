@@ -642,13 +642,13 @@ export default function Platform() {
     setUncertainChecked(false);
     setConfirm(value);
   };
-  // Confirma retirada con respaldo de la hoja y papelera de imágenes propias de Drive.
+  // Confirma retirada y conservación explícita de las imágenes que Google no deja retirar.
   const deleteProduct = (product: Product) => ask({
     title: "Eliminar producto",
-    text: `¿Eliminar «${product.name}» (${product.sku}) de la app y de inventario_completo? Se respaldará la hoja y sus imágenes propias irán a la papelera de Drive. Las imágenes compartidas y el historial se conservan. Sus procesos en cola también se cancelarán.`,
+    text: `¿Eliminar «${product.name}» (${product.sku}) de la app y de inventario_completo? Se respaldará la hoja. Las imágenes que no use otro producto irán a la papelera si tu cuenta tiene permiso en Google; las demás permanecerán en Drive y te avisaremos. Las imágenes compartidas y el historial se conservan. Sus procesos en cola también se cancelarán.`,
     label: "Eliminar producto",
     action: async () => {
-      const result = await api<{ drive?: unknown }>(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version, delete_from_drive: true });
+      const result = await api<{ drive?: { retained_image_ids?: string[] } }>(`/api/platform/products/${product.id}`, "DELETE", { confirm: true, version: product.version, delete_from_drive: true, retain_untrashable_images: true });
       if (!result.drive) throw new Error("La API no confirmó la eliminación en Drive. Revisa el inventario y usa la misma versión de API y frontend.");
       setDetail(null);
       setEditing(false);
@@ -657,7 +657,13 @@ export default function Platform() {
       setQuote(null);
       if (products.length === 1 && offset > 0) setOffset(Math.max(0, offset - 50));
       await Promise.all([loadProducts(), reloadOperations()]);
-      setNotice("Producto eliminado de la app y Sheets. Sus imágenes propias se enviaron a la papelera de Drive.");
+      const retained = result.drive.retained_image_ids?.length || 0;
+      const retainedNotice = retained === 1
+        ? "Se conservó una imagen en Drive porque Google no permite a tu cuenta enviarla a la papelera."
+        : `Se conservaron ${retained} imágenes en Drive porque Google no permite a tu cuenta enviarlas a la papelera.`;
+      setNotice(retained
+        ? "Producto eliminado de la app y Sheets. " + retainedNotice
+        : "Producto eliminado de la app y Sheets. Sus imágenes propias se enviaron a la papelera de Drive.");
     },
   });
   // Confirma los IDs visibles: uno o lote; trabajos creados después no quedan incluidos.

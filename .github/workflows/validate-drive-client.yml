@@ -57,7 +57,7 @@ jobs:
         env:
           TEST_REDIS_URL: redis://localhost:6379/15
           TEST_DATABASE_URL: postgresql+psycopg://rincon_test:test-only-not-a-secret@localhost:5432/rincon_test
-        run: python -m pytest -q test_image_memory.py test_catalog_platform.py test_stabilization.py test_free_render.py
+        run: python -m pytest -q test_image_memory.py test_catalog_platform.py test_stabilization.py test_free_render.py test_sheet_catalog_sync.py test_product_delete_permissions.py
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15

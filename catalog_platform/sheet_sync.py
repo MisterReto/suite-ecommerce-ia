@@ -206,47 +206,92 @@ def sync_inventory(value, skus):
             "product_ids": list(saved.values()), "warnings": warnings}
 
 
-def delete_from_drive(db, value, product):
-    """Back up sources, trash unshared images and remove the verified Sheet row."""
+def delete_from_drive(db, value, product, *, retain_untrashable_images=False):
+    """Back up Sheets; trash permitted images or explicitly retain protected ones."""
+    import logging
     from studio_api import runtime
-    client, spreadsheet_id, rows = read_inventory(runtime, value)
-    if not spreadsheet_id:
-        raise ValueError("No se encontró inventario_completo en la carpeta autorizada.")
-    drive = DriveService(client, product.tenant_id)
-    if not drive.owns(spreadsheet_id):
-        raise ValueError("La hoja está fuera del catálogo autorizado.")
-    matches = [row for row in rows if text(row.get("sku")).casefold() == product.sku.casefold()]
-    if len(matches) > 1:
-        raise ValueError("El SKU está duplicado en Sheets.")
-    row = matches[0] if matches else {}
-    others = [item for item in rows if text(item.get("sku")).casefold() != product.sku.casefold()]
-    shared_names = set().union(*(image_names(item) for item in others)) if others else set()
-    files = set(named_images(drive, image_names(row) - shared_names).values())
-    files.update(db.scalars(select(ProductImage.drive_file_id).where(
-        ProductImage.tenant_id == product.tenant_id, ProductImage.product_id == product.id)))
-    files.update(db.scalars(select(GeneratedAsset.raw_drive_file_id).where(
-        GeneratedAsset.tenant_id == product.tenant_id, GeneratedAsset.product_id == product.id)))
-    shared = set(db.scalars(select(ProductImage.drive_file_id).join(Product, Product.id == ProductImage.product_id).where(
-        ProductImage.tenant_id == product.tenant_id, Product.id != product.id, Product.status != "deleted")))
-    shared.update(db.scalars(select(GeneratedAsset.raw_drive_file_id).join(Product, Product.id == GeneratedAsset.product_id).where(
-        GeneratedAsset.tenant_id == product.tenant_id, Product.id != product.id, Product.status != "deleted")))
-    planned = []
-    for file_id in sorted(files - shared - {""}):
-        if not drive.owns(file_id, include_trashed=True):
-            raise ValueError("Una imagen está fuera de la carpeta autorizada.")
-        info = drive.files().get(fileId=file_id, supportsAllDrives=True, fields="id,name,mimeType,trashed").execute()
-        if info.get("name") in shared_names:
-            continue
-        if not str(info.get("mimeType", "")).startswith("image/"):
-            raise ValueError("Un archivo asociado no es una imagen.")
-        planned.append(info)
-    backup = drive.backup(spreadsheet_id, "inventario_antes_eliminar_" + product.id)
-    image_backups = []
-    for info in planned:
-        if not info.get("trashed"):
-            image_backups.append(drive.backup(info["id"], "imagen_antes_eliminar_" + product.id + "_" + info["id"]))
-        drive.trash_image(info["id"])
-    sheets = SheetsService(runtime._get_sheets_service(value), spreadsheet_id)
-    deleted = sheets.delete_sku(product.sku)
-    return {"sheet": deleted, "backup_id": backup["id"], "trashed_image_ids": [info["id"] for info in planned],
-            "image_backup_ids": [item["id"] for item in image_backups]}
+    from .deletion_errors import DeletionError, google_failure
+
+    log = logging.getLogger("uvicorn.error")
+    stage, drive, sheets_client = "inventory_read", None, None
+    try:
+        client, spreadsheet_id, rows = read_inventory(runtime, value)
+        drive = DriveService(client, product.tenant_id)
+        if not spreadsheet_id:
+            raise ValueError("No se encontró inventario_completo en la carpeta autorizada.")
+        stage = "sheet_boundary"
+        if not drive.owns(spreadsheet_id):
+            raise ValueError("La hoja está fuera del catálogo autorizado.")
+        matches = [row for row in rows if text(row.get("sku")).casefold() == product.sku.casefold()]
+        if len(matches) > 1:
+            raise ValueError("El SKU está duplicado en Sheets.")
+        row = matches[0] if matches else {}
+        others = [item for item in rows if text(item.get("sku")).casefold() != product.sku.casefold()]
+        shared_names = set().union(*(image_names(item) for item in others)) if others else set()
+        stage = "image_lookup"
+        files = set(named_images(drive, image_names(row) - shared_names).values())
+        files.update(db.scalars(select(ProductImage.drive_file_id).where(
+            ProductImage.tenant_id == product.tenant_id, ProductImage.product_id == product.id)))
+        files.update(db.scalars(select(GeneratedAsset.raw_drive_file_id).where(
+            GeneratedAsset.tenant_id == product.tenant_id, GeneratedAsset.product_id == product.id)))
+        shared = set(db.scalars(select(ProductImage.drive_file_id).join(Product, Product.id == ProductImage.product_id).where(
+            ProductImage.tenant_id == product.tenant_id, Product.id != product.id, Product.status != "deleted")))
+        shared.update(db.scalars(select(GeneratedAsset.raw_drive_file_id).join(Product, Product.id == GeneratedAsset.product_id).where(
+            GeneratedAsset.tenant_id == product.tenant_id, Product.id != product.id, Product.status != "deleted")))
+        planned, retained = [], []
+        stage = "image_permissions"
+        for file_id in sorted(files - shared - {""}):
+            # Permission to read a file never replaces proof of catalog membership.
+            if not drive.owns(file_id, include_trashed=True):
+                raise ValueError("Una imagen está fuera de la carpeta autorizada.")
+            info = drive.files().get(fileId=file_id, supportsAllDrives=True,
+                fields="id,name,mimeType,trashed,capabilities(canTrash)").execute()
+            if info.get("name") in shared_names:
+                continue
+            if not str(info.get("mimeType", "")).startswith("image/"):
+                raise ValueError("Un archivo asociado no es una imagen.")
+            if not info.get("trashed") and info.get("capabilities", {}).get("canTrash") is False:
+                if not retain_untrashable_images:
+                    raise DeletionError(stage, "Google no permite a tu cuenta enviar una imagen a la papelera. Vuelve a abrir la confirmación para conservar esas imágenes al eliminar el producto, o utiliza su cuenta propietaria.",
+                                        status_code=403, provider_status=403,
+                                        provider_reason="insufficientFilePermissions")
+                retained.append(file_id)
+                continue
+            planned.append(info)
+        stage = "sheet_backup"
+        backup = drive.backup(spreadsheet_id, "inventario_antes_eliminar_" + product.id)
+        image_backups, trashed = [], []
+        for info in planned:
+            if not info.get("trashed"):
+                stage = "image_backup"
+                image_backups.append(drive.backup(info["id"], "imagen_antes_eliminar_" + product.id + "_" + info["id"]))
+            stage = "image_trash"
+            try:
+                drive.trash_image(info["id"])
+            except Exception as error:
+                # A permission can change after preflight. Only this specific denial
+                # is covered by the user's explicit retention choice, never all 403s.
+                if retain_untrashable_images and google_failure(error) == (403, "insufficientFilePermissions"):
+                    retained.append(info["id"])
+                    continue
+                raise
+            trashed.append(info["id"])
+        stage = "sheet_delete"
+        sheets_client = runtime._get_sheets_service(value)
+        deleted = SheetsService(sheets_client, spreadsheet_id).delete_sku(product.sku)
+        log.info("product_delete_drive_completed trashed_images=%d retained_images=%d",
+                 len(trashed), len(retained))
+        return {"sheet": deleted, "backup_id": backup["id"], "trashed_image_ids": trashed,
+                "retained_image_ids": retained, "image_backup_ids": [item["id"] for item in image_backups]}
+    except DeletionError:
+        raise
+    except Exception as error:
+        raise DeletionError.from_exception(stage, error) from None
+    finally:
+        for resource in (drive, sheets_client):
+            close = getattr(resource, "close", None)
+            if close:
+                try:
+                    close()
+                except Exception as error:
+                    log.warning("product_delete_cleanup_failed exception_type=%s", type(error).__name__)
