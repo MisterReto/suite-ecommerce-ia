@@ -34,6 +34,8 @@ class DeletionError(Exception):
         code = 503
         if reason == "storageQuotaExceeded":
             message = "Google no pudo crear el respaldo por falta de espacio. Libera espacio en la cuenta de Drive y vuelve a intentarlo. El producto permanece en la app."
+        elif reason in {"rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"}:
+            message = "Google alcanzó su límite de solicitudes. Inténtalo más tarde o revisa la cuota de Google. El producto permanece en la app."
         elif status == 403:
             code = 403
             target = "modificar inventario_completo" if stage == "sheet_delete" else "completar el respaldo o la eliminación en Drive"

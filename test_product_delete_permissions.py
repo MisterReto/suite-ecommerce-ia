@@ -113,13 +113,15 @@ def test_missing_capability_uses_provider_result_and_logs_codes_without_secrets(
     assert client.get("/api/platform/products/" + product["id"]).status_code == 200
 
 
-@pytest.mark.parametrize("reason", ["storageQuotaExceeded", "dailyLimitExceeded", "forbidden"])
-def test_other_google_failures_never_report_success_or_delete_sheet(removal, monkeypatch, reason):
+@pytest.mark.parametrize("reason,status", [("storageQuotaExceeded", 503), ("dailyLimitExceeded", 503), ("forbidden", 403)])
+def test_other_google_failures_never_report_success_or_delete_sheet(removal, monkeypatch, reason, status):
     client, product, sdk, sheets, _, _, _ = removal
     sdk.items["own"]["capabilities"]["canTrash"] = True
     monkeypatch.setattr(sdk, "update", lambda **kwargs: response(lambda: (_ for _ in ()).throw(denied(reason))))
     result = remove(removal, retain_untrashable_images=True)
-    assert result.status_code in {403, 503} and "private-token" not in result.text
+    assert result.status_code == status and "private-token" not in result.text
+    if reason == "dailyLimitExceeded":
+        assert "límite de solicitudes" in result.text
     assert not sheets.deletes and not sdk.items["own"].get("trashed")
     assert client.get("/api/platform/products/" + product["id"]).status_code == 200
 
