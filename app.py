@@ -15,6 +15,7 @@ import html as html_lib
 import re
 import json
 import secrets
+import logging
 import difflib
 import traceback
 import base64
@@ -25,7 +26,7 @@ from PIL import Image, ImageOps
 Image.MAX_IMAGE_PIXELS = 24_000_000
 
 from fastapi import FastAPI, Request as FastAPIRequest
-from fastapi.responses import RedirectResponse, PlainTextResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from google_auth_oauthlib.flow import Flow
@@ -331,7 +332,7 @@ def login():
         include_granted_scopes="true",
         prompt="consent",
     )
-    issue_oauth(state, flow.code_verifier)
+    pkce_ticket = issue_oauth(state, flow.code_verifier)
     resp = RedirectResponse(auth_url)
     resp.set_cookie(
         "oauth_state", state,
@@ -339,7 +340,7 @@ def login():
         path="/", max_age=600
     )
     resp.set_cookie(
-        "oauth_code_verifier", flow.code_verifier,
+        "oauth_code_verifier", pkce_ticket,
         httponly=True, secure=True, samesite="lax",
         path="/", max_age=600
     )
@@ -358,6 +359,7 @@ def auth_callback(request: FastAPIRequest):
         http/https del proxy deja de importar; state se valida primero.
       - Los errores no muestran tokens ni trazas internas.
     """
+    stage = "state_validation"
     try:
         params = dict(request.query_params)
         expected_state = request.cookies.get("oauth_state", "")
@@ -375,14 +377,19 @@ def auth_callback(request: FastAPIRequest):
             redirect_uri=GOOGLE_REDIRECT_URI,
             state=request.cookies.get("oauth_state"),
         )
-        flow.code_verifier = consume_oauth(expected_state, params.get("state", ""))
+        stage = "pkce_validation"
+        flow.code_verifier = consume_oauth(
+            expected_state, params.get("state", ""), request.cookies.get("oauth_code_verifier"))
+        stage = "token_exchange"
         flow.fetch_token(code=params["code"])
         creds = flow.credentials
 
+        stage = "google_identity"
         info_usuario = build("oauth2", "v2", credentials=creds).userinfo().get().execute()
         email = info_usuario.get("email", "")
         if not email or info_usuario.get("verified_email") is not True or not email_allowed(email):
             return PlainTextResponse("Cuenta no autorizada", status_code=403)
+        stage = "session_persistence"
         _eliminar_sesion(request.cookies.get("session_id"))
 
         session_id = _nueva_session_id()
@@ -403,8 +410,26 @@ def auth_callback(request: FastAPIRequest):
         resp.delete_cookie("oauth_code_verifier", path="/")
         return resp
 
-    except Exception:
-        return PlainTextResponse("No pude completar el acceso a Google. Vuelve a conectar Drive.", status_code=500)
+    except Exception as exc:
+        # Nunca registrar códigos de autorización, tokens, cookies ni la URL OAuth.
+        reason = getattr(exc, "error", None)
+        safe_reasons = {"invalid_client", "invalid_grant", "invalid_scope", "access_denied"}
+        logging.getLogger("uvicorn.error").error(
+            "Google OAuth callback failed: stage=%s type=%s reason=%s",
+            stage, type(exc).__name__, reason if isinstance(reason, str) and reason in safe_reasons else "unspecified",
+        )
+        response = HTMLResponse(
+            '<!doctype html><html lang="es"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>Conexión de Google</title><body style="font-family:system-ui;padding:24px">'
+            '<h1>No se pudo completar el acceso a Google</h1>'
+            '<p>Inicia una nueva autorización para conectar Drive.</p>'
+            '<a href="/login">Volver a conectar Google Drive</a></body></html>',
+            status_code=500,
+            headers={"Cache-Control": "no-store"},
+        )
+        response.delete_cookie("oauth_state", path="/")
+        response.delete_cookie("oauth_code_verifier", path="/")
+        return response
 
 
 # Revoca la sesión y elimina la cookie mediante una solicitud explícita.
