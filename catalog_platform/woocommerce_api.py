@@ -12,7 +12,9 @@ from .database import transaction
 from .models import GenerationJob, GenerationBatch, Product
 from .woocommerce_compare import read_store, compare, quantity
 from .woocommerce_export import Exporter, fingerprint, connection_status, safe_error, store_url
-from .woocommerce_jobs import KIND, enqueue, public_job
+from .woocommerce_jobs import KIND, enqueue, public_job, job_summaries
+from .accounts import persist
+from . import queue
 
 router = APIRouter(prefix="/api/woocommerce")
 
@@ -123,7 +125,8 @@ def catalog(q: str = Query("", max_length=160), category: str = Query("", max_le
         if cached and cached["expires"] > time.time() and cached["store"] == store_url():
             all_rows = cached["rows"]
         else:
-            engine = Exporter().load(value, include_images=False)
+            engine = Exporter()
+            engine.load(value, include_images=False)
             all_rows = engine.catalog()
             value["woocommerce_catalog_cache"] = {"rows": all_rows, "store": store_url(), "expires": time.time() + 45}
         rows = [row for row in all_rows if (not q or q.casefold() in (row["sku"] + " " + row["name"]).casefold())
@@ -144,7 +147,8 @@ def preview(data: Preview, value=Depends(context)):
     engine = None
     try:
         options, selection = data.options.model_dump(), data.selection.model_dump()
-        engine = Exporter().load(value, include_images=options["images"])
+        engine = Exporter()
+        engine.load(value, include_images=options["images"])
         public = engine.preview(selection["kind"], selection["sku"], options)
         public["warnings"] = engine.preflight(selection["kind"], selection["sku"], options, review_only=True)
         source = engine.snapshot(selection["kind"], selection["sku"])
@@ -180,13 +184,14 @@ def submit(data: Confirm, value=Depends(context)):
 @router.get("/jobs")
 def jobs(value=Depends(context)):
     with transaction() as db:
-        rows = db.scalars(select(GenerationJob).where(GenerationJob.tenant_id == value["platform_tenant"],
-            GenerationJob.actor == value["email"], GenerationJob.kind == KIND)
-            .order_by(GenerationJob.created_at.desc()).limit(100)).all()
-        if any(job.status == "queued" for job in rows):
-            from .worker_wakeup import notify
-            notify()
-        return {"jobs": [public_job(job) for job in rows]}
+        query = select(GenerationJob).where(GenerationJob.tenant_id == value["platform_tenant"],
+            GenerationJob.actor == value["email"], GenerationJob.kind == KIND
+        ).order_by(GenerationJob.created_at.desc()).limit(100)
+        summaries = [item for item, _ in job_summaries(db, query)]
+    if any(job["status"] == "queued" for job in summaries):
+        from .worker_wakeup import notify
+        notify()
+    return {"jobs": summaries}
 
 
 @router.post("/batch-preview")
@@ -194,7 +199,8 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
     engine = None
     try:
         options = data.options.model_dump()
-        engine = Exporter().load(value, include_images=options["images"])
+        engine = Exporter()
+        engine.load(value, include_images=options["images"])
         requested = [item.model_dump() for item in data.selections]
         families = {item["sku"] for item in requested if item["kind"] == "family"}
         seen, selected, omitted = set(), [], []
@@ -207,6 +213,8 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
             seen.add(identity)
             selected.append(item)
         previews, errors, private = [], [], []
+        count = 0
+        maximum = int(os.getenv("WOOCOMMERCE_MAX_BATCH_PRODUCTS", "1000"))
         for selection in selected:
             try:
                 public = engine.preview(selection["kind"], selection["sku"], options)
@@ -219,8 +227,10 @@ def batch_preview(data: BatchPreview, value=Depends(context)):
                     "blockers": public["warnings"]})
             except (ValueError, KeyError) as exc:
                 errors.append({"selection": selection, "message": safe_error(exc)})
-        if sum(len(item["items"]) for item in previews) > int(os.getenv("WOOCOMMERCE_MAX_BATCH_PRODUCTS", "1000")):
-            raise ValueError("El lote supera el límite de productos. Divide la selección.")
+            else:
+                count += len(public["items"])
+            if count > maximum:
+                raise ValueError("El lote supera el límite de productos. Divide la selección.")
         token = fingerprint([item["source"] for item in private], selected, {**options, "store": store_url()})
         for item in private:
             item["bulk_token"] = token
@@ -255,10 +265,13 @@ def submit_batch(data: Confirm, value=Depends(context)):
         existing = db.scalar(select(GenerationBatch).where(
             GenerationBatch.tenant_id == value["platform_tenant"], GenerationBatch.request_key == key))
         if existing:
-            jobs = db.scalars(select(GenerationJob).where(GenerationJob.batch_id == existing.id)).all()
-            if existing.actor != value["email"] or any(job.payload.get("bulk_token") != cached["token"] for job in jobs):
+            jobs = list(job_summaries(db, select(GenerationJob).where(GenerationJob.batch_id == existing.id)))
+            if existing.actor != value["email"] or any(token != cached["token"] for _, token in jobs):
                 raise HTTPException(409, "La clave de solicitud ya corresponde a otro lote.")
-            return {"batch_id": existing.id, "jobs": [public_job(job) for job in jobs]}
+            return {"batch_id": existing.id, "jobs": [item for item, _ in jobs]}
+        if not queue.available(db):
+            raise HTTPException(503, "No hay worker disponible para recibir la carga.")
+        persist(db, value["platform_tenant"], value["email"], value)
         batch = GenerationBatch(tenant_id=value["platform_tenant"], actor=value["email"], request_key=key,
             product_count=len(cached["previews"]), image_count=0, estimated_cost=0)
         db.add(batch)

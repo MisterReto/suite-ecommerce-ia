@@ -83,18 +83,24 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
   const hasActive = jobs.some(active);
   useEffect(() => {
     if (!hasActive || !online) return;
-    let stopped = false, reading = false;
-    const timer = setInterval(async () => {
-      if (reading) return;
-      reading = true;
-      try {
-        wakeServices(true);
-        const result = await api<{ jobs: Job[] }>("/api/woocommerce/jobs");
-        if (!stopped) setJobs(result.jobs);
-      } catch (e) { if (!stopped) setError((e as Error).message); }
-      finally { reading = false; }
-    }, 4000);
-    return () => { stopped = true; clearInterval(timer); };
+    let stopped = false;
+    let delay = 4000;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!document.hidden) {
+        try {
+          const result = await api<{ jobs: Job[] }>("/api/woocommerce/jobs");
+          if (!stopped) setJobs(result.jobs);
+          delay = 4000;
+        } catch (e) {
+          if (!stopped) setError((e as Error).message);
+          delay = Math.min(30_000, delay * 2);
+        }
+      }
+      if (!stopped) timer = setTimeout(poll, delay);
+    };
+    timer = setTimeout(poll, delay);
+    return () => { stopped = true; clearTimeout(timer); };
   }, [hasActive, online, api]);
 
   const clearReview = () => { setReview(undefined); setConfirmed(false); };

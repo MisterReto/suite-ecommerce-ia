@@ -383,7 +383,7 @@ def execute_job(job_id):
         return {"executed": False}
     ended = threading.Event()
     def renew():
-        while not ended.wait(15):
+        while not ended.wait(60):
             try:
                 queue.renew(job_id, OWNER)
             except Exception:
@@ -462,11 +462,14 @@ def main():
     queue.heartbeat(OWNER)
     thread = threading.Thread(target=keeper, daemon=True)
     thread.start()
+    idle_delay = 2
     while not STOP.is_set():
         job = queue.claim(OWNER)
         if not job:
-            STOP.wait(2)
+            STOP.wait(idle_delay)
+            idle_delay = min(30, idle_delay * 2)
             continue
+        idle_delay = 2
         try:
             queue.checkpoint(job["id"], OWNER)
             if process(job):

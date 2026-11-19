@@ -45,6 +45,17 @@ def reachable():
         return False
 
 
+def heartbeat_key():
+    return "rincon:supervisor:" + QUEUE_NAME
+
+
+def supervisor_alive():
+    try:
+        return bool(connection().exists(heartbeat_key()))
+    except (RedisError, RuntimeError, ValueError):
+        return False
+
+
 # Construye la cola RQ con serialización JSON.
 def rq_queue(kind=None):
     name = PUBLICATION_QUEUE_NAME if kind in {"woocommerce_export", "loyverse_export"} else QUEUE_NAME
@@ -56,19 +67,19 @@ def publish_one(job_id):
     client = connection()
     # Concurrent API/reconciler deliveries cannot enqueue the same ID together.
     with client.lock("rincon:dispatch:" + job_id, timeout=15, blocking_timeout=3):
-        with transaction() as db:
-            job = db.execute(select(GenerationJob.status, GenerationJob.kind)
-                             .where(GenerationJob.id == job_id)).first()
-            if not job or job.status != "queued":
-                return False
         rq_id = "rincon-" + job_id
         try:
             previous = Job.fetch(rq_id, connection=client, serializer=JSONSerializer)
         except NoSuchJobError:
             previous = None
-        if previous:
-            if previous.get_status() in {"queued", "started", "deferred", "scheduled"}:
+        if previous and previous.get_status() in {"queued", "started", "deferred", "scheduled"}:
+            return False
+        with transaction() as db:
+            job = db.execute(select(GenerationJob.status, GenerationJob.kind)
+                             .where(GenerationJob.id == job_id)).first()
+            if not job or job.status != "queued":
                 return False
+        if previous:
             # Only SQL jobs explicitly queued again may get another delivery.
             # Interrupted paid operations are failed by recover_expired instead.
             previous.delete()

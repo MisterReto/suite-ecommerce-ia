@@ -305,3 +305,13 @@ def test_lost_write_response_requires_review_and_reconciles_by_sku(publication, 
     assert retry.status_code == 202, retry.text
     worker.execute_job(retry.json()["job"]["id"])
     assert len(products) == 1
+
+
+def test_operations_summary_keeps_default_job_contract(publication):
+    client, _, _ = publication
+    job_id = submit(client, preview(client)).json()["job"]["id"]
+    full = client.get("/api/platform/jobs").json()["items"][0]
+    summary = client.get("/api/platform/jobs?summary=true").json()["items"][0]
+    assert full["id"] == summary["id"] == job_id
+    assert "source" in full["payload"] and "source" not in summary["payload"]
+    assert summary["payload"]["in_flight"] == full["payload"]["in_flight"]

@@ -5,7 +5,8 @@
 import csv
 import io
 import json
-import hashlib
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -320,10 +321,14 @@ def attach_historic_images(job, data, product_id, drive_index, drive, owner):
         queue.checkpoint(
             job["id"], owner, message="Validando imagen histórica " + file["name"]
         )
-        raw = drive.download(file["id"])
-        with Image.open(io.BytesIO(raw)) as picture:
-            picture.verify()
-            width, height = picture.size
+        from .worker import download_reference, file_checksum
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image"
+            download_reference(drive, file["id"], path)
+            with Image.open(path) as picture:
+                picture.verify()
+                width, height = picture.size
+            checksum = file_checksum(path)
         if width * height > 24000000:
             raise ValueError("Imagen histórica demasiado grande.")
         with transaction() as db:
@@ -336,7 +341,7 @@ def attach_historic_images(job, data, product_id, drive_index, drive, owner):
                         ref["position"], "gallery"
                     ),
                     status="approved",
-                    checksum=hashlib.sha256(raw).hexdigest(),
+                    checksum=checksum,
                     width=width,
                     height=height,
                     mime_type=file.get("mimeType", "image/jpeg"),

@@ -1,5 +1,6 @@
 """Runtime bindings for the unchanged, accepted Colab product exporter."""
 from copy import deepcopy
+from functools import lru_cache
 import html
 import hashlib
 import json
@@ -152,13 +153,18 @@ def publishable_image(name):
     return bool(re.fullmatch(r"[A-Za-z0-9_-]+_\d+(?:_(?:hd|uso|comercial))?\.(?:jpg|jpeg|png|webp)", name, re.I))
 
 
+@lru_cache(maxsize=1)
+def compiled_exporter():
+    return compile(CORE.read_text(encoding="utf8"), str(CORE), "exec")
+
+
 class Exporter:
     """Each execution gets private Colab globals; no request shares credentials/state."""
     def __init__(self, source=None, drive=None, write=False, before=None, after=None,
                  on_event=None, on_cache=None, media_cache=None):
         self.temp = tempfile.TemporaryDirectory(prefix="rincon-wc-")
         self.ns = {}
-        exec(compile(CORE.read_text(encoding="utf8"), str(CORE), "exec"), self.ns)
+        exec(compiled_exporter(), self.ns)
         origin = store_url()
         session = StoreSession(origin, write, before, after)
         session.auth = (os.getenv("WOOCOMMERCE_CONSUMER_KEY") or os.getenv("WC_CONSUMER_KEY", ""),
@@ -176,7 +182,6 @@ class Exporter:
         # Filter persisted job snapshots too, before the unchanged Colab selector
         # applies its slot priority. Old queued sources can contain raw originals.
         self.ns["ARCHIVOS"] = [file for file in self.ns["ARCHIVOS"] if publishable_image(file.get("name", ""))]
-        self.ns["MEDIA_CACHE"] = deepcopy(media_cache or {})
         self.events = []
         original_event = self.ns["registrar"]
         original_cache = self.ns["guardar_cache"]
@@ -249,10 +254,13 @@ class Exporter:
         self.ns["datos_base"] = base_with_one_axis
 
     def close(self):
+        if not self.ns:
+            return
         self.ns["wc_session"].close()
         if self.ns.get("wp_session"):
             self.ns["wp_session"].close()
         self.temp.cleanup()
+        self.ns.clear()
 
     def load(self, value, include_images=True):
         sheets, drive = google_clients(value)
@@ -393,5 +401,8 @@ class Exporter:
 
 
 def fingerprint(source, selection, options):
-    return hashlib.sha256(json.dumps({"source": source, "selection": selection, "options": options},
-        sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(sort_keys=True, ensure_ascii=False)
+    for chunk in encoder.iterencode({"source": source, "selection": selection, "options": options}):
+        digest.update(chunk.encode())
+    return digest.hexdigest()

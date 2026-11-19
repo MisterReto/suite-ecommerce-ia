@@ -473,7 +473,7 @@ export default function Platform() {
   const reloadOperations = useCallback(async () => {
     const [d, j, a, st] = await Promise.all([
       api<Dashboard>("/api/platform/dashboard"),
-      api<{ items: Job[] }>("/api/platform/jobs"),
+      api<{ items: Job[] }>("/api/platform/jobs?summary=true"),
       api<{ items: Asset[] }>("/api/platform/assets"),
       api<Status>("/api/platform/status"),
     ]);
@@ -561,22 +561,28 @@ export default function Platform() {
   useEffect(() => {
     if (!ready || !online) return;
     let stopped = false;
-    // Callback de polling que actualiza trabajos y trata un 401 como sesión no autenticada.
-    const run = () => {
-      if (jobs.some(active)) wakeServices(true);
-      return reloadOperations().then(() => { if (!stopped) return loadProducts(); }).catch((e) => {
-        if (!stopped) {
-          setError(e.message);
-          if (e.status === 401) setSession({ authenticated: false });
+    let timer: ReturnType<typeof setTimeout>;
+    const interval = jobs.some(active) ? 4000 : 60_000;
+    let delay = interval;
+    const run = async () => {
+      if (!document.hidden) {
+        if (jobs.some(active)) wakeServices(true);
+        try {
+          await reloadOperations();
+          if (!stopped) await loadProducts();
+          delay = interval;
+        } catch (e) {
+          if (!stopped && e instanceof Error) {
+            setError(e.message);
+            if (e instanceof ApiError && e.status === 401) setSession({ authenticated: false });
+          }
+          delay = Math.min(120_000, delay * 2);
         }
-      });
+      }
+      if (!stopped) timer = setTimeout(run, delay);
     };
-    run();
-    const timer = setInterval(run, jobs.some(active) ? 4000 : 30000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
+    void run();
+    return () => { stopped = true; clearTimeout(timer); };
   }, [ready, online, jobs.some(active), reloadOperations, loadProducts]);
   useEffect(() => {
     setQuote(null);
