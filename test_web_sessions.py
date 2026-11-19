@@ -65,6 +65,37 @@ def test_oauth_session_survives_restart_and_preserves_secure_cookie(setup, monke
     runtime._eliminar_sesion(sid)
 
 
+
+def test_google_callback_recovers_after_pending_state_is_lost(setup, monkeypatch):
+    client, value, _ = setup
+    runtime = studio.runtime
+    from oauth_guard import issue_oauth, _pending, _lock
+
+    state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+    ticket = issue_oauth(state, verifier)
+    # El callback llega a un proceso nuevo tras apagarse Render.
+    with _lock:
+        _pending.pop(state, None)
+
+    flow = Mock()
+    flow.credentials.to_json.return_value = json.dumps({
+        "token": "test-google-token", "refresh_token": "test-refresh-token"})
+    monkeypatch.setattr(runtime.Flow, "from_client_config", Mock(return_value=flow))
+    service = Mock()
+    service.userinfo.return_value.get.return_value.execute.return_value = {
+        "email": value["email"], "verified_email": True}
+    monkeypatch.setattr(runtime, "build", Mock(return_value=service))
+    client.cookies.set("oauth_state", state)
+    client.cookies.set("oauth_code_verifier", ticket)
+
+    response = client.get("/auth/callback", params={"state": state, "code": "test-code"},
+                          follow_redirects=False)
+    assert response.status_code == 307, response.text
+    assert flow.code_verifier == verifier
+    flow.fetch_token.assert_called_once_with(code="test-code")
+    assert "oauth_state" not in client.cookies
+    assert "oauth_code_verifier" not in client.cookies
+
 def test_logout_revokes_persistent_and_cached_sessions(setup):
     client, value, _ = setup
     sid = value["session_id"]
