@@ -416,7 +416,7 @@ def auth_callback(request: FastAPIRequest):
         safe_reasons = {"invalid_client", "invalid_grant", "invalid_scope", "access_denied"}
         logging.getLogger("uvicorn.error").error(
             "Google OAuth callback failed: stage=%s type=%s reason=%s",
-            stage, type(exc).__name__, reason if reason in safe_reasons else "unspecified",
+            stage, type(exc).__name__, reason if isinstance(reason, str) and reason in safe_reasons else "unspecified",
         )
         response = HTMLResponse(
             '<!doctype html><html lang="es"><meta name="viewport" content="width=device-width,initial-scale=1">'
