@@ -35,7 +35,7 @@ def test_tampered_or_mismatched_oauth_ticket_rejected(ticket_key):
     with pytest.raises(ValueError):
         oauth_guard.consume_oauth(state, secrets.token_urlsafe(32), ticket)
     with pytest.raises(ValueError):
-        oauth_guard.consume_oauth(state, state, ticket[:-1] + ("A" if ticket[-1] != "A" else "B"))
+        oauth_guard.consume_oauth(state, state, ticket[:24] + ("A" if ticket[24] != "A" else "B") + ticket[25:])
 
 
 def test_expired_oauth_ticket_rejected(ticket_key):
