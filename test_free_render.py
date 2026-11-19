@@ -286,3 +286,33 @@ def test_concurrent_postgres_empty_initialization_is_serialized(empty_database):
         results = list(pool.map(lambda _: initialize_empty_database(), [1, 2]))
     assert sorted(results) == [False, True]
     assert set(inspect(empty_database).get_table_names()) == set(Base.metadata.tables)
+
+
+def test_rq_supervisor_backs_off_idle_sql_and_recovers(monkeypatch):
+    from types import SimpleNamespace
+    from redis.exceptions import ConnectionError
+    from catalog_platform import redis_worker
+
+    clock = [0]
+    scans, beats = [], []
+    stopped = Mock()
+    stopped.is_set.side_effect = lambda: clock[0] >= 1800
+    stopped.wait.side_effect = lambda delay: clock.__setitem__(0, clock[0] + delay)
+    def reconcile():
+        scans.append(clock[0])
+        if len(scans) == 1:
+            raise ConnectionError("isolated outage")
+        return 0
+
+    redis = Mock()
+    redis.set.side_effect = lambda *args, **kwargs: beats.append(clock[0])
+    monkeypatch.setattr(redis_worker, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(redis_broker, "reconcile", reconcile)
+    monkeypatch.setattr(redis_broker, "connection", lambda: redis)
+    pool, ready = Mock(), Mock()
+    pool.poll.return_value = None
+    redis_worker.supervise(pool, stopped, ready)
+    ready.clear.assert_called_once()
+    assert ready.set.called and scans[:3] == [0, 5, 15]
+    assert max(b - a for a, b in zip(scans, scans[1:])) == 600
+    assert max(b - a for a, b in zip(beats, beats[1:])) == 30

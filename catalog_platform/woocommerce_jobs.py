@@ -1,5 +1,4 @@
 """Durable WooCommerce jobs reuse the accepted exporter; image generation stays separate."""
-from copy import deepcopy
 from contextlib import nullcontext
 import html
 import json
@@ -17,7 +16,9 @@ from .woocommerce_export import Exporter, connection_status, google_clients, sto
 KIND = "woocommerce_export"
 
 
-def public_job(job):
+def public_job(job, payload=None):
+    if payload is None:
+        payload = job.payload
     message = job.message
     for _ in range(3):
         message = html.unescape(message)
@@ -33,9 +34,21 @@ def public_job(job):
             pass
     message = html.unescape(safe_error(ValueError(message)))
     return {"id": job.id, "batch_id": job.batch_id, "status": job.status, "progress": job.progress,
-        "message": message, "selection": job.payload.get("selection"),
-        "events": job.payload.get("events", [])[-100:], "uncertain": bool(job.payload.get("in_flight")),
-        "store": job.payload.get("store_url"), "created_at": job.created_at.isoformat() if job.created_at else None}
+        "message": message, "selection": payload.get("selection"),
+        "events": payload.get("events", [])[-100:], "uncertain": bool(payload.get("in_flight")),
+        "store": payload.get("store_url"), "created_at": job.created_at.isoformat() if job.created_at else None}
+
+
+def job_summaries(db, query):
+    job = GenerationJob
+    fields = ("selection", "events", "in_flight", "store_url", "bulk_token")
+    rows = db.execute(query.with_only_columns(
+        job.id, job.batch_id, job.status, job.progress, job.message, job.created_at,
+        *(job.payload[field].label(field) for field in fields)))
+    for row in rows:
+        payload = dict(row._mapping)
+        payload["events"] = payload["events"] or []
+        yield public_job(row, payload), payload["bulk_token"]
 
 
 def enqueue(value, preview, request_key, batch_id=None, db=None):
@@ -53,17 +66,18 @@ def enqueue(value, preview, request_key, batch_id=None, db=None):
             if existing.payload.get("preview_token") != preview["token"]:
                 raise HTTPException(409, "La clave de solicitud ya identifica otra selección.")
             return public_job(existing)
-        if not queue.available(db):
+        if batch_id is None and not queue.available(db):
             raise HTTPException(503, "No hay worker disponible para recibir la carga.")
         payload = {"selection": preview["selection"], "options": preview["options"],
-            "source": deepcopy(preview["source"]), "preview_token": preview["token"],
+            "source": preview["source"], "preview_token": preview["token"],
             "store_url": preview["store_url"], "bulk_token": preview.get("bulk_token"),
             "events": [], "remote_effects": [], "in_flight": None}
         job = GenerationJob(tenant_id=value["platform_tenant"], actor=value["email"], kind=KIND,
             request_key=request_key, provider="woocommerce", model="colab-exporter-v1", estimated_cost=0,
             payload=payload, batch_id=batch_id, message="En cola para cargar en WooCommerce")
         db.add(job)
-        persist(db, value["platform_tenant"], value["email"], value)
+        if batch_id is None:
+            persist(db, value["platform_tenant"], value["email"], value)
         queue.dispatch(db, job)
         audit(db, value["platform_tenant"], value["email"], "woocommerce.export.queued",
               after={"job_id": job.id, "selection": payload["selection"]})
@@ -71,31 +85,46 @@ def enqueue(value, preview, request_key, batch_id=None, db=None):
 
 
 def process(job, owner):
-    payload = deepcopy(job["payload"])
+    payload = dict(job["payload"])
     if payload["store_url"] != store_url():
         raise ValueError("La tienda cambió después de la vista previa. Revisa y crea una carga nueva.")
+    source = payload["source"]
+    cache = {}
     with transaction() as db:
         value = load(db, job["tenant_id"], job["actor"])
-        record = account(db, job["tenant_id"], job["actor"], "woocommerce_media_cache")
-        cache = unseal(record.encrypted_credentials) if record and record.status == "connected" else {}
+        if payload["options"]["images"]:
+            record = account(db, job["tenant_id"], job["actor"], "woocommerce_media_cache")
+            if record and record.status == "connected":
+                stored = unseal(record.encrypted_credentials)
+                for image in source.get("ARCHIVOS", []):
+                    key = payload["store_url"] + "|" + image["id"]
+                    if key in stored:
+                        cache[key] = stored[key]
+                del stored
     value.update(email=job["actor"], platform_tenant=job["tenant_id"])
     require_role(value, "admin")
     from studio_api import runtime
-    drive = runtime._get_drive_service(value)
-    source = payload["source"]
+    drive = runtime._get_drive_service(value) if payload["options"]["images"] else None
+    acknowledged_cache = cache.copy()
     for effect in payload.get("remote_effects", []):
         if effect.get("filename") and effect.get("id"):
             for image in source.get("ARCHIVOS", []):
                 if image["name"] == effect["filename"]:
-                    cache[store_url() + "|" + image["id"]] = effect["id"]
+                    cache[payload["store_url"] + "|" + image["id"]] = effect["id"]
 
-    def checkpoint(message=None):
-        queue.checkpoint(job["id"], owner, payload=deepcopy(payload), message=message)
-
+    last_check = 0.0
     def before(operation, modifying):
+        nonlocal last_check
+        stamp = time.monotonic()
         if modifying:
             payload["in_flight"] = operation
-        checkpoint("Cargando " + payload["selection"]["sku"] + "…")
+            queue.checkpoint(job["id"], owner, updates={"in_flight": operation},
+                             message="Cargando " + payload["selection"]["sku"] + "…")
+        elif stamp - last_check >= 5:
+            queue.checkpoint(job["id"], owner)
+        else:
+            return
+        last_check = stamp
 
     def after(operation, modifying, response):
         if not modifying:
@@ -110,41 +139,41 @@ def process(job, owner):
             else:
                 return
             payload["in_flight"] = None
-            checkpoint()
+            queue.checkpoint(job["id"], owner, updates={"in_flight": None,
+                             "remote_effects": payload["remote_effects"]})
         elif 400 <= response.status_code < 500:
             payload["in_flight"] = None
-            checkpoint()
+            queue.checkpoint(job["id"], owner, updates={"in_flight": None})
+
+    actions = {"producto_creado", "omitido_existente", "familia_creada",
+               "familia_existente", "variante_creada", "variante_omitida"}
+    done = sum(item["action"] in actions for item in payload["events"])
+    total = len(source.get("VARIANTES", {})) + 1
 
     def event(data):
+        nonlocal done
         payload["events"].append(data)
-        done = sum(item["action"] in {"producto_creado", "omitido_existente", "familia_creada",
-                   "familia_existente", "variante_creada", "variante_omitida"} for item in payload["events"])
-        total = len(source.get("VARIANTES", {})) + 1
-        queue.checkpoint(job["id"], owner, payload=deepcopy(payload),
+        done += data["action"] in actions
+        queue.checkpoint(job["id"], owner, updates={"events": payload["events"]},
             progress=min(95, int(done * 95 / max(1, total))), message="WooCommerce: " + data["action"])
 
     def media_cache(data):
+        changed = {key: mid for key, mid in data.items() if acknowledged_cache.get(key) != mid}
+        if not changed:
+            return
         with transaction() as db:
             queue.request_lock(db, job["tenant_id"], "wc-cache:" + job["actor"])
             record = account(db, job["tenant_id"], job["actor"], "woocommerce_media_cache")
             current = unseal(record.encrypted_credentials) if record and record.status == "connected" else {}
-            current.update(data)
+            current.update(changed)
             put(db, job["tenant_id"], job["actor"], "woocommerce_media_cache", current)
-        payload["media_cache"] = data
-        checkpoint()
+        acknowledged_cache.update(changed)
 
     engine = Exporter(source, drive, write=True, before=before, after=after,
                       on_event=event, on_cache=media_cache, media_cache=cache)
     try:
         selection = payload["selection"]
-        parent, _, _ = engine.ns["resolver"]({"simple": "Simple", "family": "Familia", "variant": "Variante"}[selection["kind"]], selection["sku"])
-        # All actors/stores use the same SQL lock for this remote family, including retries.
-        with transaction() as db:
-            queue.request_lock(db, "woocommerce:" + store_url(), parent["sku"])
-            engine.execute(selection["kind"], selection["sku"], payload["options"])
-        payload["in_flight"] = None
-        checkpoint("Carga terminada. Productos publicados en WooCommerce." if payload["options"].get("status") == "publish"
-            else "Carga terminada. Los productos nuevos quedaron en borrador.")
+        engine.execute(selection["kind"], selection["sku"], payload["options"])
         with transaction() as db:
             audit(db, job["tenant_id"], job["actor"], "woocommerce.export.completed",
                   after={"job_id": job["id"], "selection": selection})

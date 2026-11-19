@@ -12,7 +12,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, true
 from sqlalchemy.exc import IntegrityError
 from .database import configured, transaction
 from .models import Product, ProductImage, GenerationJob, GenerationBatch, GeneratedAsset, InventoryMovement, AuditLog, uid
@@ -233,9 +233,11 @@ def status(request: Request):
         cipher()
         with transaction() as db:
             db.scalar(select(Product.id).limit(1))
+            from .worker_wakeup import configured as can_wake
+            active = worker_ready(db)
             result.update(
-                ready=True, worker_ready=worker_ready(db),
-                worker_can_queue=available(db), message="Catálogo preparado."
+                ready=True, worker_ready=active,
+                worker_can_queue=active or can_wake(), message="Catálogo preparado."
             )
             # Retry a failed cold start only while an authorized user's actual
             # queued jobs exist. Idle status polling never keeps a worker alive.
@@ -812,19 +814,24 @@ def batches(value=Depends(context)):
 
 # Lista estados y progreso de trabajos; incluye actor para mostrar permisos de cancelación.
 @router.get("/jobs")
-def jobs(value=Depends(context)):
+def jobs(value=Depends(context), summary: bool = False):
+    job = GenerationJob
+    query = select(job).where(job.tenant_id == tenant(value)).order_by(job.created_at.desc()).limit(100)
     with transaction() as db:
-        return {
-            "items": [
-                serialize(job)
-                for job in db.scalars(
-                    select(GenerationJob)
-                    .where(GenerationJob.tenant_id == tenant(value))
-                    .order_by(GenerationJob.created_at.desc())
-                    .limit(100)
-                )
-            ]
-        }
+        if not summary:
+            return {"items": [serialize(row) for row in db.scalars(query)]}
+        # The operations panel only needs the display name and retry uncertainty.
+        rows = db.execute(query.with_only_columns(
+            job.id, job.actor, job.kind, job.product_id, job.status, job.progress,
+            job.message, job.estimated_cost, job.created_at,
+            job.payload["product"]["name"].as_string().label("name"),
+            job.payload["in_flight"].label("in_flight"))).mappings()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = {"product": {"name": item.pop("name")}, "in_flight": item.pop("in_flight")}
+            items.append(item)
+        return {"items": items}
 
 
 # Valida permisos del actor y aplica la cancelación de una fila bloqueada con una sola
@@ -883,7 +890,7 @@ def cancel_jobs(data: CancelJobsInput, value=Depends(context)):
 def assets(value=Depends(context)):
     with transaction() as db:
         rows = db.execute(
-            select(GeneratedAsset, Product)
+            select(GeneratedAsset, Product.name, Product.sku)
             .join(Product, Product.id == GeneratedAsset.product_id)
             .where(GeneratedAsset.tenant_id == tenant(value), Product.status != "deleted")
             .order_by(GeneratedAsset.created_at.desc())
@@ -893,11 +900,11 @@ def assets(value=Depends(context)):
             "items": [
                 {
                     **serialize(asset),
-                    "product_name": p.name,
-                    "sku": p.sku,
+                    "product_name": name,
+                    "sku": sku,
                     "estimated_correction_usd": image_unit(asset.model),
                 }
-                for asset, p in rows
+                for asset, name, sku in rows
             ]
         }
 
@@ -1098,31 +1105,26 @@ def save_generated_asset(asset_id: str, data: OperationInput, value=Depends(cont
 def dashboard(value=Depends(context)):
     with transaction() as db:
 
-        def count(model, *rules):
-            return db.scalar(
-                select(func.count())
-                .select_from(model)
-                .where(model.tenant_id == tenant(value), *rules)
-            )
-
-        stats = {
-            "products": count(Product, Product.status != "deleted"),
-            "pending_products": count(Product, Product.status == "pending"),
-            "low_stock": count(Product, Product.stock.between(1, 5), Product.status != "deleted"),
-            "out_of_stock": count(Product, Product.stock == 0, Product.status != "deleted"),
-             "ai_errors": count(GenerationJob, GenerationJob.status == "failed",
-                GenerationJob.kind.in_(["generation", "studio_generation", "enrichment"])) ,
-            "pending_jobs": count(
-                GenerationJob, GenerationJob.status.in_(["queued", "processing", "cancelling"]),
-                GenerationJob.kind.in_(sorted(SUPPORTED_JOB_KINDS))
-            ),
-            "completed_images": count(
-                GeneratedAsset,
-                GeneratedAsset.status.in_(["completed", "approved", "published"]),
-                GeneratedAsset.product_id.in_(select(Product.id).where(
-                    Product.tenant_id == tenant(value), Product.status != "deleted")),
-            ),
-        }
+        root = tenant(value)
+        products = select(
+            func.count().label("products"),
+            func.count().filter(Product.status == "pending").label("pending_products"),
+            func.count().filter(Product.stock.between(1, 5)).label("low_stock"),
+            func.count().filter(Product.stock == 0).label("out_of_stock"),
+        ).where(Product.tenant_id == root, Product.status != "deleted").subquery()
+        jobs = select(
+            func.count().filter(GenerationJob.status == "failed", GenerationJob.kind.in_(
+                ["generation", "studio_generation", "enrichment"])).label("ai_errors"),
+            func.count().filter(GenerationJob.status.in_(["queued", "processing", "cancelling"]),
+                GenerationJob.kind.in_(sorted(SUPPORTED_JOB_KINDS))).label("pending_jobs"),
+        ).where(GenerationJob.tenant_id == root).subquery()
+        completed = select(func.count()).select_from(GeneratedAsset).where(
+            GeneratedAsset.tenant_id == root, GeneratedAsset.status.in_(["completed", "approved", "published"]),
+            GeneratedAsset.product_id.in_(select(Product.id).where(
+                Product.tenant_id == root, Product.status != "deleted"))).scalar_subquery()
+        # Each aggregate produces exactly one row, including empty catalogs.
+        stats = dict(db.execute(select(products, jobs, completed.label("completed_images"))
+                                .select_from(products.join(jobs, true()))).mappings().one())
         activity = [
             serialize(row)
             for row in db.scalars(

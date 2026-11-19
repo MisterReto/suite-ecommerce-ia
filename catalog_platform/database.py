@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 import os
 from sqlalchemy import create_engine, event, exc
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session
 
 
 # Indica si existe una dirección de base de datos configurada.
@@ -30,6 +30,7 @@ def engine_for(url):
     else:
         options.update(
             pool_size=3,
+            pool_use_lifo=True,
             max_overflow=2,
             pool_timeout=15,
             connect_args={"connect_timeout": 10},
@@ -61,7 +62,7 @@ def transaction():
     url = os.getenv("DATABASE_URL", "")
     if not url:
         raise RuntimeError("Configura DATABASE_URL para activar el catálogo maestro.")
-    with sessionmaker(bind=engine_for(url), expire_on_commit=False)() as db:
+    with Session(engine_for(url), expire_on_commit=False) as db:
         with db.begin():
             yield db
         # Explicitly requested deliveries occur only after SQL committed. SQL is

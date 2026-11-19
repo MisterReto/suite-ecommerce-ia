@@ -1,6 +1,10 @@
 """RQ delivery/priority tests use isolated Redis emulation; providers remain controlled."""
 import importlib
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import pytest
+import requests
 from unittest.mock import Mock
 
 import fakeredis
@@ -56,3 +60,53 @@ def test_worker_queue_order_preserves_image_priority(monkeypatch):
     from catalog_platform import rq_settings
     importlib.reload(rq_settings)
     assert rq_settings.QUEUES == [redis_broker.QUEUE_NAME, redis_broker.PUBLICATION_QUEUE_NAME]
+
+def test_no_checked_out_connection_during_store_http(publication, monkeypatch):
+    from catalog_platform.database import engine_for
+    client, _, (_, products, *_) = publication
+    job_id = submit(client, preview(client)).json()["job"]["id"]
+    engine = engine_for(os.environ["DATABASE_URL"])
+    request = requests.Session.request
+    counts = []
+
+    def observe(*args, **kwargs):
+        counts.append(engine.pool.checkedout())
+        return request(*args, **kwargs)
+
+    monkeypatch.setattr(requests.Session, "request", observe)
+    worker.execute_job(job_id)
+    assert set(products) == {"S1"}
+    assert counts and max(counts) == 0
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="Requires concurrent PostgreSQL claims")
+def test_family_and_variant_have_one_active_claim_across_workers(publication):
+    from catalog_platform import queue
+    client, _, (_, products, variations, _) = publication
+    from test_catalog_platform import ORIGIN
+    ids = []
+    for kind, sku in [("family", "FAMILIA"), ("variant", "V1")]:
+        review = client.post("/api/woocommerce/preview", headers=ORIGIN, json={
+            "selection": {"kind": kind, "sku": sku},
+            "options": {"images": False, "allow_published_family": True}})
+        ids.append(submit(client, review.json()).json()["job"]["id"])
+    barrier = threading.Barrier(2)
+    def claim(job_id):
+        barrier.wait(timeout=5)
+        return queue.claim(job_id, job_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(claim, ids))
+    assert sum(bool(claimed) for claimed in claims) == 1
+    holder = next(claimed for claimed in claims if claimed)
+    waiting = next(job_id for job_id in ids if job_id != holder["id"])
+    # Simulate abrupt worker loss after claim, before the first remote write.
+    with transaction() as db:
+        db.get(GenerationJob, holder["id"]).lease_until = 0
+    redis_broker.reconcile()
+    for job_id in (holder["id"], waiting):
+        worker.execute_job(job_id)
+        worker.execute_job(job_id)
+    assert len(products) == 1 and set(variations) == {"V1", "V2"}
+    with transaction() as db:
+        assert all(db.get(GenerationJob, job_id).status == "completed" for job_id in ids)

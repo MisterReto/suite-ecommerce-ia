@@ -10,6 +10,7 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 os.environ.setdefault("OAUTHLIB_IGNORE_SCOPE_CHANGE", "1")
 
 import io
+import tempfile
 import time
 import html as html_lib
 import re
@@ -20,7 +21,6 @@ import traceback
 import base64
 from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd
 from PIL import Image, ImageOps
 Image.MAX_IMAGE_PIXELS = 24_000_000
 
@@ -782,6 +782,7 @@ def _aplicar_formato_filas(sheets_service, spreadsheet_id, sheet_gid, inicio, fi
 
 
 def _limpiar_valor_sheet(valor):
+    import pandas as pd
     try:
         if pd.isna(valor):
             return ""
@@ -1128,19 +1129,21 @@ def _crear_o_encontrar_inventario(service, sheets_service, carpeta_raiz_id):
 
 
 def _leer_csv_legacy(service, csv_id):
+    import pandas as pd
     if csv_id is None:
         return pd.DataFrame()
     peticion = service.files().get_media(fileId=csv_id)
-    buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(buffer, peticion)
-    listo = False
-    while not listo:
-        _, listo = downloader.next_chunk()
-    buffer.seek(0)
-    try:
-        return pd.read_csv(buffer)
-    except Exception:
-        return pd.DataFrame()
+    with tempfile.TemporaryFile() as buffer:
+        downloader = MediaIoBaseDownload(buffer, peticion, chunksize=512 * 1024)
+        listo = False
+        while not listo:
+            _, listo = downloader.next_chunk()
+        buffer.seek(0)
+        try:
+            return pd.read_csv(buffer)
+        except Exception:
+            return pd.DataFrame()
+
 
 
 def _migrar_csv_legacy(service, sheets_service, carpeta_raiz_id, spreadsheet_id, sheet_gid):
@@ -1241,6 +1244,7 @@ def _extraer_folder_id(texto):
 
 # Lee filas de la hoja canónica mediante Sheets y las devuelve como tabla por encabezados.
 def _leer_google_sheet(sheets_service, spreadsheet_id):
+    import pandas as pd
     resultado = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{NOMBRE_HOJA_INVENTARIO}'!A:N",

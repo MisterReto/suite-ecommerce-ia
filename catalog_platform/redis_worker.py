@@ -1,5 +1,5 @@
-"""Render supervisor: RQ processes, SQL heartbeat and outbox reconciliation."""
-# Supervisor de procesos RQ, heartbeat SQL y reconciliación periódica.
+"""Render supervisor: RQ processes, Redis readiness and SQL outbox reconciliation."""
+# Supervisor de procesos RQ, heartbeat Redis y reconciliación SQL periódica.
 # Guía: docs/CODE_GUIDE.md; funciones y objetos: docs/FUNCTION_INDEX.md.
 
 import logging
@@ -8,9 +8,11 @@ import signal
 import subprocess
 import sys
 import threading
-import uuid
+import time
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 from pathlib import Path
-from . import queue, redis_broker
+from . import redis_broker
 from .security import cipher
 
 
@@ -26,8 +28,36 @@ def concurrency():
     return value
 
 
-# Inicia el pool RQ, actualiza heartbeat y reconcilia SQL cada cinco segundos; un pool
-# terminado provoca el reinicio del servicio.
+def supervise(pool, stopped, ready):
+    next_beat = next_scan = 0.0
+    idle_delay, failure_delay = 5, 5
+    healthy = False
+    while not stopped.is_set():
+        if pool.poll() is not None:
+            raise RuntimeError("El pool RQ terminó; Render debe reiniciar el worker.")
+        stamp = time.monotonic()
+        try:
+            if stamp >= next_scan:
+                queued = redis_broker.reconcile()
+                idle_delay = 5 if queued else min(600, idle_delay * 2)
+                next_scan = stamp + idle_delay
+                healthy = True
+            if healthy and stamp >= next_beat:
+                redis_broker.connection().set(redis_broker.heartbeat_key(), "1", ex=90)
+                next_beat = stamp + 30
+                if ready is not None:
+                    ready.set()
+                failure_delay = 5
+        except (SQLAlchemyError, RedisError):
+            logging.warning("Mantenimiento pendiente; se reintentará.")
+            healthy = False
+            next_scan = next_beat = stamp + failure_delay
+            failure_delay = min(60, failure_delay * 2)
+            if ready is not None:
+                ready.clear()
+        stopped.wait(5)
+
+
 def main(ready=None):
     from .render_config import configure_redirect
     configure_redirect()
@@ -56,17 +86,9 @@ def main(ready=None):
             os.killpg(pool.pid, signal.SIGTERM)
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
-    owner = "rq-supervisor-" + str(uuid.uuid4())
     logging.basicConfig(level=logging.INFO)
     try:
-        while not stopped.is_set():
-            if pool.poll() is not None:
-                raise RuntimeError("El pool RQ terminó; Render debe reiniciar el worker.")
-            queue.heartbeat(owner)
-            redis_broker.reconcile()
-            if ready is not None:
-                ready.set()
-            stopped.wait(5)
+        supervise(pool, stopped, ready)
     finally:
         shutdown()
         # Render's shutdown window depends on the plan. Free does not allow an

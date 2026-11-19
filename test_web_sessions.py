@@ -1,5 +1,7 @@
 """Browser session recovery across API restarts; providers and data are synthetic."""
 import json
+import os
+import pytest
 import secrets
 import time
 from unittest.mock import Mock
@@ -21,12 +23,25 @@ def record(sid):
             IntegrationAccount.provider == "web_session"))
 
 
-def test_oauth_session_survives_restart_and_preserves_secure_cookie(setup, monkeypatch):
+@pytest.mark.parametrize("shared_state", [False, True])
+def test_oauth_session_survives_restart_and_preserves_secure_cookie(setup, monkeypatch, shared_state):
     client, value, _ = setup
     runtime = studio.runtime
     state = secrets.token_urlsafe(24)
-    from oauth_guard import issue_oauth
+    from oauth_guard import issue_oauth, _pending, _redis_keys
+    if shared_state:
+        import fakeredis
+        from catalog_platform import redis_broker
+        monkeypatch.setenv("REDIS_URL", os.getenv("TEST_REDIS_URL", "redis://isolated.invalid"))
+        if not os.getenv("TEST_REDIS_URL"):
+            shared = fakeredis.FakeRedis()
+            monkeypatch.setattr(redis_broker, "connection", lambda: shared)
     issue_oauth(state, "one-use-test-verifier")
+    if shared_state:
+        assert state not in _pending  # A fresh API process only has Redis.
+        key = _redis_keys(state)[1]
+        assert 0 < redis_broker.connection().ttl(key) <= 600
+        assert b"one-use-test-verifier" not in redis_broker.connection().get(key)
     flow = Mock()
     credentials = {"token": "test-google-token", "refresh_token": "test-refresh-token"}
     flow.credentials.to_json.return_value = json.dumps(credentials)

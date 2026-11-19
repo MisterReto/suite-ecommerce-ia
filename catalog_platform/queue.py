@@ -5,7 +5,9 @@
 import os
 import time
 import hashlib
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update, cast, or_
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import load_only
 from .database import transaction
 from .models import GenerationJob, WorkerHeartbeat, now
 
@@ -75,8 +77,10 @@ def heartbeat(owner):
 # Comprueba Redis cuando corresponde y un heartbeat de menos de noventa segundos.
 def worker_ready(db):
     if os.getenv("GENERATION_QUEUE_BACKEND", "postgres") == "rq":
-        from .redis_broker import reachable
+        from .redis_broker import reachable, supervisor_alive
 
+        if supervisor_alive():
+            return True
         if not reachable():
             return False
     return (
@@ -110,14 +114,16 @@ def dispatch(db, job):
 
 # Recupera leases vencidos; nunca reencola cancelados ni repite automáticamente una operación
 # con resultado incierto.
-def recover_expired(db):
+def recover_expired(db, job_id=None):
     stamp = time.time()
-    expired = db.scalars(
+    query = (
         select(GenerationJob)
         .where(GenerationJob.status.in_(["processing", "cancelling"]), GenerationJob.lease_until < stamp)
         .with_for_update(skip_locked=True)
-    ).all()
-    for job in expired:
+    )
+    if job_id is not None:
+        query = query.where(GenerationJob.id == job_id)
+    for job in db.scalars(query.limit(100)):
         if job.status == "cancelling":
             mark_cancelled(job)
         elif job.payload.get("in_flight"):
@@ -132,11 +138,36 @@ def recover_expired(db):
     db.flush()
 
 
+def reserve_publication(db, job):
+    # The store SKU is shared across tenants. Persist the reservation on the SQL
+    # job so it follows the existing lease, cancellation and crash recovery.
+    payload = job.payload
+    selection = payload.get("selection") or {}
+    sku = selection.get("sku", "")
+    if selection.get("kind") == "variant":
+        source = payload.get("source", {})
+        sku = (source.get("VARIANTES", {}).get(sku, {}).get("sku_padre")
+               or source.get("CSV_VARIANTES", {}).get(sku, {}).get("Superior") or "").strip()
+    store = payload.get("store_url", "")
+    key = hashlib.sha256((store + "\0" + sku.casefold()).encode()).hexdigest()
+    request_lock(db, "woocommerce:" + store, sku.casefold())
+    reservation = GenerationJob.payload["wc_family"].as_string()
+    busy = db.scalar(select(GenerationJob.id).where(
+        GenerationJob.kind == "woocommerce_export",
+        GenerationJob.status.in_(["processing", "cancelling"]),
+        # An active job from the old worker has no reservation field.
+        or_(reservation == key, reservation.is_(None))).limit(1))
+    if busy:
+        return False
+    job.payload = {**payload, "wc_family": key}
+    return True
+
+
 # Reclama bajo lock un único trabajo En cola, le asigna propietario y lease de cinco minutos.
 def claim(owner, job_id=None):
     stamp = time.time()
     with transaction() as db:
-        recover_expired(db)
+        recover_expired(db, job_id)
         query = select(GenerationJob).where(GenerationJob.status == "queued")
         if job_id is not None:
             query = query.where(GenerationJob.id == job_id)
@@ -148,6 +179,8 @@ def claim(owner, job_id=None):
         )
         if not job:
             return None
+        if job.kind == "woocommerce_export" and not reserve_publication(db, job):
+            return None  # SQL stays queued for the outbox to deliver again.
         job.status = "processing"
         job.lease_owner = owner
         job.lease_until = stamp + 300
@@ -169,11 +202,13 @@ def claim(owner, job_id=None):
 
 # Persiste progreso/resultado y comprueba propietario/cancelación antes del siguiente paso;
 # confirma SQL antes de lanzar JobCancelled.
-def checkpoint(job_id, owner, *, payload=None, progress=None, message=None):
+def checkpoint(job_id, owner, *, payload=None, progress=None, message=None, updates=None):
     cancelled = False
     with transaction() as db:
         job = db.scalar(
-            select(GenerationJob).where(GenerationJob.id == job_id).with_for_update()
+            select(GenerationJob).options(load_only(
+                GenerationJob.status, GenerationJob.lease_owner, GenerationJob.lease_until
+            )).where(GenerationJob.id == job_id).with_for_update()
         )
         if (
             not job
@@ -188,11 +223,18 @@ def checkpoint(job_id, owner, *, payload=None, progress=None, message=None):
         # An already authorized operation may save its result. A cancellation
         # never authorizes a new in_flight operation. Commit before raising so
         # the result/cancellation cannot be rolled back by the worker exception.
-        saving_result = payload is not None and job.payload.get("in_flight") and not payload.get("in_flight")
+        changes = updates if updates is not None else payload
+        saving_result = (cancelled and changes is not None and (payload is not None or "in_flight" in changes)
+                         and not changes.get("in_flight") and job.payload.get("in_flight"))
         if not cancelled or saving_result:
             job.lease_until = time.time() + 300
             if payload is not None:
                 job.payload = payload
+            elif updates:
+                if not cancelled and db.bind.dialect.name == "postgresql":
+                    job.payload = cast(GenerationJob.payload, JSONB).op("||")(cast(updates, JSONB))
+                else:
+                    job.payload = {**job.payload, **updates}
             if progress is not None:
                 job.progress = progress
             if message is not None:
@@ -207,10 +249,13 @@ def checkpoint(job_id, owner, *, payload=None, progress=None, message=None):
 def renew(job_id, owner):
     """Keep an in-flight call leased while cancellation waits for its result."""
     with transaction() as db:
-        job = db.scalar(select(GenerationJob).where(GenerationJob.id == job_id).with_for_update())
-        if not job or job.status not in {"processing", "cancelling"} or job.lease_owner != owner or job.lease_until < time.time():
+        stamp = time.time()
+        result = db.execute(update(GenerationJob).where(
+            GenerationJob.id == job_id, GenerationJob.status.in_(["processing", "cancelling"]),
+            GenerationJob.lease_owner == owner, GenerationJob.lease_until >= stamp
+        ).values(lease_until=stamp + 300))
+        if not result.rowcount:
             raise RuntimeError("El trabajo ya no pertenece a este worker.")
-        job.lease_until = time.time() + 300
 
 
 # Guarda el resultado final del propietario vigente; Deteniendo termina como Cancelado y
@@ -218,7 +263,8 @@ def renew(job_id, owner):
 def finish(job_id, owner, success, message):
     with transaction() as db:
         job = db.scalar(
-            select(GenerationJob).where(GenerationJob.id == job_id).with_for_update()
+            select(GenerationJob).options(load_only(GenerationJob.lease_owner, GenerationJob.status,
+                GenerationJob.kind)).where(GenerationJob.id == job_id).with_for_update()
         )
         if job and job.lease_owner == owner and job.status == "cancelling":
             mark_cancelled(job)

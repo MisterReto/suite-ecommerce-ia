@@ -1,7 +1,6 @@
 """Canonical Google Sheets adapters, imported normally by the FastAPI backend."""
 from __future__ import annotations
 import threading
-import pandas as pd
 import app as legacy
 from catalog_capture import records_from_values, prepare_capture_updates
 from inventory_schema import MASTER_COLUMNS, MASTER_SHEET, split_category_path, join_category_path
@@ -19,6 +18,7 @@ legacy._get_sheets_service = sheets_for_session
 
 
 def _clean(value):
+    import pandas as pd
     try:
         if pd.isna(value):
             return ""
@@ -84,6 +84,7 @@ def _canonical_row(record):
 
 
 def _read_master(sheets_service, spreadsheet_id):
+    import pandas as pd
     result = sheets_service.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range=f"'{MASTER_SHEET}'",
