@@ -170,7 +170,7 @@ jobs:
           python -m pytest test_loyverse_colab.py -q
       - name: Publicación Colab individual, lotes y prioridad de imágenes
         run: |
-          python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_woocommerce_compare.py test_generation_contract.py -q
+          python -m pytest test_woocommerce_colab.py test_woocommerce_api.py test_woocommerce_queue.py test_woocommerce_compare.py test_woocommerce_reconciliation.py test_generation_contract.py -q
           python -m pytest test_loyverse_colab.py -q
       - name: Evidencia visual de navegación y fallos del navegador
         if: always()
