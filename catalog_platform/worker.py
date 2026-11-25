@@ -306,6 +306,9 @@ def save_asset(job, value, drive):
 def process(job):
     if job["kind"] not in SUPPORTED_JOB_KINDS:
         raise ValueError("Este tipo de trabajo fue retirado. Se conservó su historial y no se ejecutó.")
+    if job["kind"] == "wc_reconcile":
+        from .woocommerce_reconciliation import process as reconcile
+        return reconcile(job, OWNER)
     if job["kind"] == "loyverse_export":
         from .loyverse_jobs import process as export_loyverse
         return export_loyverse(job, OWNER)

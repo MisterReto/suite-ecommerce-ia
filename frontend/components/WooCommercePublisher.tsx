@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { wakeServices } from "@/lib/service-readiness";
+import WooCommerceReconciliation from "./WooCommerceReconciliation";
 
 type Selection = { kind: "simple" | "family" | "variant"; sku: string };
 type Row = Selection & { name: string; brand: string; category: string; price: string; variants: number; parent_sku: string };
@@ -150,6 +151,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
   const canSubmit = isAdmin && connection?.configured && (!options.images || connection.images_configured);
 
   return <div className="wc-publisher" aria-label="Publicación en WooCommerce">
+    {isAdmin && <WooCommerceReconciliation api={api} online={online}/>}
     <section className="p-card">
       <h2>Publicar en WooCommerce</h2>
       <p>Selecciona productos de Sheets y revisa la carga. Las imágenes se relacionan por el SKU real de Drive.</p>

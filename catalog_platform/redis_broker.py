@@ -58,7 +58,7 @@ def supervisor_alive():
 
 # Construye la cola RQ con serialización JSON.
 def rq_queue(kind=None):
-    name = PUBLICATION_QUEUE_NAME if kind in {"woocommerce_export", "loyverse_export"} else QUEUE_NAME
+    name = PUBLICATION_QUEUE_NAME if kind in {"woocommerce_export", "loyverse_export", "wc_reconcile"} else QUEUE_NAME
     return Queue(name, connection=connection(), serializer=JSONSerializer)
 
 
@@ -84,7 +84,7 @@ def publish_one(job_id):
             # Interrupted paid operations are failed by recover_expired instead.
             previous.delete()
         try:
-            target = rq_queue(job.kind) if job.kind in {"woocommerce_export", "loyverse_export"} else rq_queue()
+            target = rq_queue(job.kind) if job.kind in {"woocommerce_export", "loyverse_export", "wc_reconcile"} else rq_queue()
             target.enqueue(
                 "catalog_platform.worker.execute_job", job_id,
                 job_id=rq_id, unique=True,

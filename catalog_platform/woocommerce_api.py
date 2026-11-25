@@ -17,6 +17,8 @@ from .accounts import persist
 from . import queue
 
 router = APIRouter(prefix="/api/woocommerce")
+from .reconciliation_api import router as reconciliation_router
+router.include_router(reconciliation_router)
 
 
 class Selection(BaseModel):

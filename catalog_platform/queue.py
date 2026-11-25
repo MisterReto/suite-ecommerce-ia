@@ -126,6 +126,10 @@ def recover_expired(db, job_id=None):
     for job in db.scalars(query.limit(100)):
         if job.status == "cancelling":
             mark_cancelled(job)
+        elif job.kind == "wc_reconcile" and job.payload.get("preview"):
+            job.status = "failed"
+            job.finished_at = now()
+            job.message = "Sincronización interrumpida. Revisa los resultados y genera una nueva vista previa."
         elif job.payload.get("in_flight"):
             job.status = "failed"
             job.finished_at = now()
