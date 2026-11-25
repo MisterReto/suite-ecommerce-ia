@@ -2,7 +2,7 @@
 from collections import Counter
 from contextlib import closing
 import json
-import re
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -20,7 +20,7 @@ from .security import require_role
 from .woocommerce_export import Exporter, store_url
 
 KIND = "wc_reconcile"
-ELIGIBLE = {"remove","publish_local","unpublish_local"}
+ELIGIBLE = {"missing","publish","remove"}
 TTL = 3600
 
 
@@ -42,25 +42,13 @@ def local_snapshot(index, tenant, origin):
             rid = p.woocommerce_variation_id if kind=="variation" else p.woocommerce_product_id
             if rid:
                 dbi.execute("INSERT INTO mapping VALUES(?,?,?)",(p.id,rid,p.woocommerce_product_id if kind=="variation" else 0))
-            if p.status=="deleted":
-                dbi.execute("INSERT INTO lifetime VALUES(?,?,NULL)",(p.id,p.created_at.isoformat()))
-        for pid,sku,stamp in stream(db,select(AuditLog.product_id,AuditLog.before["sku"].as_string(),
-            AuditLog.created_at).where(AuditLog.tenant_id==tenant,AuditLog.action=="product.deleted")):
+        for pid,sku in stream(db,select(AuditLog.product_id,AuditLog.before["sku"].as_string()).where(AuditLog.tenant_id==tenant,AuditLog.action=="product.deleted")):
             dbi.execute("UPDATE local SET sku=?,display=? WHERE id=? AND status='deleted'",(norm(sku),sku,pid))
-            dbi.execute("UPDATE lifetime SET stop=? WHERE local=?",(stamp.isoformat(),pid))
         for pid,rid,parent in stream(db,select(IntegrationMapping.internal_product_id,
             IntegrationMapping.external_id,IntegrationMapping.parent_external_id).where(
                 IntegrationMapping.tenant_id==tenant,IntegrationMapping.provider=="woocommerce")):
             dbi.execute("INSERT INTO mapping VALUES(?,?,?)",(pid,rid,parent or 0))
-        for stamp,effects in stream(db,select(GenerationJob.created_at,GenerationJob.payload["remote_effects"])
-                .where(GenerationJob.kind=="woocommerce_export",GenerationJob.tenant_id==tenant,
-                       GenerationJob.payload["store_url"].as_string()==origin)):
-            for e in effects or ():
-                path = re.fullmatch(r"/wp-json/wc/v3/products(?:/(\d+)/variations)?",e.get("endpoint",""))
-                if path and e.get("method")=="POST" and e.get("sku") and type(e.get("id")) is int:
-                    dbi.execute("INSERT INTO proof VALUES(?,?,?,?)",(e["id"],int(path[1] or 0),
-                        norm(e["sku"]),stamp.isoformat()))
-    if not dbi.execute("SELECT 1 FROM local LIMIT 1").fetchone():
+    if not dbi.execute("SELECT 1 FROM local WHERE status NOT IN (\x27deleted\x27,\x27archived\x27) LIMIT 1").fetchone():
         raise ValueError("El inventario validado está vacío. Comprueba la carpeta y la sincronización de Sheets.")
 
 
@@ -76,7 +64,7 @@ def read_page(run,page):
 
 
 def result_view(row):
-    return {k:row[k] for k in ("key","sku","category","remote_status")}
+    return {k:row[k] for k in ("key","sku","category","remote_status","remote","kind")}
 
 
 def process(job, owner):
@@ -86,6 +74,11 @@ def process(job, owner):
     if payload["store"] != origin:
         raise ValueError("Cambió la tienda. Genera otra vista previa.")
     require_role({"email":job["actor"]},"admin")
+    if payload.get("direction") != "app_to_store":
+        raise ValueError("Genera una nueva vista previa para sincronizar WooCommerce.")
+    root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if not root or root != job["tenant_id"]:
+        raise ValueError("Selecciona la carpeta del inventario principal antes de sincronizar la tienda.")
     last = 0
     def checkpoint(force=False):
         nonlocal last
@@ -134,6 +127,7 @@ def apply_selection(index, engine, job, checkpoint, counts):
     if selected:
         raise ValueError("La selección no pertenece a esta vista previa.")
     # Complete both inventories and verify every preview page before the first change.
+    dbi.execute("CREATE TABLE created(id INTEGER PRIMARY KEY)")
     dbi.execute("CREATE TABLE current(key TEXT PRIMARY KEY)")
     for row in index.rows():
         checkpoint()
@@ -141,25 +135,109 @@ def apply_selection(index, engine, job, checkpoint, counts):
             dbi.execute("INSERT INTO current VALUES(?)",(row["key"],))
     total = dbi.execute("SELECT count(*) FROM approved").fetchone()[0]
     batch = []
-    for key,data,current in dbi.execute("SELECT a.key,a.data,c.key FROM approved a LEFT JOIN current c ON c.key=a.key"):
+    loaded = False
+    for key,data,current in dbi.execute("SELECT a.key,a.data,c.key FROM approved a LEFT JOIN current c ON c.key=a.key ORDER BY CASE WHEN json_extract(a.data,'$.kind')='variable' THEN 0 ELSE 1 END"):
         checkpoint()
         row = json.loads(data)
         outcome = "changed" if current else "stale"
-        if current and row["category"]=="remove":
+        if current:
             checkpoint(True)
-            outcome = draft(engine,row,job)
+            if row["category"]=="missing":
+                if not loaded:
+                    from .accounts import load
+                    with transaction() as db:
+                        value = load(db,job["tenant_id"],job["actor"])
+                    value.update(email=job["actor"],platform_tenant=job["tenant_id"])
+                    engine.load(value,include_images=True)
+                    loaded = True
+                outcome = create_remote(engine,row,job,dbi)
+            else:
+                outcome = set_remote_status(engine,row,job)
         batch.append((row,outcome))
-        if len(batch)>=PAGE or row["category"]=="remove":
+        if len(batch)>=PAGE or current:
             save_results(batch,job,counts)
             batch.clear()
-            if total and row["category"]!="remove":
+            if total and not current:
                 queue.checkpoint(job["id"],job["_owner"],progress=40+int(59*sum(counts.values())/total),
                                  updates={"counts":dict(counts)})
     save_results(batch,job,counts)
     queue.checkpoint(job["id"],job["_owner"],updates={"counts":dict(counts)},progress=99)
 
 
-def draft(engine,row,job):
+def create_remote(engine,row,job,dbi):
+    sku = row["sku"]
+    kind = {"variable":"family","variation":"variant","simple":"simple"}.get(row["kind"])
+    if not kind:
+        return "stale"
+    with transaction() as db:
+        version = db.scalar(select(Product.version).where(Product.id==row["local"],
+            Product.tenant_id==job["tenant_id"],Product.status.notin_(["deleted","archived"])))
+    if version!=row["version"]:
+        return "stale"
+    source = {"family":"PADRES","variant":"VARIANTES","simple":"SIMPLES"}[kind]
+    if sku not in engine.ns[source]:
+        row["detail"]="SKU ausente de la hoja de publicación."
+        return "failed"
+    if kind=="family":
+        members = sorted(norm(v["sku"]) for v in engine.ns["hijos_familia"](sku))
+        local = dbi.execute("SELECT sku,version FROM local WHERE parent=? AND status NOT IN ('archived','deleted') ORDER BY sku",(row["local"],)).fetchall()
+        if not members or members!=[v[0] for v in local] or family_digest(local)!=row["children_hash"]:
+            return "stale"
+        approved = dbi.execute("""SELECT count(*) FROM approved a JOIN current c ON c.key=a.key
+            WHERE json_extract(a.data,'$.parent_sku')=? AND json_extract(a.data,'$.category')='missing'""",(sku,)).fetchone()[0]
+        if approved!=len(members):
+            row["detail"]="Selecciona la familia y todas sus variantes para crearla."
+            return "skipped"
+    if kind=="variant":
+        if engine.ns["sku_padre"](engine.ns[source][sku])!=row["parent_sku"]:
+            return "stale"
+        parent=engine.ns["buscar_producto"](row["parent_sku"])
+        if not parent or parent.get("type")!="variable" or parent.get("status")!="publish":
+            row["detail"]="El padre debe estar publicado."
+            return "skipped"
+        def lookup():
+            return engine.ns["buscar_variacion"](parent["id"],sku)
+    else:
+        def lookup():
+            return engine.ns["buscar_producto"](sku)
+    existing = lookup()
+    if existing:
+        row["remote"]=existing["id"]
+        return "created" if existing.get("status")=="publish" and dbi.execute("SELECT 1 FROM created WHERE id=?",(existing["id"],)).fetchone() else "skipped"
+    def guard(operation,modifying):
+        if modifying:
+            require_role({"email":job["actor"]},"admin")
+            queue.checkpoint(job["id"],job["_owner"],updates={"in_flight":{"sku":sku}})
+    session=engine.ns["wc_session"]
+    session.before=guard
+    try:
+        options={"images":bool(engine.ns["fotos_sku"](sku)), "status":"publish","tags":True,
+                 "stock":True,"allow_published_family":True}
+        engine.execute(kind,sku,options)
+        result=lookup()
+        if result and norm(result.get("sku"))==norm(sku) and result.get("status")=="publish":
+            row["remote"]=result["id"]
+            if kind=="family":
+                for member in engine.ns["hijos_familia"](sku):
+                    child=engine.ns["buscar_variacion"](result["id"],member["sku"])
+                    if not child or child.get("status")!="publish":
+                        return "uncertain"
+                    dbi.execute("INSERT OR IGNORE INTO created VALUES(?)",(child["id"],))
+            return "created"
+        return "uncertain"
+    except queue.JobCancelled:
+        raise
+    except Exception as exc:
+        from .woocommerce_export import safe_error
+        row["detail"]=safe_error(exc)[:240]
+        if any(code in str(exc) for code in ("HTTP 401","HTTP 403")):
+            raise
+        return "failed"
+    finally:
+        session.before=None
+
+
+def set_remote_status(engine,row,job):
     rid,parent = row["remote"],row["parent"]
     endpoint = f"products/{parent}/variations/{rid}" if parent else f"products/{rid}"
     # Check the live product immediately before the reversible write.
@@ -171,7 +249,10 @@ def draft(engine,row,job):
         reused = db.scalar(select(Product.id).where(Product.tenant_id==job["tenant_id"],
             Product.status!="deleted",or_(func.lower(func.trim(Product.sku)).in_(tokens),
                 func.lower(func.trim(Product.barcode)).in_(tokens))).limit(1))
-        if not local or tuple(local)!=("deleted",row["version"]) or reused:
+        if row["category"]=="publish":
+            if not local or local.status in ("archived","deleted") or local.version!=row["version"]:
+                return "stale"
+        elif (row["local"] and (not local or tuple(local)!=("deleted",row["version"]))) or reused:
             return "stale"
     # A failed verification read aborts the run. Writes are never blindly retried.
     try:
@@ -186,31 +267,34 @@ def draft(engine,row,job):
         or (not parent and current.get("type")!=row["kind"])
         or current.get("status")!=row["remote_status"]):
         return "stale"
-    if row["kind"]=="variable":
+    if row["kind"]=="variable" and row["category"]=="remove":
         expected = current.get("variations")
         if not isinstance(expected,list) or len(set(expected))!=len(expected):
             raise ValueError("La tienda devolvió una familia incompleta.")
         remaining = set(expected)
         def children():
             for child in pages(engine,endpoint+"/variations",lambda:queue.checkpoint(job["id"],job["_owner"])):
-                if child["id"] not in remaining or child.get("parent_id",rid)!=rid:
+                if child.get("parent_id",rid)!=rid:
                     raise ValueError("La familia cambió. Actualiza la vista previa.")
-                remaining.remove(child["id"])
+                remaining.discard(child["id"])
                 yield child["id"],norm(child["sku"]),norm(child.get("global_unique_id")),child["status"]
         if family_digest(children())!=row["family"] or remaining:
             return "stale"
     require_role({"email":job["actor"]},"admin")
     queue.checkpoint(job["id"],job["_owner"],updates={"in_flight":{"sku":row["sku"],"remote":rid}})
     try:
-        response = session.put(url,json={"status":"draft"},timeout=(8,30))
+        target = "publish" if row["category"]=="publish" else "draft"
+        response = session.put(url,json={"status":target},timeout=(8,30))
         item = engine.ns["comprobar_respuesta"](response,endpoint)
-        if item.get("id")==rid and item.get("status")=="draft":
-            return "changed"
+        if item.get("id")==rid and item.get("status")==target:
+            return "published_remote" if target=="publish" else "drafted"
         return "uncertain"
     except Exception as exc:
         # StoreSession raises before returning an HTTP error; abort on credential loss.
         if any(code in str(exc) for code in ("HTTP 401","HTTP 403")):
             raise ValueError("WooCommerce rechazó la autorización.") from None
+        from .woocommerce_export import safe_error
+        row["detail"]=safe_error(exc)[:240]
         return "uncertain"
 
 
@@ -220,17 +304,9 @@ def save_results(batch,job,counts):
     with transaction() as db:
         for row,outcome in batch:
             category = row["category"]
-            if outcome=="changed" and category!="remove":
-                changed = db.execute(update(Product).where(Product.tenant_id==job["tenant_id"],
-                    Product.id==row["local"],Product.version==row["version"],
-                    Product.status.notin_(["archived","deleted"])).values(
-                        status="published" if category=="publish_local" else "pending",
-                        version=Product.version+1))
-                if not changed.rowcount:
-                    outcome="stale"
             audit(db,job["tenant_id"],job["actor"],"woocommerce.reconcile.item",row["local"],
-                  after={"job":job["id"],"sku":row["sku"],"category":category,"remote":row["remote"]},
+                  after={"job":job["id"],"sku":row["sku"],"category":category,"remote":row["remote"],"detail":row.get("detail")},
                   result=outcome)
             counts[outcome] += 1
-    if any(row["category"]=="remove" for row,_ in batch):
+    if batch:
         queue.checkpoint(job["id"],job["_owner"],updates={"in_flight":None,"counts":dict(counts)})

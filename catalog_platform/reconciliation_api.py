@@ -47,16 +47,20 @@ def enqueue(value,preview=None,approval=None):
     tenant,origin = value["platform_tenant"],store_url()
     with transaction() as db:
         queue.request_lock(db,"woocommerce",origin+":reconcile")
+        if db.scalar(select(GenerationJob.id).where(GenerationJob.kind=="woocommerce_export",
+                GenerationJob.status.in_(["processing","cancelling"]),
+                GenerationJob.payload["store_url"].as_string()==origin).limit(1)):
+            raise HTTPException(409,"Espera a que termine la publicación en WooCommerce.")
         active = db.scalar(select(GenerationJob).where(GenerationJob.kind==KIND,
             GenerationJob.payload["store"].as_string()==origin,GenerationJob.status.in_(ACTIVE)).limit(1))
         if active:
             if active.tenant_id==tenant and not preview and not active.payload.get("preview"):
                 return describe(active)
             raise HTTPException(409,"Ya hay una sincronización en curso para esta tienda.")
-        payload = {"store":origin}
+        payload = {"store":origin,"direction":"app_to_store"}
         if preview:
             source = find(db,value,preview)
-            if source.status!="completed" or source.payload.get("preview"):
+            if source.payload.get("direction")!="app_to_store" or source.status!="completed" or source.payload.get("preview"):
                 raise HTTPException(409,"Se requiere una vista previa terminada.")
             if not approval.confirm or (approval.all == bool(approval.keys)):
                 raise HTTPException(422,"Confirma la selección o todos los cambios elegibles.")
@@ -117,10 +121,12 @@ def details(job_id:str,page:int=Query(0,ge=0,le=10000),value=Depends(context)):
         job = find(db,value,job_id)
         summary = describe(job)
         if job.payload.get("preview"):
+            if job.status in ACTIVE:
+                return {**summary,"rows":[],"more":False}
             rows = db.execute(select(AuditLog.after,AuditLog.result).where(AuditLog.tenant_id==job.tenant_id,
                 AuditLog.action=="woocommerce.reconcile.item",AuditLog.after["job"].as_string()==job_id)
                 .order_by(AuditLog.created_at,AuditLog.id).offset(page*50).limit(51)).all()
-            return {**summary,"rows":[{"sku":item["sku"],"category":item["category"],"outcome":outcome}
+            return {**summary,"rows":[{"sku":item["sku"],"category":item["category"],"remote":item.get("remote"),"detail":item.get("detail"),"outcome":outcome}
                                       for item,outcome in rows[:50]],"more":len(rows)>50}
     rows = []
     if summary["status"]=="completed" and page<summary["pages"]:

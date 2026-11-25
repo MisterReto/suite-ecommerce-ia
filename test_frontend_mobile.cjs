@@ -263,6 +263,7 @@ const asset = { id: "test-asset", image_id: "test-image", product_id: product.id
     await nav.getByRole("link",{name:"Más",exact:true}).click();
     assert.equal(await nav.getByRole("button",{name:"Publicación masiva",exact:true}).count(),0);
     await nav.getByRole('button',{name:'Publicar en WooCommerce',exact:true}).click();
+    await page.getByRole('button',{name:'Cargar catálogo para publicación manual',exact:true}).click();
     await page.getByRole('checkbox',{name:'Seleccionar Variante 041789002960',exact:true}).check();
     await page.getByRole('button',{name:'Revisar vista previa',exact:true}).click();
     const wcReview = page.getByRole('region',{name:'Vista previa de la carga'});
