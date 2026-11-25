@@ -62,9 +62,9 @@ def snapshot(engine, index, check):
             children = set(expected)
             for child in pages(engine,f"products/{item['id']}/variations",check):
                 # Some Woo versions omit parent_id on the parent's nested endpoint.
-                if child.get("parent_id",item["id"]) != item["id"] or child["id"] not in children:
+                if child.get("parent_id",item["id"]) != item["id"]:
                     raise ValueError("Las variantes devueltas no corresponden a la familia.")
-                children.remove(child["id"])
+                children.discard(child["id"])
                 add(child,"variation",item["id"])
             if children:
                 raise ValueError("WooCommerce omitió variantes de una familia.")

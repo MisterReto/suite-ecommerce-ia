@@ -18,11 +18,8 @@ class CatalogIndex:
             CREATE TABLE remote(id INTEGER PRIMARY KEY,sku TEXT,barcode TEXT,kind TEXT,parent INTEGER,
                 status TEXT,display TEXT);
             CREATE TABLE mapping(local TEXT,remote INTEGER,parent INTEGER);
-            CREATE TABLE proof(remote INTEGER,parent INTEGER,sku TEXT,stamp TEXT);
-            CREATE TABLE lifetime(local TEXT PRIMARY KEY,start TEXT,stop TEXT);
             CREATE INDEX mapped_remote ON mapping(remote);
             CREATE INDEX mapped_local ON mapping(local);
-            CREATE INDEX proof_remote ON proof(remote);
             CREATE INDEX local_sku ON local(sku);
             CREATE INDEX local_barcode ON local(barcode);
             CREATE INDEX remote_sku ON remote(sku);
@@ -51,8 +48,7 @@ class CatalogIndex:
                                 r["id"], token, token) for token in (r["sku"], r["barcode"])):
             return "conflict", None
         if not linked:
-            return ("orphan" if r["parent"] and not exists(
-                "SELECT 1 FROM pair WHERE remote=?", r["parent"]) else "independent"), None
+            return self.retirement(r), None
         l = linked[0]
         if (len(linked)>1 or l["kind"] != r["kind"] or
             not ({l["sku"],l["barcode"]} & {r["sku"],r["barcode"]} - {""}) or
@@ -67,30 +63,25 @@ class CatalogIndex:
                 exists("SELECT 1 FROM pair WHERE local=? AND remote<>?", l["parent"], r["parent"])):
                 return "orphan", l
         if l["status"] == "deleted":
-            owned = r["sku"] and r["sku"] == l["sku"] and exists("""
-                SELECT 1 FROM proof p JOIN lifetime t ON t.local=?
-                WHERE p.remote=? AND p.parent=? AND p.sku=? AND p.stamp BETWEEN t.start AND t.stop
-                """, l["id"], r["id"], r["parent"], r["sku"])
-            if not owned:
-                return "unverified", l
-            if r["status"] == "draft":
-                return "retired", l
-            if r["status"] != "publish":
-                return "review", l
-            # A parent is eligible only after every child has its own verified, completed retirement.
-            if r["kind"] == "variable":
-                for child in db.execute("SELECT * FROM remote WHERE parent=?", (r["id"],)):
-                    if child["kind"]!="variation" or self.classify(child)[0]!="retired":
-                        return "family_review", l
-            return "remove", l
+            return self.retirement(r), l
         if l["status"] == "archived" or r["kind"] not in ("simple","variable","variation"):
             return "review", l
-        published = r["status"] == "publish"
-        if published and r["parent"]:
-            published = exists("SELECT 1 FROM remote WHERE id=? AND status='publish'", r["parent"])
-        if (l["status"] == "published") != published:
-            return ("publish_local" if published else "unpublish_local"), l
-        return "match", l
+        if r["status"]=="draft":
+            return "publish", l
+        return ("match" if r["status"]=="publish" else "review"), l
+
+    def retirement(self,r):
+        if not r["sku"] or r["kind"] not in ("simple","variable","variation"):
+            return "review"
+        if r["status"]=="draft":
+            return "retired"
+        if r["status"]!="publish":
+            return "review"
+        if r["kind"]=="variable":
+            for child in self.db.execute("SELECT * FROM remote WHERE parent=?",(r["id"],)):
+                if self.classify(child)[0]!="retired":
+                    return "family_review"
+        return "remove"
 
     def rows(self):
         self.match()
@@ -107,8 +98,23 @@ class CatalogIndex:
             duplicate = self.db.execute("""SELECT 1 FROM local WHERE id<>? AND
                 ((?<>'' AND (sku=? OR barcode=?)) OR (?<>'' AND (sku=? OR barcode=?))) LIMIT 1""",
                 (l["id"],l["sku"],l["sku"],l["sku"],l["barcode"],l["barcode"],l["barcode"])).fetchone()
-            yield self.row("conflict" if duplicate else "orphan" if l["parent"] and not
-                self.db.execute("SELECT 1 FROM pair WHERE local=?", (l["parent"],)).fetchone() else "missing",l,None)
+            category = "missing"
+            parent_sku = ""
+            if duplicate or not l["sku"] or self.db.execute("SELECT 1 FROM mapping WHERE local=?", (l["id"],)).fetchone():
+                category = "conflict"
+            if l["parent"]:
+                parent = self.db.execute("SELECT * FROM local WHERE id=?", (l["parent"],)).fetchone()
+                if not parent or parent["kind"]!="variable" or parent["status"] in ("archived","deleted"):
+                    category = "orphan"
+                else:
+                    parent_sku = parent["display"]
+            row = self.row(category,l,None)
+            row["parent_sku"] = parent_sku
+            if l["kind"]=="variable" and category=="missing":
+                children = self.db.execute("SELECT sku,version FROM local WHERE parent=? AND status NOT IN ('deleted','archived') ORDER BY sku",(l["id"],))
+                row["children_hash"] = family_digest(children)
+            row["key"] = hashlib.sha256(json.dumps(row,sort_keys=True).encode()).hexdigest()
+            yield row
 
     @staticmethod
     def row(category,l,r):

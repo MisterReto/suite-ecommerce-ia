@@ -153,6 +153,11 @@ def reserve_publication(db, job):
         sku = (source.get("VARIANTES", {}).get(sku, {}).get("sku_padre")
                or source.get("CSV_VARIANTES", {}).get(sku, {}).get("Superior") or "").strip()
     store = payload.get("store_url", "")
+    request_lock(db,"woocommerce",store+":reconcile")
+    if db.scalar(select(GenerationJob.id).where(GenerationJob.kind=="wc_reconcile",
+            GenerationJob.payload["store"].as_string()==store,
+            GenerationJob.status.in_(["queued","processing","cancelling"])).limit(1)):
+        return False
     key = hashlib.sha256((store + "\0" + sku.casefold()).encode()).hexdigest()
     request_lock(db, "woocommerce:" + store, sku.casefold())
     reservation = GenerationJob.payload["wc_family"].as_string()
