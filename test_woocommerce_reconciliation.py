@@ -2,7 +2,6 @@
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -55,6 +54,7 @@ def test_families_orphans_duplicates_and_missing(tmp_path):
     p["variations"]=[2,3]
     shop=Shop([p,product(4,"D"),product(5," d "),product(6,"outside")],
               {1:[product(2,"V","variation",1),product(3,"bad","variation",1)]})
+    del shop.children[1][0]["parent_id"]
     for row in [("f","f","","variable",None,"published",1,"F"),
                 ("v","v","","variation","f","deleted",2,"V"),
                 ("o","bad","","variation","absent","pending",1,"bad"),
@@ -88,6 +88,19 @@ def test_invalid_pages_abort(fault):
     assert not shop.writes
 
 
+def test_empty_inventory_and_missing_ownership_never_propose_removal(tmp_path):
+    index=CatalogIndex(tmp_path/"owner.db")
+    for pid in ("a","b"):
+        index.db.execute("INSERT INTO local VALUES(?,?,?,?,?,?,?,?)",
+            (pid,pid,"","simple",None,"deleted",2,pid))
+    index.db.execute("INSERT INTO lifetime VALUES('a','2','3')")
+    index.db.execute("INSERT INTO proof VALUES(1,0,'a','1')")  # Earlier SKU incarnation.
+    index.db.execute("INSERT INTO mapping VALUES('b',2,0)")  # A link alone cannot establish ownership.
+    snapshot(Shop([product(1,"a"),product(2,"b")]),index,lambda:None)
+    assert [r["category"] for r in index.rows()]==["unverified","unverified"]
+    index.db.close()
+
+
 def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     tenant="test-catalog"
     admin={"platform_tenant":tenant,"email":"admin@test.local"}
@@ -100,6 +113,10 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     monkeypatch.setenv("WC_CONSUMER_SECRET","test-secret")
     import os
     Base.metadata.create_all(engine_for(os.environ["DATABASE_URL"]))
+    index=CatalogIndex(tmp_path/"empty.db")
+    with pytest.raises(ValueError,match="vacío"):
+        rec.local_snapshot(index,tenant,"https://store.test")
+    index.db.close()
     monkeypatch.setattr(rec.queue,"available",lambda db:True)
     monkeypatch.setattr(rec.queue,"dispatch",lambda db,job:db.flush())
     shop=Shop([product(i,str(i)) for i in range(1,306)])
@@ -140,6 +157,7 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     assert shop.writes==[("2",{"status":"draft"})]
     assert api.apply(preview["id"],approved,admin)["id"]==applied["id"]
     assert api.details(applied["id"],0,admin)["counts"]=={"changed":2}
+    assert api.latest(admin)["last_sync"]
     again=api.preview(admin)
     run(again)
     assert api.details(again["id"],0,admin)["counts"]=={"match":1,"retired":1,"independent":303}
@@ -148,3 +166,11 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     cancelled=api.preview(admin)
     assert api.cancel(cancelled["id"],admin)["status"]=="cancelled"
     assert rec.queue.claim("test",cancelled["id"]) is None
+    # Losing a lease during apply requires a fresh preview, including after some successful writes.
+    with transaction() as db:
+        lost=GenerationJob(tenant_id=tenant,actor=admin["email"],request_key=uid(),kind=rec.KIND,
+            status="processing",lease_owner="gone",lease_until=1,payload={"preview":again["id"]})
+        db.add(lost)
+        db.flush()
+        rec.queue.recover_expired(db,lost.id)
+        assert lost.status=="failed" and lost.lease_owner is None

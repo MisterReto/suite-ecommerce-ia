@@ -75,6 +75,9 @@ export default function WooCommerceReconciliation({api,online}:{api: Api; online
   const canReview = job?.mode==="preview" && job.status==="completed" && !!job.rows;
   const total = Object.values(job?.counts || {}).reduce((n,v)=>n+v,0);
   const available = Object.entries(job?.counts || {}).reduce((n,[k,v])=>n+(eligible(k)?v:0),0);
+  const counts = job?.counts || {};
+  const statuses = (counts.publish_local || 0) + (counts.unpublish_local || 0);
+  const warnings = ["conflict","unverified","orphan","family_review","review"].reduce((n,k)=>n+(counts[k] || 0),0);
   return <section className="p-card" aria-label="Sincronización del catálogo">
     <button className="button" disabled={!online || busy || active(job)} onClick={()=>void submit(base)}>Sincronizar catálogo con WooCommerce</button>
     <p className="p-muted">La vista previa compara el catálogo. Las bajas confirmadas pasan a borrador en la tienda.</p>
@@ -85,8 +88,13 @@ export default function WooCommerceReconciliation({api,online}:{api: Api; online
       {active(job) && <><progress max={100} value={job.progress} aria-label="Avance de la sincronización"/>
         <button className="button secondary" disabled={busy || job.status==="cancelling"} onClick={()=>void submit(base+"/"+job.id+"/cancel")}>Cancelar sincronización</button></>}
       {(active(job) || job.status==="failed") && <p role="status">{job.message}</p>}
-      {!!total && <><p>{job.mode==="preview" ? "Registros analizados" : "Resultados registrados"}: {total}</p>
-        <ul>{Object.entries(job.counts).map(([k,v])=><li key={k}>{labels[k] || k}: {v}</li>)}</ul></>}
+      {job.mode==="preview" && job.status==="completed" && <>
+        <p>Registros analizados: {total}. Coincidencias activas: {(counts.match || 0)+statuses}.</p>
+        <ul><li>Faltan en WooCommerce: {counts.missing || 0}</li><li>Bajas propuestas: {counts.remove || 0}</li>
+          <li>Estados de publicación por corregir: {statuses}</li><li>Conflictos y advertencias: {warnings}</li>
+          <li>Solo en WooCommerce: {counts.independent || 0}</li></ul></>}
+      {job.mode==="apply" && <><p>Resultados registrados: {total}</p>
+        <ul>{Object.entries(counts).map(([k,v])=><li key={k}>{labels[k] || k}: {v}</li>)}</ul></>}
       {job.rows?.map((row,i)=><p key={row.key || i}>
         {canReview && eligible(row.category) && row.key && <input type="checkbox" aria-label={"Seleccionar "+row.sku}
           disabled={all || busy} checked={all || keys.includes(row.key)} onChange={e=>setKeys(old=>e.target.checked?[...old,row.key!]:old.filter(x=>x!==row.key))}/>}

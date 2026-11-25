@@ -182,7 +182,7 @@ def draft(engine,row,job):
         raise
     current = engine.ns["comprobar_respuesta"](response,endpoint)
     if (current.get("id")!=rid or norm(current.get("sku"))!=row["remote_sku"]
-        or norm(current.get("global_unique_id"))!=row["barcode"] or current.get("parent_id",0)!=parent
+        or norm(current.get("global_unique_id"))!=row["barcode"] or current.get("parent_id",parent)!=parent
         or (not parent and current.get("type")!=row["kind"])
         or current.get("status")!=row["remote_status"]):
         return "stale"
@@ -193,7 +193,7 @@ def draft(engine,row,job):
         remaining = set(expected)
         def children():
             for child in pages(engine,endpoint+"/variations",lambda:queue.checkpoint(job["id"],job["_owner"])):
-                if child["id"] not in remaining or child.get("parent_id")!=rid:
+                if child["id"] not in remaining or child.get("parent_id",rid)!=rid:
                     raise ValueError("La familia cambió. Actualiza la vista previa.")
                 remaining.remove(child["id"])
                 yield child["id"],norm(child["sku"]),norm(child.get("global_unique_id")),child["status"]

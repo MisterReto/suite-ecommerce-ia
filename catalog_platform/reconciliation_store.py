@@ -49,7 +49,7 @@ def snapshot(engine, index, check):
     def add(item, kind, parent):
         nonlocal total
         total += 1
-        if total > LIMIT or not kind or item.get("parent_id",0) != parent:
+        if total > LIMIT or not kind or item.get("parent_id",parent) != parent:
             raise ValueError("La jerarquía o el tamaño del catálogo impide una comparación completa.")
         index.db.execute("INSERT INTO remote VALUES(?,?,?,?,?,?,?)",(item["id"],norm(item["sku"]),
             norm(item.get("global_unique_id")),kind,parent,item["status"],item["sku"]))
@@ -61,7 +61,8 @@ def snapshot(engine, index, check):
                 raise ValueError("La familia no incluyó una lista completa de variantes.")
             children = set(expected)
             for child in pages(engine,f"products/{item['id']}/variations",check):
-                if child.get("parent_id") != item["id"] or child["id"] not in children:
+                # Some Woo versions omit parent_id on the parent's nested endpoint.
+                if child.get("parent_id",item["id"]) != item["id"] or child["id"] not in children:
                     raise ValueError("Las variantes devueltas no corresponden a la familia.")
                 children.remove(child["id"])
                 add(child,"variation",item["id"])
