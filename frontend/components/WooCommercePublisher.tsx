@@ -42,6 +42,7 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
   const [checkedUncertainty, setCheckedUncertainty] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRequested, setCatalogRequested] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const submitting = useRef(false);
@@ -77,10 +78,10 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
     return () => { stopped = true; };
   }, [api, loadJobs]);
   useEffect(() => {
-    if (!online) return;
+    if (!online || !catalogRequested) return;
     const timer = setTimeout(() => { void loadCatalog().catch(e => setError(e.message)); }, 300);
     return () => clearTimeout(timer);
-  }, [loadCatalog, online]);
+  }, [loadCatalog, online, catalogRequested]);
   const hasActive = jobs.some(active);
   useEffect(() => {
     if (!hasActive || !online) return;
@@ -171,7 +172,8 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
     {(busy || catalogLoading) && <p role="status">Preparando la operación…</p>}
     <section className="p-card">
       <h3>Seleccionar productos</h3>
-      <div className="p-toolbar">
+      {!catalogRequested && <button className="button secondary" disabled={!online} onClick={()=>setCatalogRequested(true)}>Cargar catálogo para publicación manual</button>}
+      <div className="p-toolbar" onFocus={()=>setCatalogRequested(true)}>
         <label className="p-form-field">Buscar por nombre o SKU<input value={q} onChange={e => { setQ(e.target.value); setOffset(0); }} /></label>
         <label className="p-form-field">Categoría<select value={category} onChange={e => { setCategory(e.target.value); setOffset(0); }}>
           <option value="">Todas</option>{categories.map(value => <option key={value}>{value}</option>)}</select></label>
