@@ -194,6 +194,15 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     assert api.details(again["id"],0,admin)["counts"]=={"match":1,"retired":2,"remove":302}
     with transaction() as db:
         assert db.scalar(select(Product.status).where(Product.sku=="1"))=="pending"
+    with transaction() as db:
+        db.add(Product(tenant_id=tenant,sku="sin-hoja",name="Sin hoja"))
+    pub=api.preview(admin)
+    run(pub)
+    writes=len(shop.writes)
+    only=api.apply(pub["id"],api.Approval(confirm=True,publications=True),admin)
+    run(only)
+    assert api.details(only["id"],0,admin)["counts"]=={"skipped":1}
+    assert len(shop.writes)==writes
     cancelled=api.preview(admin)
     assert api.cancel(cancelled["id"],admin)["status"]=="cancelled"
     assert rec.queue.claim("test",cancelled["id"]) is None

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 type Api = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
 type Row = { key?: string; sku: string; category: string; outcome?: string; remote_status?: string; remote?: number; detail?: string; kind?: string };
-type Job = { id: string; status: string; progress: number; mode: "preview" | "apply"; message: string;
+type Job = { id: string; store?: string; status: string; progress: number; mode: "preview" | "apply"; message: string;
   counts: Record<string, number>; rows?: Row[]; more?: boolean };
 const base = "/api/woocommerce/reconciliation";
 const labels: Record<string,string> = { match:"Mantener sin cambios", missing:"Crear y publicar",
@@ -23,6 +23,7 @@ export default function WooCommerceReconciliation({api,online}:{api: Api; online
   const [last,setLast] = useState<string | null>(null);
   const [keys,setKeys] = useState<string[]>([]);
   const [all,setAll] = useState(false);
+  const [publications,setPublications] = useState(false);
   const [confirm,setConfirm] = useState(false);
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState("");
@@ -68,7 +69,7 @@ export default function WooCommerceReconciliation({api,online}:{api: Api; online
     setBusy(true); setError(""); setConfirm(false);
     try {
       const result=await api<Job>(path,"POST",body);
-      setJob(result); setPage(0); setKeys([]); setAll(false);
+      setJob(result); setPage(0); setKeys([]); setAll(false); setPublications(false);
     } catch(e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -102,13 +103,15 @@ export default function WooCommerceReconciliation({api,online}:{api: Api; online
       {(page>0 || job.more) && <div className="p-toolbar">
         <button disabled={page===0} onClick={()=>setPage(page-1)}>Anterior</button><span>Página {page+1}</span>
         <button disabled={!job.more} onClick={()=>setPage(page+1)}>Siguiente</button></div>}
-      {canReview && available>0 && <><label><input type="checkbox" checked={all} onChange={e=>setAll(e.target.checked)}/> Seleccionar todos los cambios elegibles ({available})</label>
-        <button className="button secondary" disabled={busy || (!all && !keys.length)} onClick={()=>setConfirm(true)}>Revisar selección</button></>}
+      {canReview && available>0 && <>
+        {(counts.missing || counts.publish) ? <button className="button" disabled={busy} onClick={()=>{setPublications(true);setConfirm(true);}}>Publicar todos los posibles ({(counts.missing || 0)+(counts.publish || 0)})</button> : null}
+        <label><input type="checkbox" checked={all} onChange={e=>setAll(e.target.checked)}/> Seleccionar todos los cambios elegibles ({available})</label>
+        <button className="button secondary" disabled={busy || (!all && !keys.length)} onClick={()=>{setPublications(false);setConfirm(true);}}>Revisar selección</button></>}
     </>}
     <dialog ref={dialog} onCancel={()=>setConfirm(false)}>
-      <h3>Confirmar cambios de catálogo</h3><p>Aplicar {all ? available : keys.length} cambios seleccionados. Cada baja seleccionada moverá ese producto a borrador en WooCommerce. Las creaciones y publicaciones seleccionadas se harán en WooCommerce. El catálogo local se conserva.</p>
+      <h3>Confirmar cambios de catálogo</h3><p>Tienda: {job?.store}</p>{publications ? <p>Crear o publicar los {(counts.missing || 0)+(counts.publish || 0)} productos elegibles. Se omitirán las bajas y los conflictos.</p> : <p>Aplicar {all ? available : keys.length} cambios seleccionados. Cada baja seleccionada moverá ese producto a borrador en WooCommerce. Las creaciones y publicaciones seleccionadas se harán en WooCommerce. El catálogo local se conserva.</p>}
       <div className="p-toolbar"><button autoFocus onClick={()=>setConfirm(false)}>Volver</button>
-        <button className="button" disabled={busy} onClick={()=>job && void submit(base+"/"+job.id+"/apply",{confirm:true,all,keys:all?[]:keys})}>Confirmar y aplicar</button></div>
+        <button className="button" disabled={busy} onClick={()=>job && void submit(base+"/"+job.id+"/apply",{confirm:true,publications,all:!publications && all,keys:all || publications?[]:keys})}>Confirmar y aplicar</button></div>
     </dialog>
   </section>;
 }

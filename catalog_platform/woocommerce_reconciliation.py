@@ -121,7 +121,8 @@ def apply_selection(index, engine, job, checkpoint, counts):
     for page in range(payload["pages"]):
         checkpoint()
         for row in read_page(payload["preview"],page):
-            if row["category"] in ELIGIBLE and (payload["all"] or row["key"] in selected):
+            if row["category"] in ELIGIBLE and (payload["all"] or row["key"] in selected or
+                    (payload.get("publications") and row["category"] in {"missing","publish"})):
                 dbi.execute("INSERT INTO approved VALUES(?,?)",(row["key"],json.dumps(row)))
                 selected.discard(row["key"])
     if selected:
@@ -136,6 +137,7 @@ def apply_selection(index, engine, job, checkpoint, counts):
     total = dbi.execute("SELECT count(*) FROM approved").fetchone()[0]
     batch = []
     loaded = False
+    source_error = None
     for key,data,current in dbi.execute("SELECT a.key,a.data,c.key FROM approved a LEFT JOIN current c ON c.key=a.key ORDER BY CASE WHEN json_extract(a.data,'$.kind')='variable' THEN 0 ELSE 1 END"):
         checkpoint()
         row = json.loads(data)
@@ -143,14 +145,26 @@ def apply_selection(index, engine, job, checkpoint, counts):
         if current:
             checkpoint(True)
             if row["category"]=="missing":
-                if not loaded:
-                    from .accounts import load
-                    with transaction() as db:
-                        value = load(db,job["tenant_id"],job["actor"])
-                    value.update(email=job["actor"],platform_tenant=job["tenant_id"])
-                    engine.load(value,include_images=True)
-                    loaded = True
-                outcome = create_remote(engine,row,job,dbi)
+                if not loaded and not source_error:
+                    try:
+                        from .accounts import load
+                        with transaction() as db:
+                            value = load(db,job["tenant_id"],job["actor"])
+                        value.update(email=job["actor"],platform_tenant=job["tenant_id"])
+                        engine.load(value,include_images=True)
+                        loaded = True
+                    except Exception as exc:
+                        source_error = "No se pudo preparar Sheets y Drive (" + type(exc).__name__ + "). Revisa la conexión para publicar."
+                if source_error:
+                    outcome,row["detail"] = "skipped",source_error
+                else:
+                    try:
+                        outcome = create_remote(engine,row,job,dbi)
+                    except (KeyError,ValueError) as exc:
+                        if any(code in str(exc) for code in ("HTTP 401","HTTP 403")):
+                            raise
+                        from .woocommerce_export import safe_error
+                        outcome,row["detail"] = "skipped",safe_error(exc)[:240]
             else:
                 outcome = set_remote_status(engine,row,job)
         batch.append((row,outcome))
@@ -177,7 +191,7 @@ def create_remote(engine,row,job,dbi):
     source = {"family":"PADRES","variant":"VARIANTES","simple":"SIMPLES"}[kind]
     if sku not in engine.ns[source]:
         row["detail"]="SKU ausente de la hoja de publicación."
-        return "failed"
+        return "skipped"
     if kind=="family":
         members = sorted(norm(v["sku"]) for v in engine.ns["hijos_familia"](sku))
         local = dbi.execute("SELECT sku,version FROM local WHERE parent=? AND status NOT IN ('archived','deleted') ORDER BY sku",(row["local"],)).fetchall()
