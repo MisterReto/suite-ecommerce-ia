@@ -18,6 +18,7 @@ ACTIVE = ("queued","processing","cancelling")
 class Approval(BaseModel):
     confirm: bool
     all: bool = False
+    publications: bool = False
     keys: list[str] = Field(default_factory=list,max_length=500)
 
 
@@ -28,7 +29,7 @@ def scoped(value):
 
 def describe(job):
     return {"id":job.id,"status":job.status,"progress":job.progress,"message":job.message,
-            "mode":"apply" if job.payload.get("preview") else "preview",
+            "store":job.payload.get("store"),"mode":"apply" if job.payload.get("preview") else "preview",
             "counts":job.payload.get("counts",{}),"pages":job.payload.get("pages",0),
             "finished_at":job.finished_at}
 
@@ -62,17 +63,20 @@ def enqueue(value,preview=None,approval=None):
             source = find(db,value,preview)
             if source.payload.get("direction")!="app_to_store" or source.status!="completed" or source.payload.get("preview"):
                 raise HTTPException(409,"Se requiere una vista previa terminada.")
-            if not approval.confirm or (approval.all == bool(approval.keys)):
+            if not approval.confirm or sum((approval.all,approval.publications,bool(approval.keys)))!=1:
                 raise HTTPException(422,"Confirma la selección o todos los cambios elegibles.")
-            payload.update(preview=preview,pages=source.payload["pages"],all=approval.all,keys=sorted(set(approval.keys)))
+            payload.update(preview=preview,pages=source.payload["pages"],all=approval.all,publications=approval.publications,keys=sorted(set(approval.keys)))
             previous = db.scalar(scoped(value).where(GenerationJob.payload["preview"].as_string()==preview)
                                  .order_by(GenerationJob.created_at.desc()).limit(1))
             if previous:
-                if all(previous.payload.get(k)==payload[k] for k in ("all","keys")):
+                if all(previous.payload.get(k,False)==payload[k] for k in ("all","publications","keys")):
                     return describe(previous)
                 raise HTTPException(409,"Esta vista previa ya se utilizó. Genera otra.")
         if not queue.available(db):
             raise HTTPException(503,"El worker no está disponible.")
+        if preview and (source.payload.get("counts") or {}).get("missing") and value.get("creds"):
+            from .accounts import persist
+            persist(db,tenant,value["email"],value)
         job = GenerationJob(tenant_id=tenant,actor=value["email"],kind=KIND,provider="woocommerce",
                             request_key=uid(),payload=payload,message="En cola para conciliar el catálogo")
         db.add(job)
