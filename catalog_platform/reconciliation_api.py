@@ -8,7 +8,7 @@ from .api import admin, context
 from .catalog import audit
 from .database import transaction
 from .models import AuditLog, GenerationJob, uid
-from .woocommerce_export import connection_status, store_url
+from .woocommerce_export import connection_status
 from .woocommerce_reconciliation import KIND, read_page, result_view
 
 router = APIRouter(prefix="/reconciliation")
@@ -23,8 +23,11 @@ class Approval(BaseModel):
 
 
 def scoped(value):
+    status = connection_status()
+    if status["error"] or not status["store"]:
+        raise HTTPException(503, status["error"] or "Configura el origen de WooCommerce.")
     return select(GenerationJob).where(GenerationJob.tenant_id==value["platform_tenant"],
-        GenerationJob.kind==KIND,GenerationJob.payload["store"].as_string()==store_url())
+        GenerationJob.kind==KIND,GenerationJob.payload["store"].as_string()==status["store"])
 
 
 def describe(job):
@@ -43,9 +46,10 @@ def find(db,value,job_id):
 
 def enqueue(value,preview=None,approval=None):
     admin(value)
-    if not connection_status()["configured"]:
-        raise HTTPException(503,"Configura la conexión de WooCommerce.")
-    tenant,origin = value["platform_tenant"],store_url()
+    status = connection_status()
+    if not status["configured"]:
+        raise HTTPException(503,status["error"] or "Configura la conexión de WooCommerce.")
+    tenant,origin = value["platform_tenant"],status["store"]
     with transaction() as db:
         queue.request_lock(db,"woocommerce",origin+":reconcile")
         if db.scalar(select(GenerationJob.id).where(GenerationJob.kind=="woocommerce_export",

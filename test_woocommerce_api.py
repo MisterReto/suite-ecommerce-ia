@@ -46,6 +46,28 @@ def submit(client, reviewed, request_key=None, confirm=True):
     }, headers=ORIGIN)
 
 
+def test_connection_checks_private_rest_endpoints(publication):
+    client, _, (calls, *_) = publication
+    response = client.post("/api/woocommerce/connection/test", headers=ORIGIN)
+    assert response.status_code == 200 and response.json()["wordpress_ok"]
+    assert [call["endpoint"] for call in calls] == ["wc/v3/products", "wp/v2/media"]
+    assert all(call["method"] == "GET" and call["params"]["context"] == "edit" for call in calls)
+
+
+def test_unauthorized_store_reports_configuration_error(publication, monkeypatch):
+    client, _, (calls, *_) = publication
+    monkeypatch.setenv("WOOCOMMERCE_URL", "https://rincon.creandotusite.com")
+    result = client.get("/api/woocommerce/connection").json()
+    assert not result["configured"] and result["missing"] == []
+    assert "no está autorizado" in result["error"]
+    for method, path in [("POST", "connection/test"), ("GET", "inventory-comparison"),
+                         ("POST", "reconciliation"), ("GET", "reconciliation")]:
+        response = client.request(method, "/api/woocommerce/" + path, headers=ORIGIN)
+        assert response.status_code == 503
+        assert response.json()["detail"] == result["error"]
+    assert not calls
+
+
 def test_catalog_search_and_filters_use_sheet_source(publication):
     client, _, _ = publication
     result = client.get("/api/woocommerce/catalog", params={"q": "V1", "kind": "variant"})

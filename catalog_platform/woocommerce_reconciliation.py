@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select, text, update
 from . import queue
 from .catalog import audit
 from .database import transaction
-from .models import AuditLog, GenerationJob, IntegrationMapping, Product
+from .models import AuditLog, GenerationJob, Product
 from .reconciliation_index import CatalogIndex, family_digest, norm
 from .reconciliation_store import pages, snapshot, LIMIT, PAGE
 from .redis_broker import connection
@@ -28,26 +28,19 @@ def stream(db, query):
     return db.execute(query.execution_options(yield_per=128))
 
 
-def local_snapshot(index, tenant, origin):
+def local_snapshot(index, tenant):
     dbi = index.db
     with transaction() as db:
         if db.bind.dialect.name == "postgresql":
             db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+        # Legacy external IDs lack a store origin. Match against the current catalog by SKU/barcode and hierarchy.
         for p in stream(db,select(Product.id,Product.sku,Product.barcode,Product.product_type,
-            Product.parent_id,Product.status,Product.version,Product.woocommerce_product_id,
-            Product.woocommerce_variation_id,Product.created_at).where(Product.tenant_id==tenant)):
+            Product.parent_id,Product.status,Product.version).where(Product.tenant_id==tenant)):
             kind = "variation" if p.parent_id or p.product_type in {"variant","variation"} else p.product_type
             dbi.execute("INSERT INTO local VALUES(?,?,?,?,?,?,?,?)",(p.id,norm(p.sku),norm(p.barcode),
                 kind,p.parent_id,p.status,p.version,p.sku))
-            rid = p.woocommerce_variation_id if kind=="variation" else p.woocommerce_product_id
-            if rid:
-                dbi.execute("INSERT INTO mapping VALUES(?,?,?)",(p.id,rid,p.woocommerce_product_id if kind=="variation" else 0))
         for pid,sku in stream(db,select(AuditLog.product_id,AuditLog.before["sku"].as_string()).where(AuditLog.tenant_id==tenant,AuditLog.action=="product.deleted")):
             dbi.execute("UPDATE local SET sku=?,display=? WHERE id=? AND status='deleted'",(norm(sku),sku,pid))
-        for pid,rid,parent in stream(db,select(IntegrationMapping.internal_product_id,
-            IntegrationMapping.external_id,IntegrationMapping.parent_external_id).where(
-                IntegrationMapping.tenant_id==tenant,IntegrationMapping.provider=="woocommerce")):
-            dbi.execute("INSERT INTO mapping VALUES(?,?,?)",(pid,rid,parent or 0))
     if not dbi.execute("SELECT 1 FROM local WHERE status NOT IN (\x27deleted\x27,\x27archived\x27) LIMIT 1").fetchone():
         raise ValueError("El inventario validado está vacío. Comprueba la carpeta y la sincronización de Sheets.")
 
@@ -90,7 +83,7 @@ def process(job, owner):
     with tempfile.TemporaryDirectory() as work, closing(Exporter(write=applying)) as engine:
         index = CatalogIndex(Path(work)/"catalog.db")
         with closing(index.db):
-            local_snapshot(index,job["tenant_id"],origin)
+            local_snapshot(index,job["tenant_id"])
             snapshot(engine,index,checkpoint)
             queue.checkpoint(job["id"],owner,message="Comparando el inventario validado",progress=40)
             if applying:

@@ -51,7 +51,11 @@ archivos y conserva el flujo de generación y guardado con IA.
 
 Los IDs del Sheet y de Drive tienen los valores originales como predeterminados.
 Puede configurarse `WOOCOMMERCE_SHEET_ID` o `WOOCOMMERCE_IMAGES_FOLDER_ID`.
-La tienda autorizada por defecto es `https://rincon.creandotusite.com`.
+La tienda autorizada por defecto es `https://elrincondeasia.com`.
+API y worker deben usar el mismo `WOOCOMMERCE_URL`, también para los medios de
+WordPress. `WOOCOMMERCE_ALLOWED_HOSTS` permite reemplazar la lista predeterminada.
+Al cambiar de origen, genera una nueva vista previa de sincronización. La comparación
+usa los SKU, códigos de barras y relaciones de variantes de la tienda actual.
 
 ## Cola, límites y recuperación
 

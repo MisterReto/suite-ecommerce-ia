@@ -56,7 +56,7 @@ def enqueue(value, preview, request_key, batch_id=None, db=None):
     require_role(value, "admin")
     status = connection_status()
     if not status["configured"] or preview["options"]["images"] and not status["images_configured"]:
-        raise HTTPException(503, "Configura las variables de WooCommerce/WordPress indicadas en Conexión.")
+        raise HTTPException(503, status["error"] or "Configura las variables de WooCommerce/WordPress indicadas en Conexión.")
     with (transaction() if db is None else nullcontext(db)) as db:
         queue.request_lock(db, value["platform_tenant"], "wc-request:" + request_key)
         existing = db.scalar(select(GenerationJob).where(

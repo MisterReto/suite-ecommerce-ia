@@ -1,5 +1,6 @@
 """Accepted Colab behavior, using controlled HTTP/Google doubles and zero store writes."""
 import ast
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -9,7 +10,41 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from catalog_platform.woocommerce_export import Exporter, CORE, StoreSession, safe_error
+from catalog_platform.woocommerce_export import Exporter, CORE, StoreSession, safe_error, store_url
+
+
+def test_allowed_store_defaults_and_explicit_override(monkeypatch):
+    monkeypatch.delenv("WOOCOMMERCE_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("WOOCOMMERCE_URL", "https://elrincondeasia.com/")
+    assert store_url() == "https://elrincondeasia.com"
+    monkeypatch.setenv("WOOCOMMERCE_ALLOWED_HOSTS", " Alt.Example, another.example ")
+    with pytest.raises(ValueError, match="no está autorizado"):
+        store_url()
+    monkeypatch.setenv("WOOCOMMERCE_URL", "https://alt.example")
+    with closing(Exporter()) as engine:
+        assert engine.ns["WC_API"] == "https://alt.example/wp-json/wc/v3"
+        assert engine.ns["WP_API"] == "https://alt.example/wp-json/wp/v2"
+
+
+@pytest.mark.parametrize("origin", ["http://elrincondeasia.com", "https://elrincondeasia.com:0",
+    "https://elrincondeasia.com:443", "https://elrincondeasia.com/wp-json", "https://elrincondeasia.com?",
+    "https://elrincondeasia.com#", "https://user:pass@elrincondeasia.com", "https://[broken"])
+def test_invalid_store_origin(monkeypatch, origin):
+    monkeypatch.setenv("WOOCOMMERCE_URL", origin)
+    with pytest.raises(ValueError, match="debe ser un origen HTTPS"):
+        store_url()
+
+
+def test_store_session_rejects_redirect_responses(monkeypatch):
+    def redirect(session, method, url, **kwargs):
+        assert kwargs["allow_redirects"] is False
+        return SimpleNamespace(status_code=302)
+
+    monkeypatch.setattr(requests.Session, "request", redirect)
+    origin = "https://elrincondeasia.com"
+    with StoreSession(origin) as session:
+        with pytest.raises(ValueError, match="HTTP 302.*redirección"):
+            session.get(origin + "/wp-json/wp/v2/media")
 
 
 def test_woocommerce_image_index_only_reads_direct_generated_images():
@@ -46,7 +81,7 @@ def source():
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setenv("WOOCOMMERCE_URL", "https://rincon.creandotusite.com")
+    monkeypatch.setenv("WOOCOMMERCE_URL", "https://elrincondeasia.com")
     monkeypatch.setenv("WOOCOMMERCE_CONSUMER_KEY", "test-read-write-key")
     monkeypatch.setenv("WOOCOMMERCE_CONSUMER_SECRET", "test-read-write-secret")
     monkeypatch.setenv("WP_USERNAME", "test-wordpress-user")
@@ -55,6 +90,7 @@ def store(monkeypatch):
     media = {22: "S1_1_hd.jpg"}
 
     def request(session, method, url, **kwargs):
+        assert url.startswith("https://elrincondeasia.com/wp-json/")
         assert session.headers["Accept"] == "application/json"
         assert session.headers["User-Agent"] == "RinconDeAsia-CatalogExporter/1.0"
         assert kwargs["allow_redirects"] is False
@@ -63,6 +99,7 @@ def store(monkeypatch):
         body = kwargs.get("json") or {}
         calls.append({"method": method, "endpoint": endpoint, "body": deepcopy(body), "data": kwargs.get("data"), "params": deepcopy(kwargs.get("params") or {})})
         if endpoint == "wc/v3/products" and method == "GET":
+            assert session.auth == ("test-read-write-key", "test-read-write-secret")
             params = kwargs.get("params") or {}
             sku = params.get("sku")
             result = [p for code, p in products.items() if (not sku or code == sku)
@@ -87,11 +124,14 @@ def store(monkeypatch):
             else:
                 result = [] if method == "GET" else {**body, "id": len(calls)}
         elif endpoint.startswith("wp/v2/media/"):
-            result = {"id": 22, "source_url": "https://rincon.creandotusite.com/uploads/" + media[22]}
+            result = {"id": 22, "source_url": "https://elrincondeasia.com/uploads/" + media[22]}
         elif endpoint == "wp/v2/media":
             assert session.auth == ("test-wordpress-user", "test-wordpress-password")
-            assert kwargs["data"] == b"controlled-image"
-            result = {"id": 33, "source_url": "https://rincon.creandotusite.com/uploads/S1_1_hd.jpg"}
+            if method == "GET":
+                result = []
+            else:
+                assert kwargs["data"] == b"controlled-image"
+                result = {"id": 33, "source_url": "https://elrincondeasia.com/uploads/S1_1_hd.jpg"}
         else:
             raise AssertionError(endpoint)
         return SimpleNamespace(ok=True, status_code=201 if method == "POST" else 200,
@@ -232,7 +272,7 @@ def test_preview_resolves_real_sku_images_and_performs_no_store_writes(store):
 
 def test_existing_media_is_validated_and_reused_without_upload(store):
     calls, products, *_ = store
-    engine = Exporter(source(), write=True, media_cache={"https://rincon.creandotusite.com|real": 22})
+    engine = Exporter(source(), write=True, media_cache={"https://elrincondeasia.com|real": 22})
     try:
         engine.execute("simple", "S1", options(images=True))
         assert products["S1"]["images"] == [{"id": 22}]
@@ -245,7 +285,7 @@ def test_wrong_cached_media_is_replaced_with_real_drive_image(store):
     calls, products, _, media = store
     media[22] = "OTRO_SKU_1.png"
     engine = Exporter(source(), drive=SimpleNamespace(files=lambda: SimpleNamespace(get_media=lambda **kw: kw)),
-                      write=True, media_cache={"https://rincon.creandotusite.com|real": 22})
+                      write=True, media_cache={"https://elrincondeasia.com|real": 22})
     class Downloader:
         def __init__(self, stream, request):
             assert request["fileId"] == "real"

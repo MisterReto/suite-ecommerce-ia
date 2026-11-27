@@ -32,27 +32,36 @@ def secret(name):
 
 
 def store_url():
-    origin = secret("WOOCOMMERCE_URL").rstrip("/")
-    parsed = urlsplit(origin)
+    value = secret("WOOCOMMERCE_URL")
+    invalid_origin = "WOOCOMMERCE_URL debe ser un origen HTTPS sin puerto, ruta ni credenciales."
+    if not re.fullmatch(r"https://[^\s/?#]+/?", value, re.IGNORECASE):
+        raise ValueError(invalid_origin)
+    origin = value.removesuffix("/")
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        raise ValueError(invalid_origin) from None
+    hostname = parsed.hostname
+    if not hostname or parsed.netloc.lower() not in {hostname, f"[{hostname}]"}:
+        raise ValueError(invalid_origin)
     allowed = {name.strip().lower() for name in os.getenv(
-        "WOOCOMMERCE_ALLOWED_HOSTS", "rincon.creandotusite.com").split(",") if name.strip()}
-    if (parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username
-            or parsed.password or parsed.port or parsed.query or parsed.fragment or parsed.path):
-        raise ValueError("WOOCOMMERCE_URL debe ser el origen HTTPS de la tienda autorizada.")
+        "WOOCOMMERCE_ALLOWED_HOSTS", "elrincondeasia.com").split(",") if name.strip()}
+    if hostname not in allowed:
+        raise ValueError("El dominio de WOOCOMMERCE_URL no está autorizado en WOOCOMMERCE_ALLOWED_HOSTS.")
     return origin
 
 
 def connection_status():
     missing = [name for name in ALIASES if not (os.getenv(name) or os.getenv(ALIASES[name]))]
     media_missing = [name for name in ("WP_USERNAME", "WP_APP_PASSWORD") if not os.getenv(name)]
-    try:
-        origin = store_url()
-    except ValueError:
-        origin = ""
-        if not missing:
-            missing.append("WOOCOMMERCE_URL")
-    return {"configured": not missing, "images_configured": not media_missing,
-            "missing": missing, "media_missing": media_missing, "store": origin}
+    origin, error = "", None
+    if "WOOCOMMERCE_URL" not in missing:
+        try:
+            origin = store_url()
+        except ValueError as exc:
+            error = str(exc)
+    return {"configured": not missing and not error, "images_configured": not media_missing,
+            "missing": missing, "media_missing": media_missing, "store": origin, "error": error}
 
 
 def safe_error(exc):
@@ -91,6 +100,8 @@ class StoreSession(requests.Session):
         response = super().request(method, url, **kwargs)
         if self.after:
             self.after(operation, modifying, response)
+        if 300 <= response.status_code < 400:
+            raise ValueError(f"WooCommerce/WordPress: HTTP {response.status_code}. La tienda devolvió una redirección.")
         if not response.ok and response.status_code != 406:
             try:
                 detail = response.json()
@@ -330,7 +341,7 @@ class Exporter:
     def execute(self, kind, sku, options):
         status = connection_status()
         if not status["configured"] or options["images"] and not status["images_configured"]:
-            raise ValueError("Configura las credenciales de WooCommerce/WordPress antes de subir.")
+            raise ValueError(status["error"] or "Configura las credenciales de WooCommerce/WordPress antes de subir.")
         parent, selected, children = self.ns["resolver"](KINDS[kind], sku)
         existing = self.ns["buscar_producto"](parent["sku"])
         if existing and existing.get("type") not in {None, "simple" if kind == "simple" else "variable"}:

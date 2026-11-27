@@ -17,9 +17,6 @@ class CatalogIndex:
                 status TEXT,version INTEGER,display TEXT);
             CREATE TABLE remote(id INTEGER PRIMARY KEY,sku TEXT,barcode TEXT,kind TEXT,parent INTEGER,
                 status TEXT,display TEXT);
-            CREATE TABLE mapping(local TEXT,remote INTEGER,parent INTEGER);
-            CREATE INDEX mapped_remote ON mapping(remote);
-            CREATE INDEX mapped_local ON mapping(local);
             CREATE INDEX local_sku ON local(sku);
             CREATE INDEX local_barcode ON local(barcode);
             CREATE INDEX remote_sku ON remote(sku);
@@ -34,8 +31,6 @@ class CatalogIndex:
             for right in ("sku", "barcode"):
                 self.db.execute(f"""INSERT OR IGNORE INTO pair SELECT l.id,r.id FROM local l
                     JOIN remote r ON l.{left}=r.{right} WHERE l.{left}<>''""")
-        self.db.execute("""INSERT OR IGNORE INTO pair SELECT m.local,r.id FROM mapping m
-            JOIN remote r ON r.id=m.remote JOIN local l ON l.id=m.local""")
 
     def classify(self, r):
         db = self.db
@@ -52,9 +47,7 @@ class CatalogIndex:
         l = linked[0]
         if (len(linked)>1 or l["kind"] != r["kind"] or
             not ({l["sku"],l["barcode"]} & {r["sku"],r["barcode"]} - {""}) or
-            exists("SELECT 1 FROM pair WHERE local=? AND remote<>?", l["id"], r["id"]) or
-            exists("SELECT 1 FROM mapping WHERE local=? AND (remote<>? OR (parent<>0 AND parent<>?))",
-                   l["id"], r["id"], r["parent"])):
+            exists("SELECT 1 FROM pair WHERE local=? AND remote<>?", l["id"], r["id"])):
             return "conflict", l
         if r["parent"]:
             parent = db.execute("""SELECT l.id,l.status FROM pair p JOIN local l ON l.id=p.local
@@ -100,7 +93,7 @@ class CatalogIndex:
                 (l["id"],l["sku"],l["sku"],l["sku"],l["barcode"],l["barcode"],l["barcode"])).fetchone()
             category = "missing"
             parent_sku = ""
-            if duplicate or not l["sku"] or self.db.execute("SELECT 1 FROM mapping WHERE local=?", (l["id"],)).fetchone():
+            if duplicate or not l["sku"]:
                 category = "conflict"
             if l["parent"]:
                 parent = self.db.execute("SELECT * FROM local WHERE id=?", (l["parent"],)).fetchone()

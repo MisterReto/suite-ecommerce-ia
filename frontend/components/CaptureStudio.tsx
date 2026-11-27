@@ -681,7 +681,7 @@ export default function CaptureStudio({
         </a>
         <a
           className="store-link"
-          href="https://rincon.creandotusite.com/"
+          href="https://elrincondeasia.com/"
           target="_blank"
           rel="noreferrer"
         >
@@ -1865,7 +1865,7 @@ export default function CaptureStudio({
             <img src="/logo.png" width="20" height="20" alt="" />
             <span>El Rincón de Asia · Suite e-commerce</span>
             <a
-              href="https://rincon.creandotusite.com/"
+              href="https://elrincondeasia.com/"
               target="_blank"
               rel="noreferrer"
             >

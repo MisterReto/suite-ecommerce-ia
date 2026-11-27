@@ -61,8 +61,9 @@ def connection(value=Depends(context)):
 def inventory_comparison(refresh: bool = False, value=Depends(context)):
     engine = None
     try:
-        if not connection_status()["configured"]:
-            raise HTTPException(503, "Configura la conexión de WooCommerce para comparar el inventario.")
+        status = connection_status()
+        if not status["configured"]:
+            raise HTTPException(503, status["error"] or "Configura la conexión de WooCommerce para comparar el inventario.")
         origin, tenant = store_url(), value["platform_tenant"]
         cached = value.get("woocommerce_inventory_cache")
         if (not refresh and cached and cached["expires"] > time.time()
@@ -97,17 +98,24 @@ def inventory_comparison(refresh: bool = False, value=Depends(context)):
 @router.post("/connection/test")
 def test_connection(value=Depends(context)):
     admin(value)
+    status = connection_status()
+    if not status["configured"]:
+        raise HTTPException(503, status["error"] or "Configura la conexión de WooCommerce.")
     engine = None
     try:
         engine = Exporter()
-        engine.ns["wc"]("GET", "products", params={"per_page": 1})
+        products = engine.ns["wc"]("GET", "products", params={"per_page": 1, "context": "edit"})
+        if not isinstance(products, list):
+            raise ValueError("WooCommerce no devolvió una lista de productos.")
         media_ok = False
-        if connection_status()["images_configured"]:
+        if status["images_configured"]:
             response = engine.ns["wordpress_session"]().get(engine.ns["WP_API"] + "/media",
-                params={"per_page": 1}, timeout=60)
-            engine.ns["comprobar_respuesta"](response, "Consultar medios WordPress")
+                params={"per_page": 1, "context": "edit"}, timeout=60)
+            media = engine.ns["comprobar_respuesta"](response, "Consultar medios WordPress")
+            if not isinstance(media, list):
+                raise ValueError("WordPress no devolvió una lista de medios.")
             media_ok = True
-        return {"ok": True, "wordpress_ok": media_ok, "store": store_url(),
+        return {"ok": True, "wordpress_ok": media_ok, "store": status["store"],
                 "message": "WooCommerce y WordPress responden correctamente." if media_ok
                 else "WooCommerce responde correctamente. Configura WordPress para incluir imágenes."}
     except Exception as exc:

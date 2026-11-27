@@ -14,7 +14,7 @@ type Review = { mode: "single" | "batch"; previews: Preview[]; preview_token: st
   errors: { selection: Selection; message: string }[]; omitted: Selection[] };
 type Job = { id: string; batch_id: string | null; status: string; progress: number; message: string;
   uncertain: boolean; selection: Selection; events: { action: string; sku?: string; id?: number; mensaje?: string }[] };
-type Connection = { configured: boolean; images_configured: boolean; missing: string[]; media_missing: string[]; store: string };
+type Connection = { configured: boolean; images_configured: boolean; missing: string[]; media_missing: string[]; store: string; error?: string | null };
 type Props = { isAdmin: boolean; online: boolean;
   api: <T>(path: string, method?: string, body?: unknown, timeout?: number) => Promise<T> };
 const labels = { simple: "Simple", family: "Familia completa", variant: "Variante" };
@@ -157,10 +157,11 @@ export default function WooCommercePublisher({ isAdmin, online, api }: Props) {
       <h2>Publicar en WooCommerce</h2>
       <p>Selecciona productos de Sheets y revisa la carga. Las imágenes se relacionan por el SKU real de Drive.</p>
       <p className="p-muted">Publicación al terminar la carga. También puedes elegir guardar los nuevos como borradores. Los productos existentes conservan sus datos; al elegir Publicado, sus borradores se publican.</p>
-      {connection && <p role="status">Tienda: {connection.store || "Pendiente de configurar"} · {connection.configured ? "Configurada" : "Faltan credenciales"}</p>}
+      {connection && <p role="status">Tienda: {connection.store || "Pendiente de configurar"} · {connection.configured ? "Configurada" : connection.error || "Falta configuración"}</p>}
       {isAdmin && connection && (!connection.configured || !connection.images_configured) && <details>
         <summary>Configuración de conexión</summary>
-        <p>El administrador debe configurar en Render: {[...connection.missing, ...connection.media_missing].join(", ")}.</p>
+        {(connection.missing.length > 0 || connection.media_missing.length > 0) &&
+          <p>El administrador debe configurar en Render: {[...connection.missing, ...connection.media_missing].join(", ")}.</p>}
       </details>}
       {isAdmin && <button type="button" className="button secondary" disabled={disabled || !connection?.configured}
         onClick={() => void attempt(async () => {

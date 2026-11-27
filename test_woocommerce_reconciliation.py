@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from catalog_platform import reconciliation_api as api, woocommerce_reconciliation as rec
 from catalog_platform.database import engine_for, transaction
-from catalog_platform.models import AuditLog, Base, GenerationJob, Product, uid
+from catalog_platform.models import AuditLog, Base, GenerationJob, IntegrationMapping, Product, uid
 from catalog_platform.reconciliation_index import CatalogIndex
 from catalog_platform.reconciliation_store import pages, snapshot
 from test_woocommerce_colab import source, store
@@ -125,7 +125,6 @@ def test_deleted_products_are_proposed_even_without_creation_history(tmp_path):
             (pid,pid,"","simple",None,"deleted",2,pid))
 
 
-    index.db.execute("INSERT INTO mapping VALUES('b',2,0)")  # A link alone cannot establish ownership.
     snapshot(Shop([product(1,"a"),product(2,"b")]),index,lambda:None)
     assert [r["category"] for r in index.rows()]==["remove","remove"]
     index.db.close()
@@ -146,7 +145,7 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     Base.metadata.create_all(engine_for(os.environ["DATABASE_URL"]))
     index=CatalogIndex(tmp_path/"empty.db")
     with pytest.raises(ValueError,match="vacío"):
-        rec.local_snapshot(index,tenant,"https://store.test")
+        rec.local_snapshot(index,tenant)
     index.db.close()
     monkeypatch.setattr(rec.queue,"available",lambda db:True)
     monkeypatch.setattr(rec.queue,"dispatch",lambda db,job:db.flush())
@@ -157,11 +156,18 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
         get=cache.get,setex=lambda key,ttl,value:cache.update({key:value})))
     now=datetime.now(timezone.utc)
     with transaction() as db:
-        active=Product(tenant_id=tenant,sku="1",name="Actual")
+        active=Product(tenant_id=tenant,sku="1",name="Actual",woocommerce_product_id=2)
         deleted=Product(tenant_id=tenant,sku="deleted_test",status="deleted",name="Baja",
                         created_at=now-timedelta(days=3))
         db.add_all([active,deleted])
         db.flush()
+        db.add(IntegrationMapping(tenant_id=tenant,provider="woocommerce",entity_type="product",
+                                  internal_product_id=active.id,external_id="3"))
+        old_preview = GenerationJob(id=uid(),tenant_id=tenant,actor=admin["email"],request_key=uid(),
+            kind=rec.KIND,status="completed",payload={"store":"https://rincon.creandotusite.com",
+                "direction":"app_to_store","pages":0})
+        db.add(old_preview)
+        old_preview_id = old_preview.id
         db.add(AuditLog(tenant_id=tenant,actor=admin["email"],action="product.deleted",
                         product_id=deleted.id,before={"sku":"2"},created_at=now))
         db.add(GenerationJob(tenant_id=tenant,actor=admin["email"],request_key=uid(),kind="woocommerce_export",
@@ -174,6 +180,10 @@ def test_preview_apply_retry_and_admin_scope(tmp_path,monkeypatch):
     with pytest.raises(HTTPException) as denied:
         api.preview({**admin,"email":"viewer@test.local"})
     assert denied.value.status_code==403
+    assert api.latest(admin)["job"] is None
+    with pytest.raises(HTTPException) as old:
+        api.apply(old_preview_id,api.Approval(confirm=True,all=True),admin)
+    assert old.value.status_code==404 and not shop.writes
     preview=api.preview(admin)
     assert api.preview(admin)["id"]==preview["id"]
     run(preview)
